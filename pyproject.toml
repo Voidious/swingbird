@@ -1,7 +1,7 @@
 [project]
 name = "swingbird"
 version = "0.1.0"
-description = "Add your description here"
+description = "A stand-alone Buzz agent that keeps your projects in full swing."
 requires-python = ">=3.12"
 dependencies = []
 
