@@ -8,8 +8,12 @@ dependencies = []
 [tool.ruff]
 line-length = 88
 
+[tool.uv.sources]
+crispen = { git = "https://github.com/Voidious/crispen" }
+
 [dependency-groups]
 dev = [
+    "crispen",
     "pre-commit>=4.6.2",
     "ruff>=0.16.5",
 ]

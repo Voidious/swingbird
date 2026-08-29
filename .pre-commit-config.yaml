@@ -14,3 +14,11 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+-   repo: local
+    hooks:
+    -   id: crispen
+        name: crispen
+        entry: bash -c 'git diff --cached | uv run crispen'
+        language: system
+        types: [python]
+        pass_filenames: false
