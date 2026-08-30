@@ -8,6 +8,20 @@ dependencies = []
 [tool.ruff]
 line-length = 88
 
+[tool.pytest.ini_options]
+addopts = "--cov=main --cov-branch --cov-fail-under=100"
+pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+]
+
 [tool.uv.sources]
 crispen = { git = "https://github.com/Voidious/crispen" }
 
@@ -15,5 +29,6 @@ crispen = { git = "https://github.com/Voidious/crispen" }
 dev = [
     "crispen",
     "pre-commit>=4.6.2",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.5",
 ]
