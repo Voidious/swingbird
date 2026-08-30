@@ -32,8 +32,15 @@ class ChannelConfig:
 
 
 @dataclass(frozen=True)
+class RelayConfig:
+    url: str
+    private_key_env: str
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
+    relay: RelayConfig
     channels: tuple[ChannelConfig, ...]
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
@@ -44,6 +51,7 @@ class Config:
 
 
 _LLM_REQUIRED = ("base_url", "model", "api_key_env")
+_RELAY_REQUIRED = ("url", "private_key_env")
 _CHANNEL_REQUIRED = ("id", "name", "write", "agents")
 
 
@@ -57,7 +65,9 @@ def load_config(path: str | Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
 
-    return Config(llm=_parse_llm(raw), channels=_parse_channels(raw))
+    return Config(
+        llm=_parse_llm(raw), relay=_parse_relay(raw), channels=_parse_channels(raw)
+    )
 
 
 def _parse_llm(raw: dict) -> LLMConfig:
@@ -71,6 +81,19 @@ def _parse_llm(raw: dict) -> LLMConfig:
         base_url=section["base_url"],
         model=section["model"],
         api_key_env=section["api_key_env"],
+    )
+
+
+def _parse_relay(raw: dict) -> RelayConfig:
+    section = raw.get("relay")
+    if not isinstance(section, dict):
+        raise ConfigError("config is missing required [relay] section")
+    for key in _RELAY_REQUIRED:
+        if not section.get(key):
+            raise ConfigError(f"[relay] is missing required field: {key}")
+    return RelayConfig(
+        url=section["url"],
+        private_key_env=section["private_key_env"],
     )
 
 

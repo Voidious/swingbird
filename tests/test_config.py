@@ -8,6 +8,10 @@ base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
 
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
 [[channels]]
 id = "chan-1"
 name = "swingbird-dev"
@@ -28,6 +32,8 @@ def test_load_valid_config(tmp_path):
     assert config.llm.base_url == "https://api.moonshot.ai/v1"
     assert config.llm.model == "kimi-k2.6"
     assert config.llm.api_key_env == "MOONSHOT_API_KEY"
+    assert config.relay.url == "wss://relay.example.com"
+    assert config.relay.private_key_env == "SWINGBIRD_PRIVATE_KEY"
     assert len(config.channels) == 1
     channel = config.channels[0]
     assert channel.id == "chan-1"
@@ -55,6 +61,10 @@ def test_invalid_toml(tmp_path):
 
 def test_missing_llm_section(tmp_path):
     text = """
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
 [[channels]]
 id = "chan-1"
 name = "swingbird-dev"
@@ -71,6 +81,10 @@ def test_llm_missing_required_field(tmp_path):
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
 [[channels]]
 id = "chan-1"
 name = "swingbird-dev"
@@ -81,12 +95,53 @@ agents = []
         load_config(write(tmp_path, text))
 
 
+def test_missing_relay_section(tmp_path):
+    text = """
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
+api_key_env = "MOONSHOT_API_KEY"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match=r"\[relay\] section"):
+        load_config(write(tmp_path, text))
+
+
+def test_relay_missing_required_field(tmp_path):
+    text = """
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
+api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match="private_key_env"):
+        load_config(write(tmp_path, text))
+
+
 def test_channels_missing(tmp_path):
     text = """
 [llm]
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
 """
     with pytest.raises(ConfigError, match=r"\[\[channels\]\]"):
         load_config(write(tmp_path, text))
@@ -98,6 +153,10 @@ def test_channels_empty(tmp_path):
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
 channels = []
 """
@@ -111,6 +170,10 @@ def test_channel_missing_required_field(tmp_path):
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
 [[channels]]
 id = "chan-1"
@@ -127,6 +190,10 @@ def test_duplicate_channel_id(tmp_path):
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
 [[channels]]
 id = "chan-1"
@@ -150,6 +217,10 @@ def test_duplicate_channel_name(tmp_path):
 base_url = "https://api.moonshot.ai/v1"
 model = "kimi-k2.6"
 api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
 [[channels]]
 id = "chan-1"
