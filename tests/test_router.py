@@ -57,6 +57,14 @@ class FakeOpenAI:
         self.chat = FakeChat(FakeCompletions(content))
 
 
+class FakeAuditLog:
+    def __init__(self):
+        self.transcripts: list[tuple[str | None, str]] = []
+
+    def log_transcript_in(self, thread_id, text):
+        self.transcripts.append((thread_id, text))
+
+
 def _router(content: str) -> tuple[IntentRouter, FakeOpenAI]:
     fake = FakeOpenAI(content)
     llm = LLMClient(LLM_CONFIG, client=fake)
@@ -143,3 +151,20 @@ def test_forces_json_mode():
     router.route("what's going on?")
 
     assert fake.chat.completions.calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_route_logs_transcript_in_when_audit_configured():
+    fake = FakeOpenAI('{"intent": "recap"}')
+    llm = LLMClient(LLM_CONFIG, client=fake)
+    audit = FakeAuditLog()
+    router = IntentRouter(llm, CONFIG, audit=audit)
+
+    router.route("what's going on?", thread_id="thread-1")
+
+    assert audit.transcripts == [("thread-1", "what's going on?")]
+
+
+def test_route_without_audit_configured_does_not_raise():
+    router, _ = _router('{"intent": "recap"}')
+
+    router.route("what's going on?")

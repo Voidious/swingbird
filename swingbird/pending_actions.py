@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from swingbird import outbound
+from swingbird.audit import AuditLog
 from swingbird.config import Config
 from swingbird.router import Intent
 
@@ -45,17 +46,19 @@ class PendingActionStore:
     def get(self, thread_id: str) -> DispatchProposal | None:
         return self._pending.get(thread_id)
 
-    def resolve(self, thread_id: str | None) -> DispatchProposal:
-        """Pop and return the proposal a confirm/cancel applies to.
+    def resolve(self, thread_id: str | None) -> tuple[str, DispatchProposal]:
+        """Pop and return the (thread id, proposal) a confirm/cancel applies to.
 
         If `thread_id` is a reply to a specific proposal, resolve that
         one directly. If `thread_id` is None, resolve the single pending
         proposal across all threads -- raising if that's ambiguous (zero
-        or more than one candidate).
+        or more than one candidate). The resolved thread id is always
+        returned alongside the proposal, since the ambiguous-resolution
+        case doesn't otherwise reveal which thread it came from.
         """
         if thread_id is not None:
             try:
-                return self._pending.pop(thread_id)
+                return thread_id, self._pending.pop(thread_id)
             except KeyError:
                 raise PendingActionError(
                     f"no pending action for thread {thread_id!r}"
@@ -67,11 +70,15 @@ class PendingActionStore:
                 "more than one pending action; ambiguous which one"
             )
         (only_thread,) = self._pending
-        return self._pending.pop(only_thread)
+        return only_thread, self._pending.pop(only_thread)
 
 
 def propose_dispatch(
-    store: PendingActionStore, config: Config, thread_id: str, intent: Intent
+    store: PendingActionStore,
+    config: Config,
+    thread_id: str,
+    intent: Intent,
+    audit: AuditLog | None = None,
 ) -> DispatchProposal:
     """Build a `DispatchProposal` from a router `dispatch` intent and store it.
 
@@ -95,21 +102,32 @@ def propose_dispatch(
         target_agent=intent.target_agent,
     )
     store.propose(thread_id, proposal)
+    if audit is not None:
+        audit.log_proposed_action(thread_id, proposal)
     return proposal
 
 
 def confirm_dispatch(
-    store: PendingActionStore, thread_id: str | None, requested_by: str
+    store: PendingActionStore,
+    thread_id: str | None,
+    requested_by: str,
+    audit: AuditLog | None = None,
 ) -> str:
     """Resolve the pending dispatch and post it; return the new event id."""
-    proposal = store.resolve(thread_id)
-    return outbound.relay_dispatch(
+    resolved_thread_id, proposal = store.resolve(thread_id)
+    event_id = outbound.relay_dispatch(
         proposal.channel_id, proposal.instruction, requested_by
     )
+    if audit is not None:
+        audit.log_decision(resolved_thread_id, "confirmed", proposal, event_id=event_id)
+    return event_id
 
 
 def cancel_dispatch(
-    store: PendingActionStore, thread_id: str | None
+    store: PendingActionStore, thread_id: str | None, audit: AuditLog | None = None
 ) -> DispatchProposal:
     """Resolve (discard) the pending dispatch without posting it."""
-    return store.resolve(thread_id)
+    resolved_thread_id, proposal = store.resolve(thread_id)
+    if audit is not None:
+        audit.log_decision(resolved_thread_id, "cancelled", proposal)
+    return proposal

@@ -29,6 +29,18 @@ DISPATCH_INTENT = Intent(
 )
 
 
+class FakeAuditLog:
+    def __init__(self):
+        self.proposed: list[tuple] = []
+        self.decisions: list[tuple] = []
+
+    def log_proposed_action(self, thread_id, proposal):
+        self.proposed.append((thread_id, proposal))
+
+    def log_decision(self, thread_id, decision, proposal, event_id=None):
+        self.decisions.append((thread_id, decision, proposal, event_id))
+
+
 def test_propose_dispatch_stores_resolved_channel_id():
     store = PendingActionStore()
 
@@ -132,3 +144,82 @@ def test_resolve_without_thread_id_succeeds_if_exactly_one_pending():
 
     assert proposal.channel_id == "chan-1"
     assert store.get("thread-1") is None
+
+
+def test_propose_dispatch_logs_proposed_action_when_audit_configured():
+    store = PendingActionStore()
+    audit = FakeAuditLog()
+
+    proposal = propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT, audit=audit)
+
+    assert audit.proposed == [("thread-1", proposal)]
+
+
+def test_propose_dispatch_without_audit_does_not_raise():
+    store = PendingActionStore()
+
+    propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
+
+
+def _setup_audit_store(thread_id="thread-1"):
+    store = PendingActionStore()
+    audit = FakeAuditLog()
+    propose_dispatch(store, CONFIG, thread_id, DISPATCH_INTENT, audit=audit)
+    return store, audit
+
+
+def _assert_single_audit_decision(audit, expected_thread_id):
+    (entry,) = audit.decisions
+    thread_id, decision, proposal, event_id = entry
+    assert thread_id == expected_thread_id
+    return decision, proposal, event_id
+
+
+def test_confirm_dispatch_logs_decision_with_event_id_when_audit_configured(
+    monkeypatch,
+):
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "evt-1")
+    store, audit = _setup_audit_store()
+
+    confirm_dispatch(store, "thread-1", "Voidious", audit=audit)
+
+    decision, proposal, event_id = _assert_single_audit_decision(audit, "thread-1")
+    assert decision == "confirmed"
+    assert proposal.channel_id == "chan-1"
+    assert event_id == "evt-1"
+
+
+def test_confirm_dispatch_without_audit_does_not_raise(monkeypatch):
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "evt-1")
+    store = PendingActionStore()
+    propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
+
+    confirm_dispatch(store, "thread-1", "Voidious")
+
+
+def test_cancel_dispatch_logs_decision_when_audit_configured():
+    store, audit = _setup_audit_store()
+
+    cancel_dispatch(store, "thread-1", audit=audit)
+
+    decision, proposal, event_id = _assert_single_audit_decision(audit, "thread-1")
+    assert decision == "cancelled"
+    assert proposal.channel_id == "chan-1"
+    assert event_id is None
+
+
+def test_cancel_dispatch_without_audit_does_not_raise():
+    store = PendingActionStore()
+    propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
+
+    cancel_dispatch(store, "thread-1")
+
+
+def test_resolve_without_thread_id_logs_the_actual_resolved_thread_id():
+    store, audit = _setup_audit_store()
+
+    cancel_dispatch(store, None, audit=audit)
+
+    (proposed_thread_id, _) = audit.proposed[0]
+    (decision_thread_id, _, _, _) = audit.decisions[0]
+    assert proposed_thread_id == decision_thread_id == "thread-1"

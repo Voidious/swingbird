@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from swingbird.audit import AuditLog
 from swingbird.config import Config
 from swingbird.llm import LLMClient
 
@@ -64,14 +65,24 @@ class Intent:
 
 
 class IntentRouter:
-    def __init__(self, llm: LLMClient, config: Config) -> None:
+    def __init__(
+        self, llm: LLMClient, config: Config, audit: AuditLog | None = None
+    ) -> None:
         self._llm = llm
+        self._audit = audit
         self._system_prompt = _SYSTEM_PROMPT.format(
             channel_list=_format_channel_list(config)
         )
 
-    def route(self, text: str) -> Intent:
-        """Classify `text` into an `Intent`, calling the configured LLM."""
+    def route(self, text: str, thread_id: str | None = None) -> Intent:
+        """Classify `text` into an `Intent`, calling the configured LLM.
+
+        Every call is recorded as a `transcript_in` audit entry (if an
+        `AuditLog` was configured) before the LLM call, so the audit trail
+        covers what came in even if classification itself fails.
+        """
+        if self._audit is not None:
+            self._audit.log_transcript_in(thread_id, text)
         messages = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": text},
