@@ -1,0 +1,10 @@
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
+api_key_env = "MOONSHOT_API_KEY"
+
+[[channels]]
+id = "0b572619-4062-4451-957f-2bb65a738b00"
+name = "swingbird-dev"
+write = true
+agents = ["Sonnet"]

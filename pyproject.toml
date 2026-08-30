@@ -3,13 +3,15 @@ name = "swingbird"
 version = "0.1.0"
 description = "A stand-alone Buzz agent that keeps your projects in full swing."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai>=3.6.0",
+]
 
 [tool.ruff]
 line-length = 88
 
 [tool.pytest.ini_options]
-addopts = "--cov=main --cov-branch --cov-fail-under=100"
+addopts = "--cov=swingbird --cov-branch --cov-fail-under=100"
 pythonpath = ["."]
 
 [tool.coverage.run]
