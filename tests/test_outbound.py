@@ -1,0 +1,106 @@
+import subprocess
+
+import pytest
+
+from swingbird import outbound
+from swingbird.outbound import RelayError, open_dm, relay_dispatch, send_message
+
+
+class FakeRun:
+    def __init__(self, stdout="", returncode=0, stderr="", error=None):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+        self.error = error
+        self.calls: list[dict] = []
+
+    def __call__(self, args, input=None, capture_output=None, text=None, check=None):
+        self.calls.append({"args": args, "input": input})
+        if self.error is not None:
+            raise self.error
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=self.returncode,
+            stdout=self.stdout,
+            stderr=self.stderr,
+        )
+
+
+def test_send_message_posts_content_via_stdin(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-1", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    event_id = send_message("chan-1", "hello there")
+
+    assert event_id == "evt-1"
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "messages",
+        "send",
+        "--channel",
+        "chan-1",
+        "--content",
+        "-",
+    ]
+    assert fake.calls[0]["input"] == "hello there"
+
+
+def test_send_message_includes_reply_to(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-2", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    send_message("chan-1", "hello", reply_to="root-evt")
+
+    assert "--reply-to" in fake.calls[0]["args"]
+    assert fake.calls[0]["args"][fake.calls[0]["args"].index("--reply-to") + 1] == (
+        "root-evt"
+    )
+
+
+def test_open_dm_returns_dm_id(monkeypatch):
+    fake = FakeRun(
+        stdout='{"event_id": "evt-3", "accepted": true, "message": "", '
+        '"dm_id": "dm-chan-1"}'
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    assert open_dm("deadbeef") == "dm-chan-1"
+    assert fake.calls[0]["args"] == ["buzz", "dms", "open", "--pubkey", "deadbeef"]
+
+
+def test_relay_dispatch_prefixes_attribution(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-4", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    event_id = relay_dispatch("chan-1", "fix the login timeout bug", "Voidious")
+
+    assert event_id == "evt-4"
+    assert fake.calls[0]["input"] == (
+        "Relaying instruction from Voidious: fix the login timeout bug"
+    )
+
+
+def test_buzz_cli_not_found(monkeypatch):
+    fake = FakeRun(error=FileNotFoundError())
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    with pytest.raises(RelayError, match="not found on PATH"):
+        send_message("chan-1", "hello")
+
+
+def test_nonzero_exit_raises_with_stderr(monkeypatch):
+    fake = FakeRun(
+        returncode=1, stderr='{"error": "not_found", "message": "no such channel"}'
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    with pytest.raises(RelayError, match="no such channel"):
+        send_message("chan-1", "hello")
+
+
+def test_unparseable_output_raises(monkeypatch):
+    fake = FakeRun(stdout="not json")
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    with pytest.raises(RelayError, match="unparseable output"):
+        send_message("chan-1", "hello")
