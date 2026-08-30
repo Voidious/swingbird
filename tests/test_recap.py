@@ -1,7 +1,13 @@
 import pytest
 
 from swingbird import recap
-from swingbird.config import ChannelConfig, Config, LLMConfig, RelayConfig
+from swingbird.config import (
+    ChannelConfig,
+    Config,
+    LLMConfig,
+    OwnerConfig,
+    RelayConfig,
+)
 from swingbird.llm import LLMClient
 from swingbird.recap import RecapError, build_recap
 
@@ -14,6 +20,7 @@ CONFIG = Config(
         ChannelConfig(id="chan-1", name="backend", write=True, agents=("Codex",)),
         ChannelConfig(id="chan-2", name="frontend", write=False, agents=("Goose",)),
     ),
+    owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
 )
 
 

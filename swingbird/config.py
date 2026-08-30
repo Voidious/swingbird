@@ -38,10 +38,23 @@ class RelayConfig:
 
 
 @dataclass(frozen=True)
+class OwnerConfig:
+    """The one identity allowed to trigger dispatch/confirm/cancel (§5).
+
+    Everyone else's traffic in a subscribed channel -- including a coding
+    agent's own replies -- must never be routed as a command.
+    """
+
+    pubkey: str
+    name: str
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     relay: RelayConfig
     channels: tuple[ChannelConfig, ...]
+    owner: OwnerConfig
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -53,6 +66,7 @@ class Config:
 _LLM_REQUIRED = ("base_url", "model", "api_key_env")
 _RELAY_REQUIRED = ("url", "private_key_env")
 _CHANNEL_REQUIRED = ("id", "name", "write", "agents")
+_OWNER_REQUIRED = ("pubkey", "name")
 
 
 def load_config(path: str | Path) -> Config:
@@ -66,7 +80,10 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
 
     return Config(
-        llm=_parse_llm(raw), relay=_parse_relay(raw), channels=_parse_channels(raw)
+        llm=_parse_llm(raw),
+        relay=_parse_relay(raw),
+        channels=_parse_channels(raw),
+        owner=_parse_owner(raw),
     )
 
 
@@ -95,6 +112,16 @@ def _parse_relay(raw: dict) -> RelayConfig:
         url=section["url"],
         private_key_env=section["private_key_env"],
     )
+
+
+def _parse_owner(raw: dict) -> OwnerConfig:
+    section = raw.get("owner")
+    if not isinstance(section, dict):
+        raise ConfigError("config is missing required [owner] section")
+    for key in _OWNER_REQUIRED:
+        if not section.get(key):
+            raise ConfigError(f"[owner] is missing required field: {key}")
+    return OwnerConfig(pubkey=section["pubkey"], name=section["name"])
 
 
 def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:

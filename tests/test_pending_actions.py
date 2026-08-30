@@ -1,7 +1,13 @@
 import pytest
 
 from swingbird import outbound
-from swingbird.config import ChannelConfig, Config, LLMConfig, RelayConfig
+from swingbird.config import (
+    ChannelConfig,
+    Config,
+    LLMConfig,
+    OwnerConfig,
+    RelayConfig,
+)
 from swingbird.pending_actions import (
     DispatchProposal,
     PendingActionError,
@@ -19,6 +25,7 @@ CONFIG = Config(
         ChannelConfig(id="chan-1", name="backend", write=True, agents=("Codex",)),
         ChannelConfig(id="chan-2", name="frontend", write=False, agents=("Goose",)),
     ),
+    owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
 )
 
 DISPATCH_INTENT = Intent(

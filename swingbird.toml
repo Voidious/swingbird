@@ -7,6 +7,10 @@ api_key_env = "MOONSHOT_API_KEY"
 url = "wss://relay.example.com"
 private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
+[owner]
+pubkey = "3aa56890a2f6ca87d91c1dee08b10513ff1887d354fadb4c0b44d7999f4d6f2f"
+name = "Voidious"
+
 [[channels]]
 id = "0b572619-4062-4451-957f-2bb65a738b00"
 name = "swingbird-dev"

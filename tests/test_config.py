@@ -12,6 +12,10 @@ api_key_env = "MOONSHOT_API_KEY"
 url = "wss://relay.example.com"
 private_key_env = "SWINGBIRD_PRIVATE_KEY"
 
+[owner]
+pubkey = "owner-pubkey"
+name = "Voidious"
+
 [[channels]]
 id = "chan-1"
 name = "swingbird-dev"
@@ -34,6 +38,8 @@ def test_load_valid_config(tmp_path):
     assert config.llm.api_key_env == "MOONSHOT_API_KEY"
     assert config.relay.url == "wss://relay.example.com"
     assert config.relay.private_key_env == "SWINGBIRD_PRIVATE_KEY"
+    assert config.owner.pubkey == "owner-pubkey"
+    assert config.owner.name == "Voidious"
     assert len(config.channels) == 1
     channel = config.channels[0]
     assert channel.id == "chan-1"
@@ -129,6 +135,51 @@ write = true
 agents = []
 """
     with pytest.raises(ConfigError, match="private_key_env"):
+        load_config(write(tmp_path, text))
+
+
+def test_missing_owner_section(tmp_path):
+    text = """
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
+api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match=r"\[owner\] section"):
+        load_config(write(tmp_path, text))
+
+
+def test_owner_missing_required_field(tmp_path):
+    text = """
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k2.6"
+api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[owner]
+pubkey = "owner-pubkey"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match="name"):
         load_config(write(tmp_path, text))
 
 

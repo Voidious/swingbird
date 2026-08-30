@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from swingbird.config import ChannelConfig, Config, LLMConfig, RelayConfig
+from swingbird.config import (
+    ChannelConfig,
+    Config,
+    LLMConfig,
+    OwnerConfig,
+    RelayConfig,
+)
 from swingbird.llm import LLMClient
 from swingbird.router import Intent, IntentRouter, RouterError
 
@@ -19,6 +25,7 @@ CONFIG = Config(
         ChannelConfig(id="c1", name="backend", write=True, agents=("Codex",)),
         ChannelConfig(id="c2", name="frontend", write=False, agents=("Goose",)),
     ),
+    owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
 )
 
 
