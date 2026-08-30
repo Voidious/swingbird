@@ -3,20 +3,24 @@
 The daemon owns its own Nostr identity (BUZZ_PRIVATE_KEY in its own
 environment) and posts through the `buzz` CLI subprocess rather than
 talking to the relay directly for writes (§4.2, §7, open question #2).
-The inbound WebSocket client (a later step) handles reads.
+The persistent WebSocket client (inbound.py) handles live reads.
+`run_buzz_cli` is also reused by history.py for one-shot historical
+reads (recap doesn't need a live subscription), so both modules share
+one place that knows how to invoke and parse `buzz` CLI output.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+from typing import Any
 
 
 class RelayError(Exception):
     """Raised when a buzz-cli invocation fails or returns something unusable."""
 
 
-def _run_buzz(args: list[str], stdin: str | None = None) -> dict:
+def run_buzz_cli(args: list[str], stdin: str | None = None) -> Any:
     try:
         result = subprocess.run(
             ["buzz", *args],
@@ -42,7 +46,7 @@ def _run_buzz(args: list[str], stdin: str | None = None) -> dict:
 
 def open_dm(pubkey: str) -> str:
     """Open (or resurface) a DM conversation with `pubkey`; return its channel id."""
-    return _run_buzz(["dms", "open", "--pubkey", pubkey])["dm_id"]
+    return run_buzz_cli(["dms", "open", "--pubkey", pubkey])["dm_id"]
 
 
 def send_message(channel_id: str, content: str, reply_to: str | None = None) -> str:
@@ -54,7 +58,7 @@ def send_message(channel_id: str, content: str, reply_to: str | None = None) -> 
     args = ["messages", "send", "--channel", channel_id, "--content", "-"]
     if reply_to is not None:
         args += ["--reply-to", reply_to]
-    return _run_buzz(args, stdin=content)["event_id"]
+    return run_buzz_cli(args, stdin=content)["event_id"]
 
 
 def relay_dispatch(channel_id: str, instruction: str, requested_by: str) -> str:
