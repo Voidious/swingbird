@@ -3,6 +3,11 @@
 The config file lists the LLM backend and the project channels the daemon
 is allowed to read from and (optionally) write into, per the least-
 privilege design in the TPM agent design doc (§5, §7).
+
+The committed config holds shareable defaults only. A `.swingbird.toml`
+override file next to it, gitignored, can supply values that shouldn't be
+checked in (e.g. a private relay URL) -- same pattern as crispen's own
+pyproject.toml + `.crispen.toml`.
 """
 
 from __future__ import annotations
@@ -63,6 +68,19 @@ class Config:
         return None
 
 
+def _merge(base: dict, override: dict) -> dict:
+    """Overlay `override` onto `base`. Nested dicts merge key by key; any
+    other value (including lists, e.g. `[[channels]]`) is replaced outright.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 _LLM_REQUIRED = ("base_url", "model", "api_key_env")
 _RELAY_REQUIRED = ("url", "private_key_env")
 _CHANNEL_REQUIRED = ("id", "name", "write", "agents")
@@ -70,7 +88,11 @@ _OWNER_REQUIRED = ("pubkey", "name")
 
 
 def load_config(path: str | Path) -> Config:
-    """Load and validate the swingbird TOML config at `path`."""
+    """Load and validate the swingbird TOML config at `path`.
+
+    If a `.swingbird.toml` file exists alongside `path`, its sections are
+    merged on top of the base config (see module docstring).
+    """
     path = Path(path)
     try:
         raw = tomllib.loads(path.read_text())
@@ -78,6 +100,13 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"config file not found: {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+
+    override_path = path.parent / ".swingbird.toml"
+    if override_path != path and override_path.is_file():
+        try:
+            raw = _merge(raw, tomllib.loads(override_path.read_text()))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"invalid TOML in {override_path}: {exc}") from exc
 
     return Config(
         llm=_parse_llm(raw),

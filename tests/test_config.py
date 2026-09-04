@@ -262,6 +262,33 @@ agents = []
         load_config(write(tmp_path, text))
 
 
+def test_local_override_merges_onto_base(tmp_path):
+    path = write(tmp_path, VALID)
+    (tmp_path / ".swingbird.toml").write_text(
+        '[relay]\nurl = "wss://private-relay.example"\n'
+    )
+
+    config = load_config(path)
+
+    assert config.relay.url == "wss://private-relay.example"
+    assert config.relay.private_key_env == "SWINGBIRD_PRIVATE_KEY"
+    assert config.llm.model == "kimi-k2.6"
+
+
+def test_no_local_override_leaves_base_unchanged(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.relay.url == "wss://relay.example.com"
+
+
+def test_local_override_invalid_toml(tmp_path):
+    path = write(tmp_path, VALID)
+    (tmp_path / ".swingbird.toml").write_text("not valid ][ toml")
+
+    with pytest.raises(ConfigError, match=r"invalid TOML in.*\.swingbird\.toml"):
+        load_config(path)
+
+
 def test_duplicate_channel_name(tmp_path):
     text = """
 [llm]
