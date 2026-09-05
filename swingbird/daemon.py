@@ -13,6 +13,11 @@ Alongside the configured project channels, the daemon always subscribes to
 its own 1:1 DM with the owner (resolved via `outbound.open_dm`) -- Buzz DMs
 turn out to be ordinary #h-tagged channel events under the hood, so this
 needed no new wire format, just one more channel id in the subscription.
+
+The daemon also publishes its own presence (online while the event loop is
+running, offline on exit) so its availability dot in Buzz Desktop reflects
+whether it's actually up -- a deployed daemon that isn't running should
+never look identical to one that is.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import time
 from dataclasses import replace
 
 from swingbird import outbound
@@ -71,6 +77,13 @@ class Daemon:
         self._audit = audit
 
     async def run(self) -> None:
+        # Captured before open_dm()/connect() so the backlog cutoff covers
+        # the whole startup handshake -- both involve real network
+        # round-trips (buzz-cli subprocess, then WebSocket + NIP-42 auth),
+        # and a `since` taken only once subscribe() itself runs would
+        # silently drop any message the owner sends while the daemon is
+        # still coming up.
+        since = int(time.time())
         # Resolved here rather than in build_daemon() so construction stays
         # side-effect-free; this is the daemon's own DM with the owner,
         # opened (or resurfaced) fresh each run via the same buzz-cli path
@@ -78,9 +91,23 @@ class Daemon:
         dm_id = outbound.open_dm(self._config.owner.pubkey)
         channel_ids = [channel.id for channel in self._config.channels] + [dm_id]
         await self._inbound.connect()
-        await self._inbound.subscribe(channel_ids)
-        async for event in self._inbound.events():
-            await self._safe_handle(event)
+        await self._inbound.subscribe(channel_ids, since=since)
+        self._set_presence("online")
+        print("swingbird: connected and listening")
+        try:
+            async for event in self._inbound.events():
+                await self._safe_handle(event)
+        finally:
+            self._set_presence("offline")
+
+    def _set_presence(self, status: str) -> None:
+        # Best-effort: a presence hiccup is cosmetic (it only drives the
+        # availability dot in Buzz Desktop) and must never take the daemon
+        # down or block it from processing real events.
+        try:
+            outbound.set_presence(status)
+        except outbound.RelayError as exc:
+            print(f"swingbird: failed to set presence to {status!r}: {exc}")
 
     async def _safe_handle(self, event: dict) -> None:
         try:

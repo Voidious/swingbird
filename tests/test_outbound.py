@@ -3,7 +3,13 @@ import subprocess
 import pytest
 
 from swingbird import outbound
-from swingbird.outbound import RelayError, open_dm, relay_dispatch, send_message
+from swingbird.outbound import (
+    RelayError,
+    open_dm,
+    relay_dispatch,
+    send_message,
+    set_presence,
+)
 
 
 class FakeRun:
@@ -66,6 +72,21 @@ def test_open_dm_returns_dm_id(monkeypatch):
 
     assert open_dm("deadbeef") == "dm-chan-1"
     assert fake.calls[0]["args"] == ["buzz", "dms", "open", "--pubkey", "deadbeef"]
+
+
+def test_set_presence_posts_status(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-5", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    set_presence("online")
+
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "users",
+        "set-presence",
+        "--status",
+        "online",
+    ]
 
 
 def test_relay_dispatch_prefixes_attribution(monkeypatch):

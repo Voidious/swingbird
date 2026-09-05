@@ -49,6 +49,12 @@ def open_dm(pubkey: str) -> str:
     return run_buzz_cli(["dms", "open", "--pubkey", pubkey])["dm_id"]
 
 
+def set_presence(status: str) -> None:
+    """Publish the daemon's own presence (kind:20001) so its availability dot
+    in Buzz Desktop reflects whether it's actually up, not just deployed."""
+    run_buzz_cli(["users", "set-presence", "--status", status])
+
+
 def send_message(channel_id: str, content: str, reply_to: str | None = None) -> str:
     """Post `content` into `channel_id`; return the new event id.
 

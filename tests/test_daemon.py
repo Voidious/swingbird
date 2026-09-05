@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 
 import pytest
 
@@ -54,12 +55,14 @@ class FakeInbound:
         self._events = events
         self.connected = False
         self.subscribed = None
+        self.since = None
 
     async def connect(self):
         self.connected = True
 
-    async def subscribe(self, channel_ids):
+    async def subscribe(self, channel_ids, since=None):
         self.subscribed = channel_ids
+        self.since = since
 
     async def events(self):
         for event in self._events:
@@ -275,6 +278,8 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
 ):
     sent = _sent(monkeypatch)
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    presence_calls = []
+    monkeypatch.setattr(outbound, "set_presence", presence_calls.append)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     malformed = _event(event_id="bad-1", tags=[])
     good = _event(event_id="good-1")
@@ -291,6 +296,7 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
     assert inbound.subscribed == ["chan-1", "chan-2", "dm-chan"]
     assert sent == [(("chan-1", expected_reply), {"reply_to": "good-1"})]
     assert "bad-1" in capsys.readouterr().out
+    assert presence_calls == ["online", "offline"]
 
 
 def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeypatch):
@@ -299,6 +305,7 @@ def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeyp
     monkeypatch.setattr(
         outbound, "open_dm", lambda pubkey: calls.append(pubkey) or "dm-chan"
     )
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     dm_event = _event(tags=[["h", "dm-chan"]], event_id="dm-evt")
     inbound = FakeInbound([dm_event])
@@ -310,6 +317,55 @@ def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeyp
     (args, kwargs) = sent[0]
     assert args[0] == "dm-chan"
     assert kwargs == {"reply_to": "dm-evt"}
+
+
+def _run_daemon(tmp_path, llm=None, inbound=None):
+    if llm is None:
+        llm = FakeLLM(json_response={"intent": "chit_chat"})
+    if inbound is None:
+        inbound = FakeInbound([])
+    bot = _daemon(tmp_path, llm, inbound=inbound)
+
+    asyncio.run(bot.run())
+    return bot, inbound
+
+
+def test_run_captures_since_before_the_startup_network_round_trips(
+    tmp_path, monkeypatch
+):
+    """A `since` taken only once `subscribe()` itself runs would exclude any
+    message sent while `open_dm()`/`connect()` are still in flight -- both
+    are real round-trips (a buzz-cli subprocess, then a WebSocket + NIP-42
+    handshake), so the cutoff must be captured before either starts."""
+    before = int(time.time())
+
+    def _slow_open_dm(pubkey):
+        time.sleep(1.1)
+        return "dm-chan"
+
+    monkeypatch.setattr(outbound, "open_dm", _slow_open_dm)
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    (_, inbound) = _run_daemon(tmp_path)
+
+    after = int(time.time())
+    assert before <= inbound.since <= before + 1
+    assert inbound.since < after
+
+
+def test_presence_set_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
+    sent = _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+
+    def _fail(status):
+        raise outbound.RelayError("boom")
+
+    monkeypatch.setattr(outbound, "set_presence", _fail)
+    _run_daemon(tmp_path)
+
+    assert sent == []
+    out = capsys.readouterr().out
+    assert "online" in out
+    assert "offline" in out
 
 
 def test_build_daemon_wires_config_llm_and_inbound(tmp_path, monkeypatch):
