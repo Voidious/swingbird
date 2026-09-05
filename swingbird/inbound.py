@@ -60,12 +60,26 @@ class InboundClient:
         await self._wait_for_ok(auth_event["id"])
 
     async def subscribe(
-        self, channel_ids: list[str], sub_id: str = "swingbird"
+        self,
+        channel_ids: list[str],
+        sub_id: str = "swingbird",
+        since: int | None = None,
     ) -> None:
-        """Subscribe to channel-message events tagged with any of `channel_ids`."""
+        """Subscribe to channel-message events tagged with any of `channel_ids`.
+
+        `since` excludes the relay's stored backlog -- without it, every
+        historical message in a channel with history arrives indistinguishable
+        from a live one, and the owner-pubkey gate in `daemon.py` would happily
+        replay years of old messages as fresh commands on every restart.
+        Defaults to "now" so callers get backlog-free behavior by default;
+        tests that want deterministic filters can pass an explicit value.
+        """
         if self._ws is None:
             raise InboundError("subscribe() called before connect()")
-        req = ["REQ", sub_id, {"kinds": [CHANNEL_MESSAGE_KIND], "#h": channel_ids}]
+        if since is None:
+            since = int(time.time())
+        filters = {"kinds": [CHANNEL_MESSAGE_KIND], "#h": channel_ids, "since": since}
+        req = ["REQ", sub_id, filters]
         await self._ws.send(json.dumps(req))
 
     async def events(self) -> AsyncIterator[dict]:

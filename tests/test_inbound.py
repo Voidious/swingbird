@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -138,10 +139,29 @@ def test_connect_times_out_waiting_for_challenge(monkeypatch):
 
 def test_subscribe_sends_req_with_filters(monkeypatch):
     client, ws = _connected_client(monkeypatch)
-    asyncio.run(client.subscribe(["chan-1", "chan-2"], sub_id="sub-1"))
+    asyncio.run(client.subscribe(["chan-1", "chan-2"], sub_id="sub-1", since=1000))
 
     req = json.loads(ws.sent[-1])
-    assert req == ["REQ", "sub-1", {"kinds": [9], "#h": ["chan-1", "chan-2"]}]
+    assert req == [
+        "REQ",
+        "sub-1",
+        {"kinds": [9], "#h": ["chan-1", "chan-2"], "since": 1000},
+    ]
+
+
+def test_subscribe_defaults_since_to_now_to_exclude_backlog(monkeypatch):
+    """Without an explicit `since`, a relay's entire matching history would
+    arrive indistinguishable from live events -- the daemon's owner-pubkey
+    gate would then replay every old owner message as a fresh command on
+    every restart. Defaulting to "now" is what prevents that.
+    """
+    client, ws = _connected_client(monkeypatch)
+    before = int(time.time())
+    asyncio.run(client.subscribe(["chan-1"]))
+    after = int(time.time())
+
+    req = json.loads(ws.sent[-1])
+    assert before <= req[2]["since"] <= after
 
 
 def test_subscribe_before_connect_raises():
