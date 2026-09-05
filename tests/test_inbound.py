@@ -181,18 +181,15 @@ def test_events_before_connect_raises():
         asyncio.run(_drain())
 
 
-def test_events_filters_non_events_duplicates_and_bad_signatures(monkeypatch):
+def test_events_filters_non_events_and_duplicates(monkeypatch):
     client, ws = _make_client(monkeypatch)
     client._ws = ws  # skip auth; only exercising events() here
 
     good = sign_event(bytes.fromhex(PRIVATE_KEY_HEX), 1000, 9, [["h", "chan-1"]], "hi")
-    bad_sig = dict(good)
-    bad_sig["content"] = "tampered"
 
     ws.push(["EOSE", "sub-1"])
     ws.push(["EVENT", "sub-1", good])
     ws.push(["EVENT", "sub-1", good])  # duplicate, should be skipped
-    ws.push(["EVENT", "sub-1", bad_sig])  # invalid signature, should be skipped
 
     async def _collect():
         return [event async for event in client.events()]
@@ -200,6 +197,55 @@ def test_events_filters_non_events_duplicates_and_bad_signatures(monkeypatch):
     events = asyncio.run(_collect())
 
     assert events == [good]
+
+
+def test_events_drops_and_logs_an_invalid_signature(monkeypatch, capsys):
+    client, ws = _make_client(monkeypatch)
+    client._ws = ws  # skip auth; only exercising events() here
+
+    good = sign_event(bytes.fromhex(PRIVATE_KEY_HEX), 1000, 9, [["h", "chan-1"]], "hi")
+    # A distinct id (different content) so this isn't caught by the dedup
+    # check first -- only the signature itself is wrong.
+    forged = sign_event(
+        bytes.fromhex(PRIVATE_KEY_HEX), 1001, 9, [["h", "chan-1"]], "bye"
+    )
+    forged["sig"] = "00" * 64
+
+    ws.push(["EVENT", "sub-1", forged])
+    ws.push(["EVENT", "sub-1", good])
+
+    async def _collect():
+        return [event async for event in client.events()]
+
+    events = asyncio.run(_collect())
+
+    assert events == [good]
+    assert forged["id"] in capsys.readouterr().out
+
+
+def test_events_surfaces_notice_and_closed_frames(monkeypatch, capsys):
+    """A relay can reject part of a multi-channel subscription (e.g.
+    "restricted: not a channel member" for one #h value) while still
+    delivering events for the rest -- that must be visible, not silently
+    indistinguishable from "no messages have arrived yet"."""
+    client, ws = _make_client(monkeypatch)
+    client._ws = ws  # skip auth; only exercising events() here
+
+    good = sign_event(bytes.fromhex(PRIVATE_KEY_HEX), 1000, 9, [["h", "chan-1"]], "hi")
+
+    ws.push(["NOTICE", "auth-required: authenticate before subscribing"])
+    ws.push(["CLOSED", "swingbird", "restricted: not a channel member"])
+    ws.push(["EVENT", "sub-1", good])
+
+    async def _collect():
+        return [event async for event in client.events()]
+
+    events = asyncio.run(_collect())
+
+    assert events == [good]
+    out = capsys.readouterr().out
+    assert "auth-required" in out
+    assert "restricted: not a channel member" in out
 
 
 def test_close_closes_open_socket(monkeypatch):

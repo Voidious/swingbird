@@ -90,6 +90,7 @@ class Daemon:
         # outbound.py already uses for every other write.
         dm_id = outbound.open_dm(self._config.owner.pubkey)
         channel_ids = [channel.id for channel in self._config.channels] + [dm_id]
+        print(f"swingbird: resolved DM channel {dm_id!r}; subscribing to {channel_ids}")
         await self._inbound.connect()
         await self._inbound.subscribe(channel_ids, since=since)
         self._set_presence("online")
@@ -116,7 +117,11 @@ class Daemon:
             print(f"swingbird: failed to handle event {event.get('id')}: {exc}")
 
     async def _handle_event(self, event: dict) -> None:
+        print(f"swingbird: event {event.get('id')} from {event.get('pubkey')}")
         if event["pubkey"] != self._config.owner.pubkey:
+            print(
+                f"swingbird: ignoring -- not from owner ({self._config.owner.pubkey})"
+            )
             return
         channel_id = _channel_of(event)
         reply = self._process(event, channel_id)

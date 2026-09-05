@@ -83,15 +83,30 @@ class InboundClient:
         await self._ws.send(json.dumps(req))
 
     async def events(self) -> AsyncIterator[dict]:
-        """Yield verified, de-duplicated events as they arrive on the subscription."""
+        """Yield verified, de-duplicated events as they arrive on the subscription.
+
+        `NOTICE`/`CLOSED` frames are surfaced (printed) rather than silently
+        dropped -- a relay can reject part of a multi-channel subscription
+        (e.g. "restricted: not a channel member" for one channel_id) while
+        still delivering events for the rest, and that would otherwise look
+        identical to "no messages arrived yet" from the caller's side.
+        """
         if self._ws is None:
             raise InboundError("events() called before connect()")
         async for raw in self._ws:
             message = json.loads(raw)
+            if message[0] in ("NOTICE", "CLOSED"):
+                print(f"swingbird: relay sent {message}")
+                continue
             if message[0] != "EVENT":
                 continue
             event = message[2]
-            if event["id"] in self._seen_ids or not verify_event(event):
+            if event["id"] in self._seen_ids:
+                continue
+            if not verify_event(event):
+                print(
+                    f"swingbird: dropping event {event.get('id')} -- failed verification"
+                )
                 continue
             self._seen_ids.add(event["id"])
             yield event
