@@ -274,6 +274,7 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
     tmp_path, monkeypatch, capsys
 ):
     sent = _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     malformed = _event(event_id="bad-1", tags=[])
     good = _event(event_id="good-1")
@@ -287,9 +288,28 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
         "an instruction to a project channel."
     )
     assert inbound.connected is True
-    assert inbound.subscribed == ["chan-1", "chan-2"]
+    assert inbound.subscribed == ["chan-1", "chan-2", "dm-chan"]
     assert sent == [(("chan-1", expected_reply), {"reply_to": "good-1"})]
     assert "bad-1" in capsys.readouterr().out
+
+
+def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        outbound, "open_dm", lambda pubkey: calls.append(pubkey) or "dm-chan"
+    )
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    dm_event = _event(tags=[["h", "dm-chan"]], event_id="dm-evt")
+    inbound = FakeInbound([dm_event])
+    bot = _daemon(tmp_path, llm, inbound=inbound)
+
+    asyncio.run(bot.run())
+
+    assert calls == [OWNER_PUBKEY]
+    (args, kwargs) = sent[0]
+    assert args[0] == "dm-chan"
+    assert kwargs == {"reply_to": "dm-evt"}
 
 
 def test_build_daemon_wires_config_llm_and_inbound(tmp_path, monkeypatch):

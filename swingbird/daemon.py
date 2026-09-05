@@ -8,6 +8,11 @@ dispatch/confirm/cancel. A single bad or unexpected event never kills the
 daemon: known, safety-relevant failures (an ambiguous target, a bad LLM
 response, an unwritable channel, ...) become a reply to the sender instead
 of a crash, and anything truly unexpected is logged and the loop continues.
+
+Alongside the configured project channels, the daemon always subscribes to
+its own 1:1 DM with the owner (resolved via `outbound.open_dm`) -- Buzz DMs
+turn out to be ordinary #h-tagged channel events under the hood, so this
+needed no new wire format, just one more channel id in the subscription.
 """
 
 from __future__ import annotations
@@ -66,7 +71,12 @@ class Daemon:
         self._audit = audit
 
     async def run(self) -> None:
-        channel_ids = [channel.id for channel in self._config.channels]
+        # Resolved here rather than in build_daemon() so construction stays
+        # side-effect-free; this is the daemon's own DM with the owner,
+        # opened (or resurfaced) fresh each run via the same buzz-cli path
+        # outbound.py already uses for every other write.
+        dm_id = outbound.open_dm(self._config.owner.pubkey)
+        channel_ids = [channel.id for channel in self._config.channels] + [dm_id]
         await self._inbound.connect()
         await self._inbound.subscribe(channel_ids)
         async for event in self._inbound.events():
