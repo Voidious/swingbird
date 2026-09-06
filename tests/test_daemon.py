@@ -75,13 +75,13 @@ def _event(pubkey=OWNER_PUBKEY, content="hi", tags=None, event_id="evt-1"):
         "pubkey": pubkey,
         "created_at": 1000,
         "kind": 9,
-        "tags": [["p", "some-pubkey"], ["h", "chan-1"]] if tags is None else tags,
+        "tags": [["p", "some-pubkey"], ["h", "dm-chan"]] if tags is None else tags,
         "content": content,
         "sig": "sig",
     }
 
 
-def _daemon(tmp_path, llm, inbound=None, store=None):
+def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan"):
     audit = AuditLog(tmp_path / "audit.jsonl")
     router = IntentRouter(llm, CONFIG, audit=audit)
     return Daemon(
@@ -91,6 +91,7 @@ def _daemon(tmp_path, llm, inbound=None, store=None):
         store or PendingActionStore(),
         llm,
         audit,
+        dm_id=dm_id,
     )
 
 
@@ -108,12 +109,43 @@ def _handle_event_and_get_first_sent(tmp_path, llm, sent, event=None, store=None
     return sent[0]
 
 
-def test_ignores_events_not_from_owner(tmp_path, monkeypatch):
+def _setup_ignored_event_test(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     bot = _daemon(tmp_path, llm)
+    return sent, llm, bot
+
+
+def test_ignores_events_not_from_owner(tmp_path, monkeypatch):
+    sent, llm, bot = _setup_ignored_event_test(tmp_path, monkeypatch)
 
     asyncio.run(bot._handle_event(_event(pubkey=OTHER_PUBKEY)))
+
+    assert sent == []
+    assert llm.calls == []
+
+
+def test_ignores_owner_messages_in_project_channels(tmp_path, monkeypatch):
+    """The daemon only acts on commands sent via its DM with the owner --
+    an @mention or plain message from the owner in a project channel (e.g.
+    swingbird-dev) must never be misread as an instruction. Project channels
+    stay subscribed for recap purposes only."""
+    sent, llm, bot = _setup_ignored_event_test(tmp_path, monkeypatch)
+
+    asyncio.run(bot._handle_event(_event(tags=[["h", "chan-1"]])))
+
+    assert sent == []
+    assert llm.calls == []
+
+
+def test_ignores_events_before_the_dm_channel_is_resolved(tmp_path, monkeypatch):
+    """Before `run()` resolves the DM id, `_dm_id` is None -- no channel can
+    match, so everything is ignored rather than misrouted."""
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    bot = _daemon(tmp_path, llm, dm_id=None)
+
+    asyncio.run(bot._handle_event(_event(tags=[["h", "dm-chan"]])))
 
     assert sent == []
     assert llm.calls == []
@@ -126,7 +158,7 @@ def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch)
     sent = _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "recap"}, text_response="here's the recap")
     (args, kwargs) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
-    assert args == ("chan-1", "here's the recap")
+    assert args == ("dm-chan", "here's the recap")
     assert kwargs == {"reply_to": "evt-1"}
 
 
@@ -146,8 +178,8 @@ def test_dispatch_proposes_and_asks_for_confirmation(tmp_path, monkeypatch):
         "About to relay to backend (for Codex): 'fix the login timeout bug'. "
         "Confirm to send, or cancel."
     )
-    assert args == ("chan-1", expected_reply)
-    assert store.get("chan-1") is not None
+    assert args == ("dm-chan", expected_reply)
+    assert store.get("dm-chan") is not None
 
 
 def test_dispatch_missing_target_asks_a_clarifying_question(tmp_path, monkeypatch):
@@ -158,7 +190,7 @@ def test_dispatch_missing_target_asks_a_clarifying_question(tmp_path, monkeypatc
     )
     (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent, store=store)
     assert "which project channel" in args[1]
-    assert store.get("chan-1") is None
+    assert store.get("dm-chan") is None
 
 
 def test_clarify_response_reuses_the_dispatch_path(tmp_path, monkeypatch):
@@ -176,7 +208,7 @@ def test_clarify_response_reuses_the_dispatch_path(tmp_path, monkeypatch):
 
     asyncio.run(bot._handle_event(_event()))
 
-    assert store.get("chan-1") is not None
+    assert store.get("dm-chan") is not None
 
 
 def test_confirm_posts_and_replies(tmp_path, monkeypatch):
@@ -204,8 +236,8 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
 
     assert relayed == [("chan-1", "fix it", "Voidious")]
     (args, _) = sent[-1]
-    assert args == ("chan-1", "Confirmed and relayed (event posted-evt).")
-    assert store.get("chan-1") is None
+    assert args == ("dm-chan", "Confirmed and relayed (event posted-evt).")
+    assert store.get("dm-chan") is None
 
 
 def test_confirm_without_a_pending_action_is_safe(tmp_path, monkeypatch):
@@ -216,8 +248,8 @@ def test_confirm_without_a_pending_action_is_safe(tmp_path, monkeypatch):
     llm = FakeLLM(json_response={"intent": "confirm"})
     (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
     assert args == (
-        "chan-1",
-        "Couldn't do that: no pending action for thread 'chan-1'",
+        "dm-chan",
+        "Couldn't do that: no pending action for thread 'dm-chan'",
     )
 
 
@@ -242,8 +274,8 @@ def test_cancel_discards_without_posting(tmp_path, monkeypatch):
     asyncio.run(bot._handle_event(_event(event_id="evt-2")))
 
     (args, _) = sent[-1]
-    assert args == ("chan-1", "Cancelled -- nothing was sent.")
-    assert store.get("chan-1") is None
+    assert args == ("dm-chan", "Cancelled -- nothing was sent.")
+    assert store.get("dm-chan") is None
 
 
 def test_chit_chat_reply(tmp_path, monkeypatch):
@@ -282,7 +314,7 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
     monkeypatch.setattr(outbound, "set_presence", presence_calls.append)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     malformed = _event(event_id="bad-1", tags=[])
-    good = _event(event_id="good-1")
+    good = _event(event_id="good-1", tags=[["h", "dm-chan"]])
     inbound = FakeInbound([malformed, good])
     bot = _daemon(tmp_path, llm, inbound=inbound)
 
@@ -294,7 +326,7 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
     )
     assert inbound.connected is True
     assert inbound.subscribed == ["chan-1", "chan-2", "dm-chan"]
-    assert sent == [(("chan-1", expected_reply), {"reply_to": "good-1"})]
+    assert sent == [(("dm-chan", expected_reply), {"reply_to": "good-1"})]
     assert "bad-1" in capsys.readouterr().out
     assert presence_calls == ["online", "offline"]
 

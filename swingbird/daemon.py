@@ -1,13 +1,18 @@
 """Daemon: wires the inbound relay client to the router, pending-action
 store, and audit log, and enforces the safety invariants from §5.
 
-Only events from `config.owner.pubkey` are ever routed as a command --
-everyone else's traffic in a subscribed channel (including a coding agent's
-own replies) is ignored here, so it can never be misread as a
-dispatch/confirm/cancel. A single bad or unexpected event never kills the
-daemon: known, safety-relevant failures (an ambiguous target, a bad LLM
-response, an unwritable channel, ...) become a reply to the sender instead
-of a crash, and anything truly unexpected is logged and the loop continues.
+Only events from `config.owner.pubkey`, posted in the daemon's own DM with
+the owner, are ever routed as a command. Project channels are subscribed to
+for recap purposes only -- even a message from the owner there (e.g. an
+@mention) is ignored as a command, so ordinary conversation in a dev channel
+can never be misread as a dispatch/confirm/cancel. (Reacting to explicit
+@mentions in project channels may be worth adding later; for now the DM is
+the only interaction surface.) Everyone else's traffic in a subscribed
+channel (including a coding agent's own replies) is ignored here too. A
+single bad or unexpected event never kills the daemon: known, safety-relevant
+failures (an ambiguous target, a bad LLM response, an unwritable channel,
+...) become a reply to the sender instead of a crash, and anything truly
+unexpected is logged and the loop continues.
 
 Alongside the configured project channels, the daemon always subscribes to
 its own 1:1 DM with the owner (resolved via `outbound.open_dm`) -- Buzz DMs
@@ -68,6 +73,7 @@ class Daemon:
         store: PendingActionStore,
         llm: LLMClient,
         audit: AuditLog,
+        dm_id: str | None = None,
     ) -> None:
         self._config = config
         self._inbound = inbound
@@ -75,6 +81,12 @@ class Daemon:
         self._store = store
         self._llm = llm
         self._audit = audit
+        # Resolved fresh in run() via outbound.open_dm(); only events posted
+        # in this channel are ever routed as a command (see module
+        # docstring). None until run() sets it, which means no channel can
+        # match and every event is ignored -- the safe default for a daemon
+        # that hasn't finished starting up.
+        self._dm_id = dm_id
 
     async def run(self) -> None:
         # Captured before open_dm()/connect() so the backlog cutoff covers
@@ -88,9 +100,11 @@ class Daemon:
         # side-effect-free; this is the daemon's own DM with the owner,
         # opened (or resurfaced) fresh each run via the same buzz-cli path
         # outbound.py already uses for every other write.
-        dm_id = outbound.open_dm(self._config.owner.pubkey)
-        channel_ids = [channel.id for channel in self._config.channels] + [dm_id]
-        print(f"swingbird: resolved DM channel {dm_id!r}; subscribing to {channel_ids}")
+        self._dm_id = outbound.open_dm(self._config.owner.pubkey)
+        channel_ids = [channel.id for channel in self._config.channels] + [self._dm_id]
+        print(
+            f"swingbird: resolved DM channel {self._dm_id!r}; subscribing to {channel_ids}"
+        )
         await self._inbound.connect()
         await self._inbound.subscribe(channel_ids, since=since)
         self._set_presence("online")
@@ -124,6 +138,11 @@ class Daemon:
             )
             return
         channel_id = _channel_of(event)
+        if channel_id != self._dm_id:
+            print(
+                f"swingbird: ignoring -- not the owner's DM channel ({self._dm_id!r})"
+            )
+            return
         reply = self._process(event, channel_id)
         try:
             outbound.send_message(channel_id, reply, reply_to=event["id"])
