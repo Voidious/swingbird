@@ -13,6 +13,9 @@ dependencies = [
 [tool.ruff]
 line-length = 88
 
+[tool.ruff.lint]
+extend-select = ["E501"]
+
 [tool.pytest.ini_options]
 addopts = "--cov=swingbird --cov-branch --cov-fail-under=100"
 pythonpath = ["."]

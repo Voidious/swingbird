@@ -103,7 +103,8 @@ class Daemon:
         self._dm_id = outbound.open_dm(self._config.owner.pubkey)
         channel_ids = [channel.id for channel in self._config.channels] + [self._dm_id]
         print(
-            f"swingbird: resolved DM channel {self._dm_id!r}; subscribing to {channel_ids}"
+            f"swingbird: resolved DM channel {self._dm_id!r}; "
+            f"subscribing to {channel_ids}"
         )
         await self._inbound.connect()
         await self._inbound.subscribe(channel_ids, since=since)

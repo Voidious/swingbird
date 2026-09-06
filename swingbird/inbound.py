@@ -105,7 +105,8 @@ class InboundClient:
                 continue
             if not verify_event(event):
                 print(
-                    f"swingbird: dropping event {event.get('id')} -- failed verification"
+                    f"swingbird: dropping event {event.get('id')} -- "
+                    "failed verification"
                 )
                 continue
             self._seen_ids.add(event["id"])

@@ -43,7 +43,9 @@ Known project channels and their agents:
 {channel_list}
 
 Respond with JSON only, matching this shape:
-{{"intent": "<one of the intents above>", "channel": "<channel name or null>", "target_agent": "<agent name or null>", "message": "<instruction text to relay, or null>"}}
+{{"intent": "<one of the intents above>", "channel": "<channel name or null>",
+"target_agent": "<agent name or null>",
+"message": "<instruction text to relay, or null>"}}
 
 Only set "channel" or "target_agent" to a name from the known list above,
 and only when the message clearly identifies it. If the message names a
