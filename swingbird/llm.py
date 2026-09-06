@@ -41,12 +41,15 @@ class LLMClient:
 
         Forces JSON-mode output on the backend so callers (the intent
         router, dispatch-proposal builder, etc.) get structured data
-        back instead of having to parse free text themselves.
+        back instead of having to parse free text themselves. Some
+        models (e.g. Moonshot Kimi) still wrap the JSON in a Markdown
+        code fence despite JSON-mode being forced, so that's stripped
+        before parsing rather than treated as invalid output.
         """
         response = self._chat(messages, response_format={"type": "json_object"})
         content = response.choices[0].message.content or ""
         try:
-            return json.loads(content)
+            return json.loads(_strip_code_fence(content))
         except json.JSONDecodeError as exc:
             raise LLMError(f"LLM did not return valid JSON: {content!r}") from exc
 
@@ -57,3 +60,14 @@ class LLMClient:
             )
         except openai.OpenAIError as exc:
             raise LLMError(f"LLM request failed: {exc}") from exc
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a wrapping ```json ... ``` (or ``` ... ```) code fence, if present."""
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text[3:-3]
+        first_line, _, rest = text.partition("\n")
+        if first_line.strip().isalpha():
+            text = rest
+    return text.strip()

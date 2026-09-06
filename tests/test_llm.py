@@ -64,13 +64,21 @@ def test_complete_handles_none_content():
     assert client.complete([{"role": "user", "content": "hi"}]) == ""
 
 
-def test_complete_json_parses_response():
-    fake = FakeOpenAI(content='{"intent": "recap"}')
+def _complete_json_test(fake, message=None, expected=None):
+    if message is None:
+        message = [{"role": "user", "content": "what's up?"}]
+    if expected is None:
+        expected = {"intent": "recap"}
     client = LLMClient(CONFIG, client=fake)
 
-    result = client.complete_json([{"role": "user", "content": "what's up?"}])
+    result = client.complete_json(message)
 
-    assert result == {"intent": "recap"}
+    assert result == expected
+
+
+def test_complete_json_parses_response():
+    fake = FakeOpenAI(content='{"intent": "recap"}')
+    _complete_json_test(fake)
     assert fake.chat.completions.calls[0]["response_format"] == {"type": "json_object"}
 
 
@@ -80,6 +88,16 @@ def test_complete_json_raises_on_invalid_json():
 
     with pytest.raises(LLMError, match="did not return valid JSON"):
         client.complete_json([{"role": "user", "content": "what's up?"}])
+
+
+def test_complete_json_strips_labeled_code_fence():
+    fake = FakeOpenAI(content='```json\n{"intent": "recap"}\n```')
+    _complete_json_test(fake)
+
+
+def test_complete_json_strips_unlabeled_code_fence():
+    fake = FakeOpenAI(content='```\n{"intent": "recap"}\n```')
+    _complete_json_test(fake)
 
 
 def test_chat_wraps_openai_errors():
