@@ -103,7 +103,7 @@ def test_confirm_dispatch_posts_and_clears(monkeypatch):
     event_id = confirm_dispatch(store, "thread-1", "Voidious")
 
     assert event_id == "evt-1"
-    assert calls == [("chan-1", "fix the login timeout bug", "Voidious")]
+    assert calls == [("chan-1", "fix the login timeout bug", "Voidious", "Codex")]
     assert store.get("thread-1") is None
 
 

@@ -67,12 +67,23 @@ def send_message(channel_id: str, content: str, reply_to: str | None = None) -> 
     return run_buzz_cli(args, stdin=content)["event_id"]
 
 
-def relay_dispatch(channel_id: str, instruction: str, requested_by: str) -> str:
+def relay_dispatch(
+    channel_id: str,
+    instruction: str,
+    requested_by: str,
+    target_agent: str | None = None,
+) -> str:
     """Post `instruction` into `channel_id`, attributed to `requested_by`.
 
     Per §5: a dispatched instruction must make clear it's relaying the
     user's own directive, not the TPM agent's own initiative, so the
     receiving coding agent treats it as an actual instruction.
+
+    Buzz agents only react to @mentions by default, so when a
+    `target_agent` was identified the relayed message leads with an
+    `@name` mention -- otherwise it's relayed but nothing in the channel
+    is guaranteed to ever look at it.
     """
-    content = f"Relaying instruction from {requested_by}: {instruction}"
+    prefix = f"@{target_agent} " if target_agent else ""
+    content = f"{prefix}Relaying instruction from {requested_by}: {instruction}"
     return send_message(channel_id, content)

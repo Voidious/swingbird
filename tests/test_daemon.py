@@ -234,7 +234,7 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
     bot._llm._json_response = {"intent": "confirm"}
     asyncio.run(bot._handle_event(_event(event_id="evt-2")))
 
-    assert relayed == [("chan-1", "fix it", "Voidious")]
+    assert relayed == [("chan-1", "fix it", "Voidious", "Codex")]
     (args, _) = sent[-1]
     assert args == ("dm-chan", "Confirmed and relayed (event posted-evt).")
     assert store.get("dm-chan") is None

@@ -101,6 +101,20 @@ def test_relay_dispatch_prefixes_attribution(monkeypatch):
     )
 
 
+def test_relay_dispatch_mentions_target_agent(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-5", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    event_id = relay_dispatch(
+        "chan-1", "fix the login timeout bug", "Voidious", target_agent="Codex"
+    )
+
+    assert event_id == "evt-5"
+    assert fake.calls[0]["input"] == (
+        "@Codex Relaying instruction from Voidious: fix the login timeout bug"
+    )
+
+
 def test_buzz_cli_not_found(monkeypatch):
     fake = FakeRun(error=FileNotFoundError())
     monkeypatch.setattr(outbound.subprocess, "run", fake)
