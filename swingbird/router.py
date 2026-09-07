@@ -51,7 +51,17 @@ Only set "channel" or "target_agent" to a name from the known list above,
 and only when the message clearly identifies it. If the message names a
 channel or agent that isn't in the list, or is ambiguous about which one
 it means, leave that field null rather than guessing -- do not invent or
-assume a target."""
+assume a target.
+
+"message" must preserve the user's own wording as closely as possible --
+extract it, don't paraphrase or rewrite it. In particular, never replace a
+project, channel, or agent name the user used with "you" or another
+second-person pronoun just because the message is being routed to that
+same target. The user may be asking a question *about* something named
+that also happens to be a routing target (e.g. "is swingbird written in
+Python", asking about the swingbird project) rather than addressing it
+directly -- collapsing the name into "you" erases that distinction for
+the agent that receives the relayed message."""
 
 
 class RouterError(Exception):
