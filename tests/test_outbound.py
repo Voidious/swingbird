@@ -63,6 +63,18 @@ def test_send_message_includes_reply_to(monkeypatch):
     )
 
 
+def test_send_message_includes_mentions(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-2b", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    send_message("chan-1", "hello", mentions=["pubkey-a", "pubkey-b"])
+
+    args = fake.calls[0]["args"]
+    assert args.count("--mention") == 2
+    assert args[args.index("--mention") + 1] == "pubkey-a"
+    assert args[-1] == "pubkey-b"
+
+
 def test_open_dm_returns_dm_id(monkeypatch):
     fake = FakeRun(
         stdout='{"event_id": "evt-3", "accepted": true, "message": "", '
@@ -93,12 +105,24 @@ def test_relay_dispatch_prefixes_attribution(monkeypatch):
     fake = FakeRun(stdout='{"event_id": "evt-4", "accepted": true, "message": ""}')
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
-    event_id = relay_dispatch("chan-1", "fix the login timeout bug", "Voidious")
+    event_id = relay_dispatch(
+        "chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey"
+    )
 
     assert event_id == "evt-4"
     assert fake.calls[0]["input"] == (
-        "Relaying instruction from Voidious: fix the login timeout bug"
+        "Relaying instruction from @Voidious: fix the login timeout bug"
     )
+
+
+def test_relay_dispatch_mentions_the_requester(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-4b", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    relay_dispatch("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey")
+
+    args = fake.calls[0]["args"]
+    assert args[args.index("--mention") + 1] == "owner-pubkey"
 
 
 def test_relay_dispatch_mentions_target_agent(monkeypatch):
@@ -106,12 +130,16 @@ def test_relay_dispatch_mentions_target_agent(monkeypatch):
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
     event_id = relay_dispatch(
-        "chan-1", "fix the login timeout bug", "Voidious", target_agent="Codex"
+        "chan-1",
+        "fix the login timeout bug",
+        "Voidious",
+        "owner-pubkey",
+        target_agent="Codex",
     )
 
     assert event_id == "evt-5"
     assert fake.calls[0]["input"] == (
-        "@Codex Relaying instruction from Voidious: fix the login timeout bug"
+        "@Codex Relaying instruction from @Voidious: fix the login timeout bug"
     )
 
 

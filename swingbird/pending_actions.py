@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from swingbird import outbound
 from swingbird.audit import AuditLog
-from swingbird.config import Config
+from swingbird.config import Config, OwnerConfig
 from swingbird.router import Intent
 
 
@@ -120,13 +120,17 @@ def propose_dispatch(
 def confirm_dispatch(
     store: PendingActionStore,
     thread_id: str | None,
-    requested_by: str,
+    owner: OwnerConfig,
     audit: AuditLog | None = None,
 ) -> str:
     """Resolve the pending dispatch and post it; return the new event id."""
     resolved_thread_id, proposal = store.resolve(thread_id)
     event_id = outbound.relay_dispatch(
-        proposal.channel_id, proposal.instruction, requested_by, proposal.target_agent
+        proposal.channel_id,
+        proposal.instruction,
+        owner.name,
+        owner.pubkey,
+        proposal.target_agent,
     )
     if audit is not None:
         audit.log_decision(resolved_thread_id, "confirmed", proposal, event_id=event_id)

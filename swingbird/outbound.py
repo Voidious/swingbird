@@ -55,29 +55,47 @@ def set_presence(status: str) -> None:
     run_buzz_cli(["users", "set-presence", "--status", status])
 
 
-def send_message(channel_id: str, content: str, reply_to: str | None = None) -> str:
+def send_message(
+    channel_id: str,
+    content: str,
+    reply_to: str | None = None,
+    mentions: list[str] | None = None,
+) -> str:
     """Post `content` into `channel_id`; return the new event id.
 
     `content` goes over stdin (`--content -`) rather than argv, so
     arbitrary message text never has to survive shell-style quoting.
+
+    `mentions` are pubkeys passed as explicit `--mention` flags, which
+    notify their owner even if `content`'s `@name` text can't be resolved
+    against the channel's membership (e.g. the owner posting into their
+    own DM, then having that instruction relayed into a project channel
+    they aren't a member of).
     """
     args = ["messages", "send", "--channel", channel_id, "--content", "-"]
     if reply_to is not None:
         args += ["--reply-to", reply_to]
+    for pubkey in mentions or ():
+        args += ["--mention", pubkey]
     return run_buzz_cli(args, stdin=content)["event_id"]
 
 
 def relay_dispatch(
     channel_id: str,
     instruction: str,
-    requested_by: str,
+    requested_by_name: str,
+    requested_by_pubkey: str,
     target_agent: str | None = None,
 ) -> str:
-    """Post `instruction` into `channel_id`, attributed to `requested_by`.
+    """Post `instruction` into `channel_id`, attributed to the requester.
 
     Per §5: a dispatched instruction must make clear it's relaying the
     user's own directive, not the TPM agent's own initiative, so the
-    receiving coding agent treats it as an actual instruction.
+    receiving coding agent treats it as an actual instruction. The
+    attribution is a real `@mention` (via `requested_by_pubkey`), not just
+    name text, so the requester is notified and easy to follow back to --
+    and so a working agent's own reply is more likely to @mention them
+    back -- even in a project channel the requester never joined.
 
     Buzz agents only react to @mentions by default, so when a
     `target_agent` was identified the relayed message leads with an
@@ -85,5 +103,5 @@ def relay_dispatch(
     is guaranteed to ever look at it.
     """
     prefix = f"@{target_agent} " if target_agent else ""
-    content = f"{prefix}Relaying instruction from {requested_by}: {instruction}"
-    return send_message(channel_id, content)
+    content = f"{prefix}Relaying instruction from @{requested_by_name}: {instruction}"
+    return send_message(channel_id, content, mentions=[requested_by_pubkey])

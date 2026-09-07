@@ -125,10 +125,12 @@ def test_confirm_dispatch_posts_and_clears(monkeypatch):
     store = PendingActionStore()
     propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
 
-    event_id = confirm_dispatch(store, "thread-1", "Voidious")
+    event_id = confirm_dispatch(store, "thread-1", CONFIG.owner)
 
     assert event_id == "evt-1"
-    assert calls == [("chan-1", "fix the login timeout bug", "Voidious", "Codex")]
+    assert calls == [
+        ("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey", "Codex")
+    ]
     assert store.get("thread-1") is None
 
 
@@ -213,7 +215,7 @@ def test_confirm_dispatch_logs_decision_with_event_id_when_audit_configured(
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "evt-1")
     store, audit = _setup_audit_store()
 
-    confirm_dispatch(store, "thread-1", "Voidious", audit=audit)
+    confirm_dispatch(store, "thread-1", CONFIG.owner, audit=audit)
 
     decision, proposal, event_id = _assert_single_audit_decision(audit, "thread-1")
     assert decision == "confirmed"
@@ -226,7 +228,7 @@ def test_confirm_dispatch_without_audit_does_not_raise(monkeypatch):
     store = PendingActionStore()
     propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
 
-    confirm_dispatch(store, "thread-1", "Voidious")
+    confirm_dispatch(store, "thread-1", CONFIG.owner)
 
 
 def test_cancel_dispatch_logs_decision_when_audit_configured():

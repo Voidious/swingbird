@@ -190,7 +190,7 @@ class Daemon:
 
     def _confirm(self, thread_id: str) -> str:
         event_id = confirm_dispatch(
-            self._store, thread_id, self._config.owner.name, audit=self._audit
+            self._store, thread_id, self._config.owner, audit=self._audit
         )
         return f"Confirmed and relayed (event {event_id})."
 
