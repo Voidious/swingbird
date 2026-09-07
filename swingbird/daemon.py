@@ -110,6 +110,7 @@ class Daemon:
         # silently drop any message the owner sends while the daemon is
         # still coming up.
         since = int(time.time())
+        self._sync_display_name()
         # Resolved here rather than in build_daemon() so construction stays
         # side-effect-free; this is the daemon's own DM with the owner,
         # opened (or resurfaced) fresh each run via the same buzz-cli path
@@ -138,6 +139,20 @@ class Daemon:
             outbound.set_presence(status)
         except outbound.RelayError as exc:
             print(f"swingbird: failed to set presence to {status!r}: {exc}")
+
+    def _sync_display_name(self) -> None:
+        # Keeps a fresh identity (or a renamed deployment) from showing up
+        # under a stale/default profile name. Best-effort like presence --
+        # a lookup/update hiccup here is cosmetic and must never block
+        # startup or take the daemon down.
+        wanted = self._config.identity.name
+        try:
+            current = outbound.get_own_display_name()
+            if current != wanted:
+                outbound.set_display_name(wanted)
+                print(f"swingbird: updated display name {current!r} -> {wanted!r}")
+        except outbound.RelayError as exc:
+            print(f"swingbird: failed to sync display name: {exc}")
 
     async def _safe_handle(self, event: dict) -> None:
         try:

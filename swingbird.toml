@@ -11,6 +11,13 @@ private_key_env = "SWINGBIRD_PRIVATE_KEY"
 pubkey = "3aa56890a2f6ca87d91c1dee08b10513ff1887d354fadb4c0b44d7999f4d6f2f"
 name = "Voidious"
 
+# The Buzz display name for this daemon's own identity. Updated on startup
+# if the identity's current profile name doesn't match. Override in a local
+# .swingbird.toml if you want this deployment to show up under a different
+# name.
+[identity]
+name = "swingbird"
+
 # Optional. How long (seconds) to wait for a reply to a relayed instruction
 # before giving up on summarizing it back to you. Defaults to 90 if omitted.
 # Keep this short if you might ever run swingbird as a voice assistant --

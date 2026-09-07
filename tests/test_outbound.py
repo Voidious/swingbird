@@ -5,9 +5,11 @@ import pytest
 from swingbird import outbound
 from swingbird.outbound import (
     RelayError,
+    get_own_display_name,
     open_dm,
     relay_dispatch,
     send_message,
+    set_display_name,
     set_presence,
 )
 
@@ -98,6 +100,38 @@ def test_set_presence_posts_status(monkeypatch):
         "set-presence",
         "--status",
         "online",
+    ]
+
+
+def test_get_own_display_name_returns_the_callers_profile(monkeypatch):
+    fake = FakeRun(
+        stdout='[{"display_name": "swingbird", "pubkey": "abc"}]',
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    assert get_own_display_name() == "swingbird"
+    assert fake.calls[0]["args"] == ["buzz", "users", "get"]
+
+
+def test_get_own_display_name_returns_none_when_no_profile(monkeypatch):
+    fake = FakeRun(stdout="[]")
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    assert get_own_display_name() is None
+
+
+def test_set_display_name_posts_name(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-6", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    set_display_name("swingbird")
+
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "users",
+        "set-profile",
+        "--name",
+        "swingbird",
     ]
 
 

@@ -444,11 +444,17 @@ def test_reply_send_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
     assert "buzz cli not found" in capsys.readouterr().out
 
 
+def _setup_outbound_mocks(monkeypatch):
+    sent = _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    return sent
+
+
 def test_run_connects_subscribes_and_survives_a_malformed_event(
     tmp_path, monkeypatch, capsys
 ):
-    sent = _sent(monkeypatch)
-    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    sent = _setup_outbound_mocks(monkeypatch)
     presence_calls = []
     monkeypatch.setattr(outbound, "set_presence", presence_calls.append)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
@@ -477,6 +483,7 @@ def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeyp
         outbound, "open_dm", lambda pubkey: calls.append(pubkey) or "dm-chan"
     )
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     dm_event = _event(tags=[["h", "dm-chan"]], event_id="dm-evt")
     inbound = FakeInbound([dm_event])
@@ -516,6 +523,7 @@ def test_run_captures_since_before_the_startup_network_round_trips(
 
     monkeypatch.setattr(outbound, "open_dm", _slow_open_dm)
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
     (_, inbound) = _run_daemon(tmp_path)
 
     after = int(time.time())
@@ -524,8 +532,7 @@ def test_run_captures_since_before_the_startup_network_round_trips(
 
 
 def test_presence_set_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
-    sent = _sent(monkeypatch)
-    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    sent = _setup_outbound_mocks(monkeypatch)
 
     def _fail(status):
         raise outbound.RelayError("boom")
@@ -537,6 +544,44 @@ def test_presence_set_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "online" in out
     assert "offline" in out
+
+
+def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "old-name")
+    set_calls = []
+    monkeypatch.setattr(outbound, "set_display_name", set_calls.append)
+
+    _run_daemon(tmp_path)
+
+    assert set_calls == ["swingbird"]
+    assert "updated display name 'old-name' -> 'swingbird'" in capsys.readouterr().out
+
+
+def test_sync_display_name_skips_when_already_matching(tmp_path, monkeypatch):
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    monkeypatch.setattr(
+        outbound, "set_display_name", lambda name: pytest.fail("should not update")
+    )
+
+    _run_daemon(tmp_path)
+
+
+def test_sync_display_name_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+
+    def _fail():
+        raise outbound.RelayError("boom")
+
+    monkeypatch.setattr(outbound, "get_own_display_name", _fail)
+
+    _run_daemon(tmp_path)
+
+    assert "failed to sync display name: boom" in capsys.readouterr().out
 
 
 def test_build_daemon_wires_config_llm_and_inbound(tmp_path, monkeypatch):

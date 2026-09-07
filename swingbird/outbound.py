@@ -55,6 +55,21 @@ def set_presence(status: str) -> None:
     run_buzz_cli(["users", "set-presence", "--status", status])
 
 
+def get_own_display_name() -> str | None:
+    """Return the current identity's Buzz display name, or None if it has
+    never set one (`buzz users get` with no `--pubkey` returns the caller's
+    own profile)."""
+    profiles = run_buzz_cli(["users", "get"])
+    if not profiles:
+        return None
+    return profiles[0].get("display_name")
+
+
+def set_display_name(name: str) -> None:
+    """Update the current identity's Buzz display name."""
+    run_buzz_cli(["users", "set-profile", "--name", name])
+
+
 def send_message(
     channel_id: str,
     content: str,

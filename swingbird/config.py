@@ -54,6 +54,20 @@ class OwnerConfig:
     name: str
 
 
+DEFAULT_IDENTITY_NAME = "swingbird"
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    """The daemon's own Buzz display name, kept in sync on startup so a
+    fresh identity (or a renamed deployment) shows up under a name someone
+    would actually recognize, rather than whatever the identity's profile
+    happened to have before.
+    """
+
+    name: str = DEFAULT_IDENTITY_NAME
+
+
 DEFAULT_REPLY_WAIT_SECONDS = 90
 
 
@@ -77,6 +91,7 @@ class Config:
     channels: tuple[ChannelConfig, ...]
     owner: OwnerConfig
     dispatch: DispatchConfig = DispatchConfig()
+    identity: IdentityConfig = IdentityConfig()
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -131,6 +146,7 @@ def load_config(path: str | Path) -> Config:
         channels=_parse_channels(raw),
         owner=_parse_owner(raw),
         dispatch=_parse_dispatch(raw),
+        identity=_parse_identity(raw),
     )
 
 
@@ -179,6 +195,16 @@ def _parse_dispatch(raw: dict) -> DispatchConfig:
     if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
         raise ConfigError("[dispatch].reply_wait_seconds must be a positive integer")
     return DispatchConfig(reply_wait_seconds=seconds)
+
+
+def _parse_identity(raw: dict) -> IdentityConfig:
+    section = raw.get("identity", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[identity] must be a table")
+    name = section.get("name", DEFAULT_IDENTITY_NAME)
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError("[identity].name must be a non-empty string")
+    return IdentityConfig(name=name)
 
 
 def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:
