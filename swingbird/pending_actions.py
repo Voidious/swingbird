@@ -122,8 +122,13 @@ def confirm_dispatch(
     thread_id: str | None,
     owner: OwnerConfig,
     audit: AuditLog | None = None,
-) -> str:
-    """Resolve the pending dispatch and post it; return the new event id."""
+) -> tuple[str, DispatchProposal]:
+    """Resolve the pending dispatch and post it; return (event id, proposal).
+
+    The proposal is returned alongside the event id so a caller can key a
+    follow-up (e.g. waiting for the working agent's reply) off the
+    channel it was relayed into without re-resolving the store.
+    """
     resolved_thread_id, proposal = store.resolve(thread_id)
     event_id = outbound.relay_dispatch(
         proposal.channel_id,
@@ -134,7 +139,7 @@ def confirm_dispatch(
     )
     if audit is not None:
         audit.log_decision(resolved_thread_id, "confirmed", proposal, event_id=event_id)
-    return event_id
+    return event_id, proposal
 
 
 def cancel_dispatch(

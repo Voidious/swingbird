@@ -125,9 +125,14 @@ def test_confirm_dispatch_posts_and_clears(monkeypatch):
     store = PendingActionStore()
     propose_dispatch(store, CONFIG, "thread-1", DISPATCH_INTENT)
 
-    event_id = confirm_dispatch(store, "thread-1", CONFIG.owner)
+    event_id, proposal = confirm_dispatch(store, "thread-1", CONFIG.owner)
 
     assert event_id == "evt-1"
+    assert proposal == DispatchProposal(
+        channel_id="chan-1",
+        instruction="fix the login timeout bug",
+        target_agent="Codex",
+    )
     assert calls == [
         ("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey", "Codex")
     ]

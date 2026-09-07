@@ -54,12 +54,29 @@ class OwnerConfig:
     name: str
 
 
+DEFAULT_REPLY_WAIT_SECONDS = 90
+
+
+@dataclass(frozen=True)
+class DispatchConfig:
+    """How long to wait for a working agent's reply before giving up on
+    summarizing it back to the owner (§4.2's "relay a summary" behavior).
+
+    Defaults short on purpose: a reply arriving minutes later, unprompted,
+    would be a jarring surprise on a voice-assistant-style deployment --
+    someone who wants a longer wait can opt into it explicitly.
+    """
+
+    reply_wait_seconds: int = DEFAULT_REPLY_WAIT_SECONDS
+
+
 @dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     relay: RelayConfig
     channels: tuple[ChannelConfig, ...]
     owner: OwnerConfig
+    dispatch: DispatchConfig = DispatchConfig()
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -113,6 +130,7 @@ def load_config(path: str | Path) -> Config:
         relay=_parse_relay(raw),
         channels=_parse_channels(raw),
         owner=_parse_owner(raw),
+        dispatch=_parse_dispatch(raw),
     )
 
 
@@ -151,6 +169,16 @@ def _parse_owner(raw: dict) -> OwnerConfig:
         if not section.get(key):
             raise ConfigError(f"[owner] is missing required field: {key}")
     return OwnerConfig(pubkey=section["pubkey"], name=section["name"])
+
+
+def _parse_dispatch(raw: dict) -> DispatchConfig:
+    section = raw.get("dispatch", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[dispatch] must be a table")
+    seconds = section.get("reply_wait_seconds", DEFAULT_REPLY_WAIT_SECONDS)
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
+        raise ConfigError("[dispatch].reply_wait_seconds must be a positive integer")
+    return DispatchConfig(reply_wait_seconds=seconds)
 
 
 def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:

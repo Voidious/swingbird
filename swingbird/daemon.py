@@ -23,6 +23,15 @@ The daemon also publishes its own presence (online while the event loop is
 running, offline on exit) so its availability dot in Buzz Desktop reflects
 whether it's actually up -- a deployed daemon that isn't running should
 never look identical to one that is.
+
+After a confirmed dispatch, the daemon waits (up to `config.dispatch.
+reply_wait_seconds`) for a reply to the relayed instruction, then
+summarizes it back into the owner's DM -- see `_watch_for_reply` and
+`_resolve_reply_watch`. This runs as a background asyncio task alongside
+the main event loop rather than blocking it, since the reply (if any)
+arrives as just another event on the same subscription; matching it to
+the right wait is done by NIP-10 `e`-tag, not by agent identity, since
+the daemon doesn't track individual coding agents' pubkeys.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from swingbird.pending_actions import (
     propose_dispatch,
 )
 from swingbird.recap import RecapError, build_recap
+from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
 
 DEFAULT_CONFIG_PATH = "swingbird.toml"
@@ -87,6 +97,10 @@ class Daemon:
         # match and every event is ignored -- the safe default for a daemon
         # that hasn't finished starting up.
         self._dm_id = dm_id
+        # Relayed-instruction event id -> a Future resolved with whatever
+        # event replies to it, so a confirm's background wait-and-summarize
+        # task (see _watch_for_reply) can be woken from _handle_event.
+        self._reply_watches: dict[str, asyncio.Future] = {}
 
     async def run(self) -> None:
         # Captured before open_dm()/connect() so the backlog cutoff covers
@@ -133,6 +147,8 @@ class Daemon:
 
     async def _handle_event(self, event: dict) -> None:
         print(f"swingbird: event {event.get('id')} from {event.get('pubkey')}")
+        if self._resolve_reply_watch(event):
+            return
         if event["pubkey"] != self._config.owner.pubkey:
             print(
                 f"swingbird: ignoring -- not from owner ({self._config.owner.pubkey})"
@@ -149,6 +165,51 @@ class Daemon:
             outbound.send_message(channel_id, reply, reply_to=event["id"])
         except outbound.RelayError as exc:
             print(f"swingbird: failed to send reply to {event['id']}: {exc}")
+
+    def _resolve_reply_watch(self, event: dict) -> bool:
+        """If `event` replies to a relayed instruction we're waiting on,
+        fulfill that wait and report it as handled.
+
+        Matched by NIP-10 `e`-tag, not by who posted it -- a reply is never
+        itself treated as an owner command (§5), regardless of its author.
+        """
+        reply_to = _reply_to(event)
+        future = self._reply_watches.pop(reply_to, None) if reply_to else None
+        if future is None or future.done():
+            return False
+        future.set_result(event)
+        return True
+
+    def _watch_for_reply(self, relayed_event_id: str, dm_channel_id: str) -> None:
+        future = asyncio.get_running_loop().create_future()
+        self._reply_watches[relayed_event_id] = future
+        asyncio.create_task(
+            self._safe_await_and_summarize(relayed_event_id, dm_channel_id, future)
+        )
+
+    async def _safe_await_and_summarize(
+        self, relayed_event_id: str, dm_channel_id: str, future: asyncio.Future
+    ) -> None:
+        # This runs detached (via asyncio.create_task, never awaited by the
+        # main loop), so it needs its own safety net -- same rationale as
+        # _safe_handle wrapping _handle_event.
+        try:
+            await self._await_and_summarize(relayed_event_id, dm_channel_id, future)
+        except Exception as exc:  # noqa: BLE001 - background task, must never propagate
+            print(f"swingbird: failed to summarize reply to {relayed_event_id}: {exc}")
+
+    async def _await_and_summarize(
+        self, relayed_event_id: str, dm_channel_id: str, future: asyncio.Future
+    ) -> None:
+        try:
+            reply_event = await asyncio.wait_for(
+                future, timeout=self._config.dispatch.reply_wait_seconds
+            )
+        except TimeoutError:
+            self._reply_watches.pop(relayed_event_id, None)
+            return
+        summary = summarize_reply(self._llm, reply_event["content"])
+        outbound.send_message(dm_channel_id, summary)
 
     def _process(self, event: dict, thread_id: str) -> str:
         try:
@@ -189,9 +250,10 @@ class Daemon:
         )
 
     def _confirm(self, thread_id: str) -> str:
-        event_id = confirm_dispatch(
+        event_id, _proposal = confirm_dispatch(
             self._store, thread_id, self._config.owner, audit=self._audit
         )
+        self._watch_for_reply(event_id, dm_channel_id=thread_id)
         return f"Confirmed and relayed (event {event_id})."
 
 
@@ -207,6 +269,14 @@ def _channel_of(event: dict) -> str:
         if tag and tag[0] == "h":
             return tag[1]
     raise DaemonError(f"event {event.get('id')} has no channel (#h) tag")
+
+
+def _reply_to(event: dict) -> str | None:
+    """Return the event id this event replies to (NIP-10 `e` tag), or None."""
+    for tag in event.get("tags", []):
+        if len(tag) >= 2 and tag[0] == "e":
+            return tag[1]
+    return None
 
 
 def build_daemon(config_path: str, audit_log_path: str) -> Daemon:

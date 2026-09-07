@@ -46,6 +46,7 @@ def test_load_valid_config(tmp_path):
     assert channel.name == "swingbird-dev"
     assert channel.write is True
     assert channel.agents == ("Sonnet",)
+    assert config.dispatch.reply_wait_seconds == 90
 
 
 def test_channel_by_name_found_and_missing(tmp_path):
@@ -287,6 +288,31 @@ def test_local_override_invalid_toml(tmp_path):
 
     with pytest.raises(ConfigError, match=r"invalid TOML in.*\.swingbird\.toml"):
         load_config(path)
+
+
+def test_dispatch_reply_wait_seconds_is_configurable(tmp_path):
+    config = load_config(
+        write(tmp_path, VALID + "\n[dispatch]\nreply_wait_seconds = 5\n")
+    )
+
+    assert config.dispatch.reply_wait_seconds == 5
+
+
+def test_dispatch_section_not_a_table(tmp_path):
+    # A bare `key = value` assignment belongs to whichever table header
+    # precedes it in TOML, so `dispatch = 5` only lands as a genuine
+    # top-level key if it comes before every other section.
+    with pytest.raises(ConfigError, match=r"\[dispatch\] must be a table"):
+        load_config(write(tmp_path, "dispatch = 5\n\n" + VALID))
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"90"'])
+def test_dispatch_reply_wait_seconds_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[dispatch]\nreply_wait_seconds = {value}\n"
+    with pytest.raises(
+        ConfigError, match="reply_wait_seconds must be a positive integer"
+    ):
+        load_config(write(tmp_path, text))
 
 
 def test_duplicate_channel_name(tmp_path):

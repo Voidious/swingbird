@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import sys
 import time
 
@@ -6,7 +7,14 @@ import pytest
 
 from swingbird import daemon, outbound
 from swingbird.audit import AuditLog
-from swingbird.config import ChannelConfig, Config, LLMConfig, OwnerConfig, RelayConfig
+from swingbird.config import (
+    ChannelConfig,
+    Config,
+    DispatchConfig,
+    LLMConfig,
+    OwnerConfig,
+    RelayConfig,
+)
 from swingbird.daemon import (
     DEFAULT_AUDIT_LOG_PATH,
     DEFAULT_CONFIG_PATH,
@@ -109,7 +117,7 @@ def _handle_event_and_get_first_sent(tmp_path, llm, sent, event=None, store=None
     return sent[0]
 
 
-def _setup_ignored_event_test(tmp_path, monkeypatch):
+def _setup_ignored_event(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     bot = _daemon(tmp_path, llm)
@@ -117,7 +125,7 @@ def _setup_ignored_event_test(tmp_path, monkeypatch):
 
 
 def test_ignores_events_not_from_owner(tmp_path, monkeypatch):
-    sent, llm, bot = _setup_ignored_event_test(tmp_path, monkeypatch)
+    sent, llm, bot = _setup_ignored_event(tmp_path, monkeypatch)
 
     asyncio.run(bot._handle_event(_event(pubkey=OTHER_PUBKEY)))
 
@@ -130,7 +138,7 @@ def test_ignores_owner_messages_in_project_channels(tmp_path, monkeypatch):
     an @mention or plain message from the owner in a project channel (e.g.
     swingbird-dev) must never be misread as an instruction. Project channels
     stay subscribed for recap purposes only."""
-    sent, llm, bot = _setup_ignored_event_test(tmp_path, monkeypatch)
+    sent, llm, bot = _setup_ignored_event(tmp_path, monkeypatch)
 
     asyncio.run(bot._handle_event(_event(tags=[["h", "chan-1"]])))
 
@@ -238,6 +246,137 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
     (args, _) = sent[-1]
     assert args == ("dm-chan", "Confirmed and relayed (event posted-evt).")
     assert store.get("dm-chan") is None
+
+
+def _setup_dispatch_test(monkeypatch):
+    sent = _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
+    store = PendingActionStore()
+    return sent, store
+
+
+def test_confirm_summarizes_the_working_agents_reply(tmp_path, monkeypatch):
+    sent, store = _setup_dispatch_test(monkeypatch)
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        },
+        text_response="Fixed the bug and added a regression test.",
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store)
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="Fixed the bug and added a regression test.",
+            tags=[["h", "chan-1"], ["e", "posted-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)  # let the background summarize task finish
+
+    asyncio.run(scenario())
+
+    (args, kwargs) = sent[-1]
+    assert args == ("dm-chan", "Fixed the bug and added a regression test.")
+    assert kwargs == {}
+    assert bot._reply_watches == {}
+
+
+def test_reply_summary_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
+    _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
+
+    def _fail_send(*a, **k):
+        raise outbound.RelayError("boom")
+
+    store = PendingActionStore()
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        },
+        text_response="a summary",
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store)
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        # send_message is only made to fail *after* confirm's own reply
+        # goes out successfully, so only the background summarize call hits it.
+        monkeypatch.setattr(outbound, "send_message", _fail_send)
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="fixed it",
+            tags=[["h", "chan-1"], ["e", "posted-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    assert "failed to summarize reply to posted-evt: boom" in capsys.readouterr().out
+
+
+def test_reply_watch_does_not_swallow_unrelated_events(tmp_path, monkeypatch):
+    """An event replying to some other, unwatched id is a normal event --
+    it must still go through owner-gated routing rather than being silently
+    consumed as if it resolved a reply wait."""
+    (sent, _, bot) = _setup_ignored_event(tmp_path, monkeypatch)
+    unrelated_reply = _event(
+        tags=[["h", "dm-chan"], ["e", "some-other-event", "", "reply"]]
+    )
+
+    asyncio.run(bot._handle_event(unrelated_reply))
+
+    assert "outside what I handle" in sent[0][0][1]
+
+
+def test_confirm_reply_wait_times_out_without_a_reply(tmp_path, monkeypatch):
+    sent, store = _setup_dispatch_test(monkeypatch)
+    config = dataclasses.replace(
+        CONFIG, dispatch=DispatchConfig(reply_wait_seconds=0.05)
+    )
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        }
+    )
+    bot = Daemon(
+        config,
+        FakeInbound([]),
+        IntentRouter(dispatch_llm, config, audit=audit),
+        store,
+        dispatch_llm,
+        audit,
+        dm_id="dm-chan",
+    )
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        await asyncio.sleep(0.15)  # let the wait time out
+
+    asyncio.run(scenario())
+
+    assert len(sent) == 2  # the proposal reply and the "confirmed" reply only
+    assert bot._reply_watches == {}
 
 
 def test_confirm_without_a_pending_action_is_safe(tmp_path, monkeypatch):
