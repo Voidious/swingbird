@@ -92,6 +92,16 @@ class IntentRouter:
         Every call is recorded as a `transcript_in` audit entry (if an
         `AuditLog` was configured) before the LLM call, so the audit trail
         covers what came in even if classification itself fails.
+
+        Retries the classification once if the first attempt comes back
+        `chit_chat`, since that's the catch-all bucket an under-confident
+        or momentarily-flaky classification collapses into (there's no
+        equivalent "maybe" bucket for the other intents to fall back to).
+        The configured model doesn't support lowering temperature to
+        reduce this kind of run-to-run variance (kimi-k2.6 rejects any
+        value other than its default), so a same-input retry is the
+        cheaper lever available. If the retry also comes back
+        `chit_chat`, that result is trusted and returned as-is.
         """
         if self._audit is not None:
             self._audit.log_transcript_in(thread_id, text)
@@ -99,8 +109,10 @@ class IntentRouter:
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": text},
         ]
-        response = self._llm.complete_json(messages)
-        return _parse_intent(response)
+        intent = _parse_intent(self._llm.complete_json(messages))
+        if intent.kind == "chit_chat":
+            intent = _parse_intent(self._llm.complete_json(messages))
+        return intent
 
 
 def _format_channel_list(config: Config) -> str:

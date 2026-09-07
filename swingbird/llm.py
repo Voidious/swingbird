@@ -45,6 +45,13 @@ class LLMClient:
         models (e.g. Moonshot Kimi) still wrap the JSON in a Markdown
         code fence despite JSON-mode being forced, so that's stripped
         before parsing rather than treated as invalid output.
+
+        Deliberately doesn't pass `temperature`: kimi-k2.6 (the configured
+        model) rejects any value other than its default of 1 with a 400,
+        so pinning it low to reduce classification variance isn't an
+        option on this backend -- see router.py's retry-on-chit_chat
+        instead, which addresses the same flakiness without relying on a
+        temperature knob the model doesn't honor.
         """
         response = self._chat(messages, response_format={"type": "json_object"})
         content = response.choices[0].message.content or ""

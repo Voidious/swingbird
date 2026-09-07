@@ -46,12 +46,13 @@ class FakeResponse:
 
 class FakeCompletions:
     def __init__(self, content):
-        self._content = content
+        self._contents = content if isinstance(content, list) else [content]
         self.calls: list[dict] = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return FakeResponse(self._content)
+        index = min(len(self.calls) - 1, len(self._contents) - 1)
+        return FakeResponse(self._contents[index])
 
 
 class FakeChat:
@@ -131,6 +132,24 @@ def test_route_chit_chat():
     router, _ = _router('{"intent": "chit_chat"}')
 
     assert router.route("how's the weather?").kind == "chit_chat"
+
+
+def test_route_retries_once_after_chit_chat_and_returns_second_result():
+    router, fake = _router(['{"intent": "chit_chat"}', '{"intent": "recap"}'])
+
+    intent = router.route("what's going on with backend?")
+
+    assert intent.kind == "recap"
+    assert len(fake.chat.completions.calls) == 2
+
+
+def test_route_does_not_retry_more_than_once():
+    router, fake = _router(['{"intent": "chit_chat"}', '{"intent": "chit_chat"}'])
+
+    intent = router.route("how's the weather?")
+
+    assert intent.kind == "chit_chat"
+    assert len(fake.chat.completions.calls) == 2
 
 
 def test_route_raises_on_unknown_intent():
