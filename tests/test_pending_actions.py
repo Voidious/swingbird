@@ -24,6 +24,9 @@ CONFIG = Config(
     channels=(
         ChannelConfig(id="chan-1", name="backend", write=True, agents=("Codex",)),
         ChannelConfig(id="chan-2", name="frontend", write=False, agents=("Goose",)),
+        ChannelConfig(
+            id="chan-3", name="fullstack", write=True, agents=("Codex", "Goose")
+        ),
     ),
     owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
 )
@@ -59,6 +62,28 @@ def test_propose_dispatch_stores_resolved_channel_id():
         target_agent="Codex",
     )
     assert store.get("thread-1") == proposal
+
+
+def test_propose_dispatch_defaults_target_agent_when_channel_has_exactly_one():
+    store = PendingActionStore()
+    intent = Intent(
+        kind="dispatch", channel="backend", target_agent=None, message="do it"
+    )
+
+    proposal = propose_dispatch(store, CONFIG, "thread-1", intent)
+
+    assert proposal.target_agent == "Codex"
+
+
+def test_propose_dispatch_leaves_target_agent_none_with_multiple_agents():
+    store = PendingActionStore()
+    intent = Intent(
+        kind="dispatch", channel="fullstack", target_agent=None, message="do it"
+    )
+
+    proposal = propose_dispatch(store, CONFIG, "thread-1", intent)
+
+    assert proposal.target_agent is None
 
 
 def test_propose_dispatch_rejects_non_dispatch_intent():

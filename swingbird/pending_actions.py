@@ -85,6 +85,12 @@ def propose_dispatch(
     Raises if the channel is missing, unknown, or not writable -- per §5,
     an unresolved or disallowed target must be asked about, never turned
     into a proposal.
+
+    If the router didn't identify a target agent, but the channel has
+    exactly one configured agent, that agent is filled in automatically --
+    there's nothing to guess when it's the only possible target. With zero
+    or multiple agents configured, `target_agent` is left as the router set
+    it (per §5, still never guessed among real alternatives).
     """
     if intent.kind != "dispatch":
         raise PendingActionError(f"not a dispatch intent: {intent.kind!r}")
@@ -96,10 +102,14 @@ def propose_dispatch(
     if not channel.write:
         raise PendingActionError(f"channel is not writable: {intent.channel!r}")
 
+    target_agent = intent.target_agent
+    if target_agent is None and len(channel.agents) == 1:
+        target_agent = channel.agents[0]
+
     proposal = DispatchProposal(
         channel_id=channel.id,
         instruction=intent.message,
-        target_agent=intent.target_agent,
+        target_agent=target_agent,
     )
     store.propose(thread_id, proposal)
     if audit is not None:
