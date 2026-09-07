@@ -109,6 +109,28 @@ def test_route_dispatch_with_known_channel_and_agent():
     )
 
 
+def test_route_dispatch_for_a_question_addressed_to_a_named_channel():
+    router, _ = _router(
+        json.dumps(
+            {
+                "intent": "dispatch",
+                "channel": "backend",
+                "target_agent": "Codex",
+                "message": "verify backend is written in Python",
+            }
+        )
+    )
+
+    intent = router.route("verify backend is written in Python")
+
+    assert intent == Intent(
+        kind="dispatch",
+        channel="backend",
+        target_agent="Codex",
+        message="verify backend is written in Python",
+    )
+
+
 def test_route_dispatch_with_ambiguous_target_leaves_fields_null():
     router, _ = _router(
         json.dumps({"intent": "dispatch", "message": "fix the bug", "channel": None})

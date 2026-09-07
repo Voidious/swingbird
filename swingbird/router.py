@@ -32,8 +32,15 @@ _SYSTEM_PROMPT = """You are the intent classifier for a TPM agent on Buzz.
 Classify the user's message into exactly one of these intents:
 
 - recap: asking for a status/summary of one or more project channels.
-- dispatch: an instruction meant to be relayed to a specific project
-  channel/agent (e.g. "tell backend to fix the login bug").
+- dispatch: anything meant to be relayed to a specific project
+  channel/agent for it to act on or answer -- an instruction (e.g. "tell
+  backend to fix the login bug") *or* a question addressed to a named
+  project/channel/agent (e.g. "verify swingbird is written in Python",
+  "ask frontend if the tests pass"). A message naming exactly one known
+  channel/agent from the list below, and asking or telling it something,
+  is dispatch even if it isn't phrased as an imperative command -- don't
+  reserve dispatch for commands only and fall back to chit_chat just
+  because the message is a question.
 - clarify_response: answering a clarifying question the agent asked.
 - confirm: approving a previously proposed action (e.g. "yes", "do it").
 - cancel: rejecting/withdrawing a previously proposed action.
