@@ -11,8 +11,20 @@ private_key_env = "SWINGBIRD_PRIVATE_KEY"
 pubkey = "3aa56890a2f6ca87d91c1dee08b10513ff1887d354fadb4c0b44d7999f4d6f2f"
 name = "Voidious"
 
-[[channels]]
-id = "0b572619-4062-4451-957f-2bb65a738b00"
-name = "swingbird-dev"
-write = true
-agents = ["Sonnet"]
+# Define your own projects below -- each [[channels]] block is one project.
+# `name` is the project name you'll say in conversation ("recap swingbird",
+# "tell swingbird to..."), independent of the channel's own Buzz display
+# name (which might be "swingbird-dev" or anything else).
+#
+# This is commented out on purpose: a checkout with no real channels
+# defined fails to start with a clear error instead of silently running
+# against someone else's project. Put your real entries in a gitignored
+# `.swingbird.toml` next to this file (see config.py's module docstring).
+# Note that a `channels` key there replaces this section's list outright --
+# it doesn't merge per-entry -- so include every project you want active.
+#
+# [[channels]]
+# id = "<buzz channel UUID>"
+# name = "swingbird"
+# write = true
+# agents = ["Sonnet"]

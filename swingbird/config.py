@@ -156,7 +156,10 @@ def _parse_owner(raw: dict) -> OwnerConfig:
 def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:
     entries = raw.get("channels")
     if not isinstance(entries, list) or not entries:
-        raise ConfigError("config must define at least one [[channels]] entry")
+        raise ConfigError(
+            "config must define at least one [[channels]] entry "
+            "(add one to a local .swingbird.toml override, see swingbird.toml)"
+        )
 
     channels: list[ChannelConfig] = []
     seen_ids: set[str] = set()
