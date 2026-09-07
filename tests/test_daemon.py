@@ -285,7 +285,7 @@ def test_confirm_summarizes_the_working_agents_reply(tmp_path, monkeypatch):
 
     (args, kwargs) = sent[-1]
     assert args == ("dm-chan", "Fixed the bug and added a regression test.")
-    assert kwargs == {}
+    assert kwargs == {"reply_to": "evt-2"}
     assert bot._reply_watches == {}
 
 

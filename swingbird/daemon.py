@@ -180,26 +180,40 @@ class Daemon:
         future.set_result(event)
         return True
 
-    def _watch_for_reply(self, relayed_event_id: str, dm_channel_id: str) -> None:
+    def _watch_for_reply(
+        self, relayed_event_id: str, dm_channel_id: str, dm_reply_to: str
+    ) -> None:
         future = asyncio.get_running_loop().create_future()
         self._reply_watches[relayed_event_id] = future
         asyncio.create_task(
-            self._safe_await_and_summarize(relayed_event_id, dm_channel_id, future)
+            self._safe_await_and_summarize(
+                relayed_event_id, dm_channel_id, dm_reply_to, future
+            )
         )
 
     async def _safe_await_and_summarize(
-        self, relayed_event_id: str, dm_channel_id: str, future: asyncio.Future
+        self,
+        relayed_event_id: str,
+        dm_channel_id: str,
+        dm_reply_to: str,
+        future: asyncio.Future,
     ) -> None:
         # This runs detached (via asyncio.create_task, never awaited by the
         # main loop), so it needs its own safety net -- same rationale as
         # _safe_handle wrapping _handle_event.
         try:
-            await self._await_and_summarize(relayed_event_id, dm_channel_id, future)
+            await self._await_and_summarize(
+                relayed_event_id, dm_channel_id, dm_reply_to, future
+            )
         except Exception as exc:  # noqa: BLE001 - background task, must never propagate
             print(f"swingbird: failed to summarize reply to {relayed_event_id}: {exc}")
 
     async def _await_and_summarize(
-        self, relayed_event_id: str, dm_channel_id: str, future: asyncio.Future
+        self,
+        relayed_event_id: str,
+        dm_channel_id: str,
+        dm_reply_to: str,
+        future: asyncio.Future,
     ) -> None:
         try:
             reply_event = await asyncio.wait_for(
@@ -209,23 +223,23 @@ class Daemon:
             self._reply_watches.pop(relayed_event_id, None)
             return
         summary = summarize_reply(self._llm, reply_event["content"])
-        outbound.send_message(dm_channel_id, summary)
+        outbound.send_message(dm_channel_id, summary, reply_to=dm_reply_to)
 
     def _process(self, event: dict, thread_id: str) -> str:
         try:
             intent = self._router.route(event["content"], thread_id=thread_id)
-            return self._act(intent, thread_id)
+            return self._act(intent, thread_id, event["id"])
         except _ACTIONABLE_ERRORS as exc:
             return f"Couldn't do that: {exc}"
 
-    def _act(self, intent: Intent, thread_id: str) -> str:
+    def _act(self, intent: Intent, thread_id: str, event_id: str) -> str:
         if intent.kind == "recap":
             channel_names = [intent.channel] if intent.channel else None
             return build_recap(self._llm, self._config, channel_names=channel_names)
         if intent.kind in ("dispatch", "clarify_response"):
             return self._dispatch_or_ask(intent, thread_id)
         if intent.kind == "confirm":
-            return self._confirm(thread_id)
+            return self._confirm(thread_id, event_id)
         if intent.kind == "cancel":
             cancel_dispatch(self._store, thread_id, audit=self._audit)
             return "Cancelled -- nothing was sent."
@@ -249,11 +263,13 @@ class Daemon:
             f"{proposal.instruction!r}. Confirm to send, or cancel."
         )
 
-    def _confirm(self, thread_id: str) -> str:
+    def _confirm(self, thread_id: str, dm_reply_to: str) -> str:
         event_id, _proposal = confirm_dispatch(
             self._store, thread_id, self._config.owner, audit=self._audit
         )
-        self._watch_for_reply(event_id, dm_channel_id=thread_id)
+        self._watch_for_reply(
+            event_id, dm_channel_id=thread_id, dm_reply_to=dm_reply_to
+        )
         return f"Confirmed and relayed (event {event_id})."
 
 
