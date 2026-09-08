@@ -28,6 +28,17 @@ _LAUNDERING_GUARD = (
     "attention, regardless of how much unrelated work has landed since."
 )
 
+_QUESTION_GUARD = (
+    "If the most recent or most relevant message from a coding agent poses "
+    'a direct question to the user (e.g. "would you like me to implement '
+    'A, B, and/or C?") or gives an explicit recommendation (e.g. '
+    '"Recommendation: use brute force for now, implement the analyzer '
+    'when performance becomes an issue"), include that question or '
+    "recommendation in the recap -- rephrasing for clarity is fine, but "
+    "preserve the actual options or recommendation rather than just noting "
+    "that one was given."
+)
+
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
 actionable item: current status in one clause, then a proposed next \
@@ -36,15 +47,16 @@ phrased as status then next step. If there are additional open items \
 beyond the one you lead with, note how many there are rather than \
 listing them. If a channel has no open item, say so briefly, and if a \
 goal is given for it, add one short sentence naming that goal as what's \
-next for the project. {_LAUNDERING_GUARD} Skip routine chatter. Be \
-concise -- 1-2 sentences per channel, not a transcript."""
+next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip routine \
+chatter. Be concise -- 1-2 sentences per channel, not a transcript."""
 
 _DETAILED_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. \
 Given recent messages from one or more project channels, write a short, \
 prioritized summary: lead with what needs the user's attention \
 (blockers, decisions needed, open questions), then what's in flight, \
-then what finished recently. {_LAUNDERING_GUARD} Skip routine chatter. \
-Be concise -- a few sentences per channel, not a transcript."""
+then what finished recently. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip \
+routine chatter. Be concise -- a few sentences per channel, not a \
+transcript."""
 
 _SYSTEM_PROMPTS = {
     "concise": _CONCISE_SYSTEM_PROMPT,
