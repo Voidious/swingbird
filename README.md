@@ -212,3 +212,57 @@ uv run ruff format .
 
 Pre-commit hooks run `crispen` on the staged diff, `ruff`, and the full test suite with coverage
 on every commit.
+
+## swingbird origin story
+
+Throughout my programming career, I've always had side projects. With coding agents, it's an
+exciting time if you like to build stuff. I have a few side projects going that I think are
+genuinely cool and useful.
+
+I've observed that, for me, coding agents have taken over the most fulfilling part of
+programming. If your goal is to build something, it's indeed exciting and very cool that you can
+replace hours of coding with a few minutes of prompting, but it has made working on my side
+projects kind of boring. Side projects used to be where I got more of the stuff I like most about
+software development: writing lots of code and building things from scratch. Now, it has more of
+the same flavor as what I do at work all day. As a result, I work on my side projects in bursts,
+then let them stagnate.
+
+I like my side projects. I would prefer to keep making progress on them without burning myself
+out. Working professionally, you have freedom in how to manage your time. With side projects, you
+also have the option of ignoring them completely, so the life of your side project may depend on
+keeping the development process enjoyable. I have plenty of quota in my coding plans and a
+prioritized to-do list for every project, but I don't want to spend all my free time attending to
+coding agents if it feels like work.
+
+I've been using Buzz for my side projects. That means the conversation history for all of them is
+in one place, regardless of the harness (Claude Code or OpenCode), and it's easy to integrate
+with.
+
+I got the idea to write a custom voice assistant to act like a foreman at a construction site,
+keeping my side projects rolling with much less input from me. Not every turn with my coding
+agents requires high-level analysis or a personal touch -- most of the time, we're continuing an
+in-progress work item, which often boils down to a single decision or confirmation. Having that
+decision distilled and presented over voice is a much lower level of effort than using Buzz
+desktop or mobile to navigate to each project, read the latest thread, and type a response.
+
+As I sip my coffee, I want to ask aloud, "swingbird, what's going on?" The assistant would give me
+the current status of each project, based on Buzz message history, compressed to the level of
+granularity I prefer. I reply with instructions for some of the projects. The agent relays
+commands to the Buzz coding agents, or helps me to refine the planned work first.
+
+Designing this as a stand-alone agent, with its own code, own Buzz identity, and making its own
+LLM calls, is necessary to enable the stand-alone voice assistant. As of now, you communicate to
+the swingbird agent via Buzz DMs. This serves as an ideal prototype for the physical voice
+assistant, as the interface will map almost directly, but it isn't necessarily ideal on its own.
+If you're using the Buzz app and messaging via text, a stand-alone agent like this may be
+overkill. A good system prompt with a regular Buzz coding agent might give you similar
+functionality, without needing to write new code, deploy anything, or use API keys. But building
+an independent custom agent gives you more flexibility, control, and power than a system prompt,
+and it opens the door to running on a single-board computer (SBC) as a voice assistant, which is
+the ultimate goal of this project.
+
+### Ideas for future work
+
+- To-do list management. Create and manage the project to-do list directly via swingbird.
+- Integrate to-do list support with other sources, like Linear, Google Tasks, JIRA.
+- Support other messaging/operating platforms, like Slack.
