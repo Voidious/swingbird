@@ -89,13 +89,23 @@ def test_open_dm_returns_dm_id(monkeypatch):
     assert fake.calls[0]["args"] == ["buzz", "dms", "open", "--pubkey", "deadbeef"]
 
 
-def test_join_channel_posts_join(monkeypatch):
+def test_join_channel_self_adds_as_bot(monkeypatch):
     fake = FakeRun(stdout='{"event_id": "evt-7", "accepted": true, "message": ""}')
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
-    join_channel("chan-1")
+    join_channel("chan-1", "own-pubkey")
 
-    assert fake.calls[0]["args"] == ["buzz", "channels", "join", "--channel", "chan-1"]
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "channels",
+        "add-member",
+        "--channel",
+        "chan-1",
+        "--pubkey",
+        "own-pubkey",
+        "--role",
+        "bot",
+    ]
 
 
 def test_join_channel_raises_on_a_private_channel_rejection(monkeypatch):
@@ -107,7 +117,19 @@ def test_join_channel_raises_on_a_private_channel_rejection(monkeypatch):
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
     with pytest.raises(RelayError, match="restricted: channel is private"):
-        join_channel("chan-1")
+        join_channel("chan-1", "own-pubkey")
+
+
+def test_join_channel_raises_on_a_role_change_rejection(monkeypatch):
+    fake = FakeRun(
+        returncode=1,
+        stderr='{"error": "relay_error", "message": "relay error 400: '
+        "only owners/admins may change an active member's role\"}",
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    with pytest.raises(RelayError, match="only owners/admins may change"):
+        join_channel("chan-1", "own-pubkey")
 
 
 def test_set_presence_posts_status(monkeypatch):
