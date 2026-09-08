@@ -29,8 +29,8 @@ never posts into a project channel on its own initiative. See
 
 ## Installation
 
-swingbird requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and the
-[`buzz` CLI](https://github.com/Voidious/swingbird) on your `PATH`.
+swingbird requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and the `buzz` CLI (bundled
+with [Buzz Desktop](https://github.com/block/buzz)) on your `PATH`.
 
 ```bash
 git clone https://github.com/Voidious/swingbird
@@ -63,8 +63,8 @@ channels under its own name.
 
    Otherwise, ask whoever operates it to add the identity for you.
 
-3. **Add the identity to every project channel it needs to read or write**, and to any channel
-   you'd like it to treat as a project (see [Configuration](#configuration) below):
+3. **Add the identity to every project channel you plan to list under `[[channels]]`**
+   (see [Configuration](#configuration) below):
 
    ```bash
    buzz channels add-member --channel <channel UUID> --pubkey <public key>
@@ -186,7 +186,7 @@ command.
 | --- | --- |
 | "what's going on?" / "recap backend" | Summarizes recent activity across all configured channels, or just the one you named -- blockers and decisions first, then in-flight work, then what recently finished. |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
-| "confirm" / "do it" / "yes" | Sends the pending proposal you're replying to, or the single pending proposal if there's only one outstanding. |
+| "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |
 | anything else | swingbird says it's outside what it handles, and suggests asking for a recap or a dispatch instead. |
 
