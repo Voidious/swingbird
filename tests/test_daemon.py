@@ -27,7 +27,6 @@ from swingbird.router import IntentRouter
 
 OWNER_PUBKEY = "owner-pubkey"
 OTHER_PUBKEY = "someone-else"
-OWN_PUBKEY = "swingbird-own-pubkey"
 
 CONFIG = Config(
     llm=LLMConfig(base_url="https://x", model="m", api_key_env="X_KEY"),
@@ -65,7 +64,6 @@ class FakeInbound:
         self.connected = False
         self.subscribed = None
         self.since = None
-        self.pubkey = OWN_PUBKEY
 
     async def connect(self):
         self.connected = True
@@ -485,7 +483,7 @@ def _setup_outbound_mocks(monkeypatch):
     sent = _sent(monkeypatch)
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
     monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
-    monkeypatch.setattr(outbound, "join_channel", lambda channel_id, own_pubkey: None)
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
     return sent
 
 
@@ -526,14 +524,10 @@ def test_run_joins_every_configured_project_channel(tmp_path, monkeypatch):
     sent = _setup_outbound_mocks(monkeypatch)
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
     joined = []
-    monkeypatch.setattr(
-        outbound,
-        "join_channel",
-        lambda channel_id, own_pubkey: joined.append((channel_id, own_pubkey)),
-    )
+    monkeypatch.setattr(outbound, "join_channel", joined.append)
     _run_daemon_with_llm(tmp_path)
 
-    assert joined == [("chan-1", OWN_PUBKEY), ("chan-2", OWN_PUBKEY)]
+    assert joined == ["chan-1", "chan-2"]
     assert sent == []
 
 
@@ -543,7 +537,7 @@ def test_join_channel_failure_is_logged_and_does_not_block_startup(
     sent = _setup_outbound_mocks(monkeypatch)
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
 
-    def _fail(channel_id, own_pubkey):
+    def _fail(channel_id):
         raise outbound.RelayError("restricted: channel is private")
 
     monkeypatch.setattr(outbound, "join_channel", _fail)
@@ -558,7 +552,7 @@ def test_join_channel_failure_is_logged_and_does_not_block_startup(
 def _stub_outbound_network_calls(monkeypatch):
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
     monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
-    monkeypatch.setattr(outbound, "join_channel", lambda channel_id, own_pubkey: None)
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
 
 
 def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeypatch):
@@ -632,7 +626,7 @@ def test_presence_set_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys
 def _stub_common_outbound(monkeypatch, outbound):
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
-    monkeypatch.setattr(outbound, "join_channel", lambda channel_id, own_pubkey: None)
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
 
 
 def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys):

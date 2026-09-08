@@ -20,7 +20,6 @@ import websockets
 from swingbird.nostr_crypto import (
     NostrCryptoError,
     parse_private_key,
-    pubkey_hex,
     sign_event,
     verify_event,
 )
@@ -43,10 +42,6 @@ class InboundClient:
             self._private_key = parse_private_key(private_key_raw)
         except NostrCryptoError as exc:
             raise InboundError(str(exc)) from exc
-        # Exposed so outbound.join_channel() can self-report as `bot` without
-        # daemon.py or outbound.py needing their own copy of the key-parsing
-        # logic -- this is the one place the raw key is already parsed.
-        self.pubkey = pubkey_hex(self._private_key)
         self._ws = None
         self._seen_ids: set[str] = set()
 

@@ -49,39 +49,17 @@ def open_dm(pubkey: str) -> str:
     return run_buzz_cli(["dms", "open", "--pubkey", pubkey])["dm_id"]
 
 
-def join_channel(channel_id: str, own_pubkey: str) -> None:
-    """Join `channel_id`, self-reporting as `bot` rather than `member`.
+def join_channel(channel_id: str) -> None:
+    """Join `channel_id`; a no-op if the identity is already a member.
 
-    Uses `channels add-member --pubkey <own_pubkey> --role bot` (a self-add)
-    instead of plain `channels join`: `join` has no way to request a role
-    and always joins as `member`, but `bot` isn't an "elevated" role, so a
-    first-time self-add needs no owner/admin action (buzz-relay's
-    `decide_put_user` always allows a self-add, and only `owner`/`admin`
-    count as elevated). Re-adding at the same role is idempotent
-    server-side, so this stays a safe no-op on every restart once the
-    identity is already `bot` in a given channel.
-
-    Still raises `RelayError` for the same two cases plain `join` did, plus
-    one new one: a private channel the identity isn't already in
-    ("restricted: channel is private"), and now also an *existing*
-    membership at a different role (e.g. still `member` from before this
-    behavior existed) -- changing an active member's role is privileged
-    regardless of self vs. third-party, so that needs an owner/admin to fix
-    once. Callers (see `daemon.py`'s `_join_project_channels`) treat both as
-    expected, reportable conditions rather than a crash.
+    The relay accepts a join for an open channel unconditionally and
+    silently no-ops a join for a channel the identity already belongs to,
+    so the only way this raises `RelayError` is a real problem: notably a
+    private channel the identity isn't already in ("restricted: channel is
+    private"). Callers (see `daemon.py`'s `_join_project_channels`) treat
+    that as an expected, reportable condition rather than a crash.
     """
-    run_buzz_cli(
-        [
-            "channels",
-            "add-member",
-            "--channel",
-            channel_id,
-            "--pubkey",
-            own_pubkey,
-            "--role",
-            "bot",
-        ]
-    )
+    run_buzz_cli(["channels", "join", "--channel", channel_id])
 
 
 def set_presence(status: str) -> None:

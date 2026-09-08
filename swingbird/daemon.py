@@ -20,16 +20,13 @@ turn out to be ordinary #h-tagged channel events under the hood, so this
 needed no new wire format, just one more channel id in the subscription.
 
 On startup the daemon also joins every configured project channel it isn't
-already a member of, self-reporting as `bot` rather than `member`
-(`_join_project_channels`, see `outbound.join_channel`) -- good bot manners,
-since membership isn't actually required to read or write an *open* channel
-(the relay allows either membership or open visibility), so posting into
+already a member of (`_join_project_channels`) -- good bot manners, since
+membership isn't actually required to read or write an *open* channel (the
+relay allows either membership or open visibility), so posting into
 channels it never joined would otherwise look odd in the member list. A
-join fails for a private channel the identity isn't already in, or for a
-channel where it's already an active member under a different role (that
-needs an owner/admin to change, a one-time fix outside the daemon); both
-are logged and never fatal. The same failure mode can also surface later,
-from `relay_dispatch`/a recap fetch against a channel configured as private
+join only fails for a private channel the identity isn't already in; that's
+logged and never fatal. The same failure mode can also surface later, from
+`relay_dispatch`/a recap fetch against a channel configured as private
 without the daemon in it -- `_ACTIONABLE_ERRORS` including `RelayError`
 turns that into a "Couldn't do that" reply to the owner (asking them to add
 the bot) instead of a silently swallowed exception.
@@ -170,7 +167,7 @@ class Daemon:
         # block startup. See module docstring.
         for channel in self._config.channels:
             try:
-                outbound.join_channel(channel.id, self._inbound.pubkey)
+                outbound.join_channel(channel.id)
             except outbound.RelayError as exc:
                 print(
                     f"swingbird: couldn't join channel {channel.name!r} "

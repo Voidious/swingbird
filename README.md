@@ -69,16 +69,15 @@ channels under its own name.
 
    Otherwise, ask whoever operates it to add the identity for you.
 
-3. **For a private channel, add the identity yourself** (see [Configuration](#configuration)
-   below for `[[channels]]`):
+3. **Add the identity to every project channel you plan to list under `[[channels]]`**
+   (see [Configuration](#configuration) below):
 
    ```bash
-   buzz channels add-member --channel <channel UUID> --pubkey <public key> --role bot
+   buzz channels add-member --channel <channel UUID> --pubkey <public key>
    ```
 
-   For an open channel this isn't required -- the daemon self-adds as `bot` on startup for
-   every channel it isn't already a member of. swingbird needs channel membership to read a
-   channel's history for recaps, even for channels where `write = false` in its config.
+   swingbird needs channel membership to read a channel's history for recaps, even for channels
+   where `write = false` in its config.
 
 4. **Start the daemon** (see [Running](#running)) so it opens its own DM with you and comes
    online, then open a DM with the identity from Buzz Desktop or mobile to start talking to it.
