@@ -34,6 +34,7 @@ class ChannelConfig:
     name: str
     write: bool
     agents: tuple[str, ...]
+    goal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,25 @@ class DispatchConfig:
     reply_wait_seconds: int = DEFAULT_REPLY_WAIT_SECONDS
 
 
+DEFAULT_STALE_AFTER_DAYS = 30
+DEFAULT_MAX_MESSAGES_PER_CHANNEL = 1000
+
+
+@dataclass(frozen=True)
+class RecapConfig:
+    """How far back "recent activity" reaches before a project is treated
+    as stale and omitted from a recap of *all* channels. Never applies when
+    the user names a channel explicitly -- see recap.py.
+
+    `max_messages_per_channel` bounds the paging `history.fetch_messages_since`
+    does to fill that window -- a safety cap so one very chatty channel can't
+    make a recap page through its entire history.
+    """
+
+    stale_after_days: int = DEFAULT_STALE_AFTER_DAYS
+    max_messages_per_channel: int = DEFAULT_MAX_MESSAGES_PER_CHANNEL
+
+
 @dataclass(frozen=True)
 class Config:
     llm: LLMConfig
@@ -92,6 +112,7 @@ class Config:
     owner: OwnerConfig
     dispatch: DispatchConfig = DispatchConfig()
     identity: IdentityConfig = IdentityConfig()
+    recap: RecapConfig = RecapConfig()
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -147,6 +168,7 @@ def load_config(path: str | Path) -> Config:
         owner=_parse_owner(raw),
         dispatch=_parse_dispatch(raw),
         identity=_parse_identity(raw),
+        recap=_parse_recap(raw),
     )
 
 
@@ -197,6 +219,25 @@ def _parse_dispatch(raw: dict) -> DispatchConfig:
     return DispatchConfig(reply_wait_seconds=seconds)
 
 
+def _parse_recap(raw: dict) -> RecapConfig:
+    section = raw.get("recap", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[recap] must be a table")
+    days = section.get("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
+    if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+        raise ConfigError("[recap].stale_after_days must be a positive integer")
+    max_messages = section.get(
+        "max_messages_per_channel", DEFAULT_MAX_MESSAGES_PER_CHANNEL
+    )
+    if (
+        isinstance(max_messages, bool)
+        or not isinstance(max_messages, int)
+        or max_messages <= 0
+    ):
+        raise ConfigError("[recap].max_messages_per_channel must be a positive integer")
+    return RecapConfig(stale_after_days=days, max_messages_per_channel=max_messages)
+
+
 def _parse_identity(raw: dict) -> IdentityConfig:
     section = raw.get("identity", {})
     if not isinstance(section, dict):
@@ -224,11 +265,17 @@ def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:
                 raise ConfigError(
                     f"[[channels]] entry is missing required field: {key}"
                 )
+        goal = entry.get("goal")
+        if goal is not None and (not isinstance(goal, str) or not goal.strip()):
+            raise ConfigError(
+                f"[[channels]] entry {entry.get('name')!r} has an invalid goal"
+            )
         channel = ChannelConfig(
             id=entry["id"],
             name=entry["name"],
             write=bool(entry["write"]),
             agents=tuple(entry["agents"]),
+            goal=goal,
         )
         if channel.id in seen_ids:
             raise ConfigError(f"duplicate channel id in config: {channel.id}")

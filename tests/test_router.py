@@ -85,6 +85,23 @@ def test_route_recap():
     intent = router.route("what's going on?")
 
     assert intent == Intent(kind="recap")
+    assert intent.detail == "concise"
+
+
+def test_route_recap_detailed():
+    router, _ = _router('{"intent": "recap", "detail": "detailed"}')
+
+    intent = router.route("give me a detailed recap")
+
+    assert intent == Intent(kind="recap", detail="detailed")
+
+
+def test_route_recap_unrecognized_detail_defaults_to_concise():
+    router, _ = _router('{"intent": "recap", "detail": "extremely thorough"}')
+
+    intent = router.route("what's going on?")
+
+    assert intent.detail == "concise"
 
 
 def test_route_dispatch_with_known_channel_and_agent():

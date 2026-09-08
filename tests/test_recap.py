@@ -6,10 +6,16 @@ from swingbird.config import (
     Config,
     LLMConfig,
     OwnerConfig,
+    RecapConfig,
     RelayConfig,
 )
 from swingbird.llm import LLMClient
-from swingbird.recap import RecapError, build_recap
+from swingbird.recap import (
+    _CONCISE_SYSTEM_PROMPT,
+    _DETAILED_SYSTEM_PROMPT,
+    RecapError,
+    build_recap,
+)
 
 LLM_CONFIG = LLMConfig(base_url="https://x", model="m", api_key_env="X_KEY")
 RELAY_CONFIG = RelayConfig(url="wss://relay.example", private_key_env="SWINGBIRD_KEY")
@@ -22,6 +28,10 @@ CONFIG = Config(
     ),
     owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
 )
+
+NOW = 1_700_000_000
+FRESH = NOW - 1_000
+STALE = NOW - 40 * 86400  # 40 days ago, outside the default 30-day window
 
 
 class FakeMessage:
@@ -64,20 +74,33 @@ def _llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
     return LLMClient(LLM_CONFIG, client=fake), fake
 
 
+@pytest.fixture(autouse=True)
+def _freeze_time(monkeypatch):
+    monkeypatch.setattr(recap.time, "time", lambda: NOW)
+
+
+def _transcript(fake) -> str:
+    return fake.chat.completions.calls[0]["messages"][1]["content"]
+
+
+def _system_prompt(fake) -> str:
+    return fake.chat.completions.calls[0]["messages"][0]["content"]
+
+
 def test_build_recap_summarizes_all_channels(monkeypatch):
-    def fake_fetch(channel_id, limit=None):
+    def fake_fetch(channel_id, since_ts, max_messages=None):
         return {
-            "chan-1": [{"created_at": 1, "content": "backend msg"}],
-            "chan-2": [{"created_at": 2, "content": "frontend msg"}],
+            "chan-1": [{"created_at": FRESH, "content": "backend msg"}],
+            "chan-2": [{"created_at": FRESH, "content": "frontend msg"}],
         }[channel_id]
 
-    monkeypatch.setattr(recap, "fetch_recent_messages", fake_fetch)
+    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
     llm, fake = _llm("here's the recap")
 
     result = build_recap(llm, CONFIG)
 
     assert result == "here's the recap"
-    transcript = fake.chat.completions.calls[0]["messages"][1]["content"]
+    transcript = _transcript(fake)
     assert "## backend" in transcript
     assert "backend msg" in transcript
     assert "## frontend" in transcript
@@ -88,7 +111,7 @@ def test_build_recap_restricts_to_named_channels(monkeypatch):
     calls = []
 
     def fake_fetch(channel_id, limit=None):
-        calls.append(channel_id)
+        calls.append((channel_id, limit))
         return []
 
     monkeypatch.setattr(recap, "fetch_recent_messages", fake_fetch)
@@ -96,7 +119,7 @@ def test_build_recap_restricts_to_named_channels(monkeypatch):
 
     build_recap(llm, CONFIG, channel_names=["backend"])
 
-    assert calls == ["chan-1"]
+    assert calls == [("chan-1", recap.EXPLICIT_CHANNEL_MESSAGE_LIMIT)]
 
 
 def test_build_recap_rejects_unknown_channel_name(monkeypatch):
@@ -106,28 +129,170 @@ def test_build_recap_rejects_unknown_channel_name(monkeypatch):
         build_recap(llm, CONFIG, channel_names=["nonexistent"])
 
 
-def test_build_recap_notes_empty_channel(monkeypatch):
+def _setup_empty_channel_recap(monkeypatch, channel_names=None):
+    if channel_names is None:
+        channel_names = ["backend"]
     monkeypatch.setattr(
         recap, "fetch_recent_messages", lambda channel_id, limit=None: []
     )
     llm, fake = _llm("recap")
 
-    build_recap(llm, CONFIG, channel_names=["backend"])
-
-    transcript = fake.chat.completions.calls[0]["messages"][1]["content"]
-    assert "(no recent activity)" in transcript
+    build_recap(llm, CONFIG, channel_names=channel_names)
+    return fake
 
 
-def test_build_recap_passes_limit_through(monkeypatch):
-    seen_limits = []
+def test_build_recap_notes_empty_channel(monkeypatch):
+    fake = _setup_empty_channel_recap(monkeypatch)
 
-    def fake_fetch(channel_id, limit=None):
-        seen_limits.append(limit)
+    assert "(no recent activity)" in _transcript(fake)
+
+
+def test_build_recap_passes_configured_max_messages_through(monkeypatch):
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_messages_per_channel=42),
+    )
+    seen_max = []
+
+    def fake_fetch(channel_id, since_ts, max_messages=None):
+        seen_max.append(max_messages)
         return []
 
-    monkeypatch.setattr(recap, "fetch_recent_messages", fake_fetch)
+    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
     llm, _ = _llm("recap")
 
-    build_recap(llm, CONFIG, channel_names=["backend"], limit=5)
+    build_recap(llm, config)
 
-    assert seen_limits == [5]
+    assert seen_max == [42, 42]
+
+
+def _build_recap_and_get_transcript(monkeypatch, fake_fetch, config):
+    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    llm, fake = _llm("recap")
+
+    build_recap(llm, config)
+
+    return _transcript(fake)
+
+
+def test_build_recap_omits_empty_channel_from_all_channels_recap(monkeypatch):
+    def fake_fetch(channel_id, since_ts, max_messages=None):
+        return {
+            "chan-1": [],
+            "chan-2": [{"created_at": FRESH, "content": "fresh frontend msg"}],
+        }[channel_id]
+
+    transcript = _build_recap_and_get_transcript(monkeypatch, fake_fetch, CONFIG)
+    assert "backend" not in transcript
+    assert "## frontend" in transcript
+    assert "fresh frontend msg" in transcript
+
+
+def test_build_recap_includes_stale_channel_when_named_explicitly(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_recent_messages",
+        lambda channel_id, limit=None: [{"created_at": STALE, "content": "old msg"}],
+    )
+    llm, fake = _llm("recap")
+
+    build_recap(llm, CONFIG, channel_names=["backend"])
+
+    transcript = _transcript(fake)
+    assert "## backend" in transcript
+    assert "old msg" in transcript
+
+
+def test_build_recap_all_channels_stale_yields_placeholder_transcript(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [],
+    )
+    llm, fake = _llm("recap")
+
+    build_recap(llm, CONFIG)
+
+    assert _transcript(fake) == "(no channels with recent activity)"
+
+
+def test_build_recap_includes_goal_in_channel_header(monkeypatch):
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=(
+            ChannelConfig(
+                id="chan-1",
+                name="backend",
+                write=True,
+                agents=("Codex",),
+                goal="Preparing the 0.8.0 release",
+            ),
+        ),
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+    )
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [
+            {"created_at": FRESH, "content": "msg"}
+        ],
+    )
+    llm, fake = _llm("recap")
+
+    build_recap(llm, config)
+
+    assert "## backend (goal: Preparing the 0.8.0 release)" in _transcript(fake)
+
+
+def test_build_recap_respects_configured_stale_after_days(monkeypatch):
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(stale_after_days=60),
+    )
+
+    def fake_fetch(channel_id, since_ts, max_messages=None):
+        events = {
+            "chan-1": [{"created_at": STALE, "content": "old backend msg"}],
+            "chan-2": [{"created_at": FRESH, "content": "fresh frontend msg"}],
+        }[channel_id]
+        return [event for event in events if event["created_at"] >= since_ts]
+
+    # STALE is 40 days ago, inside a 60-day window -- both channels included.
+    transcript = _build_recap_and_get_transcript(monkeypatch, fake_fetch, config)
+    assert "## backend" in transcript
+    assert "## frontend" in transcript
+
+
+def test_build_recap_defaults_to_concise_prompt(monkeypatch):
+    fake = _setup_empty_channel_recap(monkeypatch)
+
+    assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT
+
+
+def test_build_recap_uses_detailed_prompt_when_requested(monkeypatch):
+    monkeypatch.setattr(
+        recap, "fetch_recent_messages", lambda channel_id, limit=None: []
+    )
+    llm, fake = _llm("recap")
+
+    build_recap(llm, CONFIG, channel_names=["backend"], detail="detailed")
+
+    assert _system_prompt(fake) == _DETAILED_SYSTEM_PROMPT
+
+
+def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
+    monkeypatch.setattr(
+        recap, "fetch_recent_messages", lambda channel_id, limit=None: []
+    )
+    llm, fake = _llm("recap")
+
+    build_recap(llm, CONFIG, channel_names=["backend"], detail="bogus")
+
+    assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT

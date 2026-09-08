@@ -31,7 +31,11 @@ VALID_INTENTS = (
 _SYSTEM_PROMPT = """You are the intent classifier for a TPM agent on Buzz.
 Classify the user's message into exactly one of these intents:
 
-- recap: asking for a status/summary of one or more project channels.
+- recap: asking for a status/summary of one or more project channels. Set
+  "detail" to "detailed" only when the user explicitly asks for more (e.g.
+  "detailed", "full", "give me everything", "in depth"); default to
+  "concise" otherwise, including when detail isn't mentioned at all --
+  don't infer a fuller level from tone or message length alone.
 - dispatch: anything meant to be relayed to a specific project
   channel/agent for it to act on or answer -- an instruction (e.g. "tell
   backend to fix the login bug") *or* a question addressed to a named
@@ -52,7 +56,8 @@ Known project channels and their agents:
 Respond with JSON only, matching this shape:
 {{"intent": "<one of the intents above>", "channel": "<channel name or null>",
 "target_agent": "<agent name or null>",
-"message": "<instruction text to relay, or null>"}}
+"message": "<instruction text to relay, or null>",
+"detail": "<\"concise\" or \"detailed\", default \"concise\">"}}
 
 Only set "channel" or "target_agent" to a name from the known list above,
 and only when the message clearly identifies it. If the message names a
@@ -81,6 +86,7 @@ class Intent:
     channel: str | None = None
     target_agent: str | None = None
     message: str | None = None
+    detail: str = "concise"
 
 
 class IntentRouter:
@@ -134,9 +140,13 @@ def _parse_intent(response: dict) -> Intent:
     kind = response.get("intent")
     if kind not in VALID_INTENTS:
         raise RouterError(f"LLM returned unknown intent: {json.dumps(response)}")
+    detail = response.get("detail")
+    if detail != "detailed":
+        detail = "concise"
     return Intent(
         kind=kind,
         channel=response.get("channel"),
         target_agent=response.get("target_agent"),
         message=response.get("message"),
+        detail=detail,
     )

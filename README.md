@@ -132,12 +132,22 @@ agents = ["Sonnet"]
   for a reply to a relayed instruction before giving up on summarizing it back to you. Keep this
   short if you might ever run swingbird as a voice assistant -- a reply arriving minutes later,
   out of nowhere, would be a jarring surprise.
+- **`[recap]`** -- optional. `stale_after_days` (default `30`) is how long a project channel can
+  go quiet before a "recap everything" request drops it rather than reporting it as inactive.
+  Naming a channel explicitly ("recap backend") always includes it regardless of age.
+  `max_messages_per_channel` (default `1000`) caps how many messages an all-channels recap will
+  page through per channel to fill that window -- a single `buzz messages get` call maxes out at
+  200 messages regardless of the `--limit` requested, so swingbird pages backwards with
+  `--before` as needed, and this is the safety valve stopping that from running away on an
+  unusually chatty channel.
 - **`[[channels]]`** -- one entry per project. `id` is the Buzz channel UUID; `name` is what
   you'll say in conversation ("recap backend", "tell backend to...") and is independent of the
   channel's own Buzz display name; `write` controls whether swingbird may dispatch instructions
   into it (a channel with `write = false` can still be recapped); `agents` lists the Buzz display
   names of the coding agents in that channel (see
-  [Configuring project agents](#configuring-project-agents-to-listen-to-swingbird) below).
+  [Configuring project agents](#configuring-project-agents-to-listen-to-swingbird) below); `goal`
+  is optional free text (e.g. `"Preparing the 0.8.0 release"`), used only in a concise recap when
+  a project has no current open item, to add a one-sentence "next up" line.
 
 A checkout with no `[[channels]]` entries fails to start with a clear error instead of silently
 running against someone else's project -- put your real channels in `.swingbird.toml`.
@@ -190,7 +200,7 @@ command.
 
 | You say | swingbird does |
 | --- | --- |
-| "what's going on?" / "recap backend" | Summarizes recent activity across all configured channels, or just the one you named -- blockers and decisions first, then in-flight work, then what recently finished. |
+| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for the fuller three-bucket version: what needs attention, what's in flight, what finished recently. |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |

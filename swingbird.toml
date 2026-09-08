@@ -25,10 +25,24 @@ name = "swingbird"
 # [dispatch]
 # reply_wait_seconds = 90
 
+# Optional. A project channel is dropped from a "recap everything" request
+# once its most recent message is older than this many days -- naming a
+# channel explicitly ("recap swingbird") always includes it regardless of
+# age. Defaults to 30 if omitted. max_messages_per_channel caps how many
+# messages a single channel's recap will page through to fill that window
+# (a single `buzz messages get` call maxes out at 200 regardless of
+# --limit, so a chatty channel needs multiple paged calls); defaults to
+# 1000 if omitted.
+# [recap]
+# stale_after_days = 30
+# max_messages_per_channel = 1000
+
 # Define your own projects below -- each [[channels]] block is one project.
 # `name` is the project name you'll say in conversation ("recap swingbird",
 # "tell swingbird to..."), independent of the channel's own Buzz display
-# name (which might be "swingbird-dev" or anything else).
+# name (which might be "swingbird-dev" or anything else). `goal` is
+# optional free text used only when a concise recap has no open item for
+# that project, to add a "next up: ..." sentence.
 #
 # This is commented out on purpose: a checkout with no real channels
 # defined fails to start with a clear error instead of silently running
@@ -42,3 +56,4 @@ name = "swingbird"
 # name = "swingbird"
 # write = true
 # agents = ["Sonnet"]
+# goal = "Building out the initial version"

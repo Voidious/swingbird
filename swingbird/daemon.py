@@ -284,7 +284,12 @@ class Daemon:
     def _act(self, intent: Intent, thread_id: str, event_id: str) -> str:
         if intent.kind == "recap":
             channel_names = [intent.channel] if intent.channel else None
-            return build_recap(self._llm, self._config, channel_names=channel_names)
+            return build_recap(
+                self._llm,
+                self._config,
+                channel_names=channel_names,
+                detail=intent.detail,
+            )
         if intent.kind in ("dispatch", "clarify_response"):
             return self._dispatch_or_ask(intent, thread_id)
         if intent.kind == "confirm":

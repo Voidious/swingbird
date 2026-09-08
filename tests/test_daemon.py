@@ -162,12 +162,28 @@ def test_ignores_events_before_the_dm_channel_is_resolved(tmp_path, monkeypatch)
 def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch):
     from swingbird import recap
 
-    monkeypatch.setattr(recap, "fetch_recent_messages", lambda *a, **k: [])
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "recap"}, text_response="here's the recap")
     (args, kwargs) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
     assert args == ("dm-chan", "here's the recap")
     assert kwargs == {"reply_to": "evt-1"}
+
+
+def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response={"intent": "recap", "detail": "detailed"},
+        text_response="here's the detailed recap",
+    )
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    system_prompt = llm.calls[-1][0]["content"]
+    assert system_prompt == recap._DETAILED_SYSTEM_PROMPT
 
 
 def test_dispatch_proposes_and_asks_for_confirmation(tmp_path, monkeypatch):

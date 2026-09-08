@@ -48,6 +48,8 @@ def test_load_valid_config(tmp_path):
     assert channel.agents == ("Sonnet",)
     assert config.dispatch.reply_wait_seconds == 90
     assert config.identity.name == "swingbird"
+    assert config.recap.stale_after_days == 30
+    assert channel.goal is None
 
 
 def test_channel_by_name_found_and_missing(tmp_path):
@@ -360,4 +362,70 @@ write = false
 agents = []
 """
     with pytest.raises(ConfigError, match="duplicate channel name"):
+        load_config(write(tmp_path, text))
+
+
+def test_channel_goal_is_configurable(tmp_path):
+    text = VALID.replace(
+        'agents = ["Sonnet"]',
+        'agents = ["Sonnet"]\ngoal = "Preparing the 0.8.0 release"',
+    )
+    config = load_config(write(tmp_path, text))
+
+    assert config.channels[0].goal == "Preparing the 0.8.0 release"
+
+
+def test_channel_goal_defaults_to_none(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.channels[0].goal is None
+
+
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_channel_goal_rejects_invalid_values(tmp_path, value):
+    text = VALID.replace('agents = ["Sonnet"]', f'agents = ["Sonnet"]\ngoal = {value}')
+    with pytest.raises(ConfigError, match="invalid goal"):
+        load_config(write(tmp_path, text))
+
+
+def test_recap_stale_after_days_is_configurable(tmp_path):
+    config = load_config(write(tmp_path, VALID + "\n[recap]\nstale_after_days = 60\n"))
+
+    assert config.recap.stale_after_days == 60
+
+
+def test_recap_section_not_a_table(tmp_path):
+    with pytest.raises(ConfigError, match=r"\[recap\] must be a table"):
+        load_config(write(tmp_path, "recap = 5\n\n" + VALID))
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"30"'])
+def test_recap_stale_after_days_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[recap]\nstale_after_days = {value}\n"
+    with pytest.raises(
+        ConfigError, match="stale_after_days must be a positive integer"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_recap_max_messages_per_channel_defaults(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.recap.max_messages_per_channel == 1000
+
+
+def test_recap_max_messages_per_channel_is_configurable(tmp_path):
+    config = load_config(
+        write(tmp_path, VALID + "\n[recap]\nmax_messages_per_channel = 250\n")
+    )
+
+    assert config.recap.max_messages_per_channel == 250
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"250"'])
+def test_recap_max_messages_per_channel_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[recap]\nmax_messages_per_channel = {value}\n"
+    with pytest.raises(
+        ConfigError, match="max_messages_per_channel must be a positive integer"
+    ):
         load_config(write(tmp_path, text))
