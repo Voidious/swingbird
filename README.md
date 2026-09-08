@@ -6,6 +6,12 @@ swingbird is a TPM-style Buzz agent that lives in your own workspace. DM it and 
 project channels, relays instructions to your coding agents, and always confirms with you before
 it writes anything on your behalf.
 
+_The upbeat, unbothered swingbird roams the canopy of the Forest of Code, vibing with the Abstract
+Syntax Trees as humans and agents work below. Sporting feathers of the dankest colors, headphones
+that slap, and a small tablet, the swingbird is ready to spill the tea on project status, lock in
+on potential solutions, or yeet commands to your coding agents to keep your projects in full
+swing._
+
 ## Overview
 
 Talk to swingbird in a private DM:
