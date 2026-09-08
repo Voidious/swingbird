@@ -55,6 +55,8 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
   See `daemon.py`.
 - A `dispatch` intent never posts directly; it becomes a `DispatchProposal` in
   `pending_actions.py` and only reaches `outbound.relay_dispatch` via `confirm_dispatch`.
+  A `recap_action` ("go ahead with F4") resolves to a `dispatch` `Intent` and goes through
+  this exact same path -- there is no separate posting route for a recap follow-up.
 - On any ambiguity (unresolvable channel/agent, multiple pending proposals for a bare
   "confirm"), the router/store asks the user rather than guessing. Don't add
   best-guess fallbacks here -- guessing wrong means dispatching to the wrong channel.
@@ -70,10 +72,11 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `outbound.py` | All writes, via the `buzz` CLI subprocess. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
-| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / chit-chat). |
+| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / chit-chat). |
 | `pending_actions.py` | Confirm/cancel state machine for proposed dispatches. |
 | `history.py` | One-shot fetch of recent channel messages (via `outbound.run_buzz_cli`), for recaps. |
-| `recap.py` | LLM-summarizes recent channel activity into a short recap. |
+| `recap.py` | LLM-summarizes recent channel activity into a short recap, plus structured per-channel `RecapItem`s. |
+| `recap_actions.py` | Stores the latest recap's items per thread and resolves a "go ahead with X" / "tell me more about X" reference against them. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |

@@ -35,6 +35,18 @@ class AuditLog:
             target_agent=proposal.target_agent,
         )
 
+    def log_recap_reference(
+        self, thread_id: str, recap_kind: str, reference: str | None, item: Any
+    ) -> None:
+        self._write(
+            "recap_reference",
+            thread_id,
+            recap_kind=recap_kind,
+            reference=reference,
+            channel=item.channel,
+            label=item.label,
+        )
+
     def log_decision(
         self,
         thread_id: str | None,

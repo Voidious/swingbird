@@ -25,6 +25,8 @@ VALID_INTENTS = (
     "clarify_response",
     "confirm",
     "cancel",
+    "recap_action",
+    "recap_detail",
     "chit_chat",
 )
 
@@ -46,8 +48,28 @@ Classify the user's message into exactly one of these intents:
   reserve dispatch for commands only and fall back to chit_chat just
   because the message is a question.
 - clarify_response: answering a clarifying question the agent asked.
-- confirm: approving a previously proposed action (e.g. "yes", "do it").
+- confirm: approving a previously proposed action (e.g. "yes", "do it") --
+  only when the agent has already proposed a specific dispatch to relay
+  (it said "Confirm to send, or cancel"). If nothing has been proposed yet
+  and the user is instead reacting to a *recap* (e.g. it mentioned an
+  agent's recommendation), that is recap_action, not confirm.
 - cancel: rejecting/withdrawing a previously proposed action.
+- recap_action: telling the agent to proceed with something the *recap*
+  itself surfaced -- e.g. "go ahead with F4", "let's do the duplicate
+  extractor fix for dripbird", "do all of them". This is not yet a
+  dispatch proposal (nothing has been proposed to confirm/cancel) -- it's
+  a reference back to an item the recap already described, which the
+  agent will resolve itself. Put the user's reference to *which item(s)*
+  they mean into "message", preserved as closely to their own wording as
+  possible (e.g. "F4", "the duplicate extractor fix for dripbird", "all")
+  -- do not try to identify the channel or agent yourself, and do not
+  restate the recommendation's content, since only the raw reference is
+  needed to look it back up.
+- recap_detail: asking for more detail on something the *recap* surfaced,
+  without asking to proceed with it -- e.g. "tell me more about F4", "what
+  did dripbird say about the duplicate extractor". Same "message" handling
+  as recap_action: preserve the user's own reference to which item, don't
+  restate its content.
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:

@@ -6,11 +6,21 @@ recomputes a short, prioritized summary from recent channel activity
 via a single LLM call. Correct and simple; the incremental cache is
 deferred to the "refine prompts and tooling" follow-on once real recap
 output quality has been seen.
+
+Alongside the rendered text, that same call also extracts a structured
+`RecapItem` per channel's current actionable next step. This is what
+lets a later DM ("go ahead with F4") refer back to a specific item from
+the last recap without re-parsing rendered prose -- see
+`recap_actions.py`. One JSON call does both jobs rather than two: the
+transcript is the same either way, and a second LLM round trip would
+double the cost for no benefit.
 """
 
 from __future__ import annotations
 
+import json
 import time
+from dataclasses import dataclass
 
 from swingbird.config import ChannelConfig, Config
 from swingbird.history import fetch_messages_since, fetch_recent_messages
@@ -39,6 +49,23 @@ _QUESTION_GUARD = (
     "that one was given."
 )
 
+_ITEMS_INSTRUCTIONS = """
+
+Respond with JSON only, matching this shape:
+{"text": "<the recap text described above>", "items": [{"channel":
+"<the channel name from a \\"## <name>\\" transcript heading>", "label":
+"<a short identifier the user could refer to later -- reuse an id like
+\\"F4\\" if the transcript already uses one, otherwise a few words naming
+the item>", "summary": "<one clause describing the item>", "instruction":
+"<the actual next step or recommendation, preserved as closely to the
+transcript's own wording as possible -- extract it, don't paraphrase or
+invent it>"}]}
+
+Include one item per channel for the same actionable next step "text" already
+leads with for that channel -- omit a channel from "items" entirely if it has
+no open/actionable item (e.g. it said "no open item"). Never fabricate an
+item, a label, or instruction wording that isn't grounded in the transcript."""
+
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
 actionable item: current status in one clause, then a proposed next \
@@ -48,7 +75,8 @@ beyond the one you lead with, note how many there are rather than \
 listing them. If a channel has no open item, say so briefly, and if a \
 goal is given for it, add one short sentence naming that goal as what's \
 next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip routine \
-chatter. Be concise -- 1-2 sentences per channel, not a transcript."""
+chatter. Be concise -- 1-2 sentences per channel, not a \
+transcript.{_ITEMS_INSTRUCTIONS}"""
 
 _DETAILED_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. \
 Given recent messages from one or more project channels, write a short, \
@@ -56,7 +84,7 @@ prioritized summary: lead with what needs the user's attention \
 (blockers, decisions needed, open questions), then what's in flight, \
 then what finished recently. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip \
 routine chatter. Be concise -- a few sentences per channel, not a \
-transcript."""
+transcript.{_ITEMS_INSTRUCTIONS}"""
 
 _SYSTEM_PROMPTS = {
     "concise": _CONCISE_SYSTEM_PROMPT,
@@ -65,7 +93,26 @@ _SYSTEM_PROMPTS = {
 
 
 class RecapError(Exception):
-    """Raised when a recap is requested for an unknown channel."""
+    """Raised when a recap is requested for an unknown channel, or the LLM's
+    response can't be trusted as a recap."""
+
+
+@dataclass(frozen=True)
+class RecapItem:
+    """One channel's current actionable next step, extracted alongside the
+    recap text so a later "go ahead with X" DM can refer back to it (see
+    `recap_actions.py`) without re-parsing rendered prose."""
+
+    channel: str
+    label: str
+    summary: str
+    instruction: str
+
+
+@dataclass(frozen=True)
+class Recap:
+    text: str
+    items: tuple[RecapItem, ...] = ()
 
 
 def build_recap(
@@ -73,7 +120,7 @@ def build_recap(
     config: Config,
     channel_names: list[str] | None = None,
     detail: str = "concise",
-) -> str:
+) -> Recap:
     """Return a short, prioritized recap of recent channel activity.
 
     `channel_names` restricts the recap to those configured channels;
@@ -98,7 +145,24 @@ def build_recap(
         },
         {"role": "user", "content": transcript},
     ]
-    return llm.complete(messages)
+    return _parse_recap(llm.complete_json(messages))
+
+
+def _parse_recap(response: dict) -> Recap:
+    text = response.get("text")
+    if not isinstance(text, str):
+        raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
+    items = tuple(
+        RecapItem(
+            channel=item.get("channel", ""),
+            label=item.get("label", ""),
+            summary=item.get("summary", ""),
+            instruction=item.get("instruction", ""),
+        )
+        for item in response.get("items") or []
+        if isinstance(item, dict) and item.get("instruction")
+    )
+    return Recap(text=text, items=items)
 
 
 def _select_channels(config: Config, channel_names: list[str] | None):

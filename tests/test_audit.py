@@ -3,9 +3,16 @@ from datetime import datetime
 
 from swingbird.audit import AuditLog
 from swingbird.pending_actions import DispatchProposal
+from swingbird.recap import RecapItem
 
 PROPOSAL = DispatchProposal(
     channel_id="chan-1", instruction="fix the login timeout bug", target_agent="Codex"
+)
+RECAP_ITEM = RecapItem(
+    channel="dripbird",
+    label="F4",
+    summary="unused-ignore propagation",
+    instruction="Fix the deterministic directive trip-check.",
 )
 
 
@@ -65,6 +72,20 @@ def test_log_decision_with_event_id_includes_it(tmp_path):
     (record,) = _read_records(path)
     assert record["decision"] == "confirmed"
     assert record["event_id"] == "evt-1"
+
+
+def test_log_recap_reference_writes_item_fields(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_recap_reference("thread-1", "recap_action", "F4", RECAP_ITEM)
+
+    (record,) = _read_records(path)
+    assert record["kind"] == "recap_reference"
+    assert record["thread_id"] == "thread-1"
+    assert record["recap_kind"] == "recap_action"
+    assert record["reference"] == "F4"
+    assert record["channel"] == "dripbird"
+    assert record["label"] == "F4"
 
 
 def test_appends_records_across_calls(tmp_path):

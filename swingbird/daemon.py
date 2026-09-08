@@ -66,7 +66,12 @@ from swingbird.pending_actions import (
     confirm_dispatch,
     propose_dispatch,
 )
-from swingbird.recap import RecapError, build_recap
+from swingbird.recap import RecapError, RecapItem, build_recap
+from swingbird.recap_actions import (
+    RecapActionError,
+    RecapActionStore,
+    resolve_reference,
+)
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
 
@@ -81,6 +86,7 @@ _ACTIONABLE_ERRORS = (
     RouterError,
     PendingActionError,
     RecapError,
+    RecapActionError,
     LLMError,
     outbound.RelayError,
 )
@@ -102,6 +108,7 @@ class Daemon:
         llm: LLMClient,
         audit: AuditLog,
         dm_id: str | None = None,
+        recap_store: RecapActionStore | None = None,
     ) -> None:
         self._config = config
         self._inbound = inbound
@@ -109,6 +116,12 @@ class Daemon:
         self._store = store
         self._llm = llm
         self._audit = audit
+        # The last recap's structured items per thread, so a follow-up DM
+        # ("go ahead with F4") can resolve "F4" back to a real channel and
+        # instruction -- see recap_actions.py.
+        self._recap_store = (
+            recap_store if recap_store is not None else RecapActionStore()
+        )
         # Resolved fresh in run() via outbound.open_dm(); only events posted
         # in this channel are ever routed as a command (see module
         # docstring). None until run() sets it, which means no channel can
@@ -284,12 +297,14 @@ class Daemon:
     def _act(self, intent: Intent, thread_id: str, event_id: str) -> str:
         if intent.kind == "recap":
             channel_names = [intent.channel] if intent.channel else None
-            return build_recap(
+            built_recap = build_recap(
                 self._llm,
                 self._config,
                 channel_names=channel_names,
                 detail=intent.detail,
             )
+            self._recap_store.set(thread_id, built_recap.items)
+            return built_recap.text
         if intent.kind in ("dispatch", "clarify_response"):
             return self._dispatch_or_ask(intent, thread_id)
         if intent.kind == "confirm":
@@ -297,7 +312,52 @@ class Daemon:
         if intent.kind == "cancel":
             cancel_dispatch(self._store, thread_id, audit=self._audit)
             return "Cancelled -- nothing was sent."
+        if intent.kind == "recap_action":
+            return self._recap_action(intent, thread_id)
+        if intent.kind == "recap_detail":
+            return self._recap_detail(intent, thread_id)
         return _CHIT_CHAT_REPLY
+
+    def _recap_action(self, intent: Intent, thread_id: str) -> str:
+        item = self._resolve_single_recap_item(thread_id, intent.message)
+        self._audit.log_recap_reference(thread_id, "recap_action", intent.message, item)
+        dispatch_intent = Intent(
+            kind="dispatch", channel=item.channel, message=item.instruction
+        )
+        return self._dispatch_or_ask(dispatch_intent, thread_id)
+
+    def _recap_detail(self, intent: Intent, thread_id: str) -> str:
+        item = self._resolve_single_recap_item(thread_id, intent.message)
+        self._audit.log_recap_reference(thread_id, "recap_detail", intent.message, item)
+        return f"{item.channel} -- {item.summary}\n\n{item.instruction}"
+
+    def _resolve_single_recap_item(
+        self, thread_id: str, reference: str | None
+    ) -> RecapItem:
+        """Resolve `reference` against the last recap's items for `thread_id`,
+        raising `RecapActionError` (caught centrally, see `_ACTIONABLE_ERRORS`)
+        for anything that isn't exactly one match.
+
+        v1 scope: a reference matching more than one item (including an
+        explicit "all") is treated the same as an ambiguous single-item
+        reference -- ask which one, rather than acting on a batch. See
+        recap_actions.py's module docstring for why that policy lives here
+        rather than in `resolve_reference` itself.
+        """
+        items = self._recap_store.get(thread_id)
+        if not items:
+            raise RecapActionError(
+                "I don't have a recent recap to reference here -- ask for a "
+                "recap first."
+            )
+        matched = resolve_reference(items, reference)
+        if len(matched) > 1:
+            labels = ", ".join(f"{item.channel}/{item.label}" for item in matched)
+            raise RecapActionError(
+                "That matches more than one item, and I can only act on one "
+                f"at a time for now -- which did you mean: {labels}?"
+            )
+        return matched[0]
 
     def _dispatch_or_ask(self, intent: Intent, thread_id: str) -> str:
         if intent.channel is None or intent.message is None:

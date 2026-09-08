@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 import sys
 import time
 
@@ -23,6 +24,8 @@ from swingbird.daemon import (
 )
 from swingbird.inbound import InboundError
 from swingbird.pending_actions import PendingActionStore
+from swingbird.recap import RecapItem
+from swingbird.recap_actions import RecapActionStore
 from swingbird.router import IntentRouter
 
 OWNER_PUBKEY = "owner-pubkey"
@@ -40,7 +43,16 @@ CONFIG = Config(
 
 
 class FakeLLM:
-    """Duck-types `LLMClient`: a canned classification and/or recap reply."""
+    """Duck-types `LLMClient`: a canned classification and/or recap reply.
+
+    `json_response` backs `complete_json`, used by both the router's
+    classification call and (since recap.py switched to structured output)
+    the recap-building call -- a scenario spanning both (e.g. a recap
+    request) needs a distinct response per call, so a list is consumed in
+    call order the same way test_router.py's FakeCompletions does; a bare
+    dict is broadcast to every call, which is all any dispatch/confirm/
+    cancel-only test needs.
+    """
 
     def __init__(self, json_response=None, text_response=""):
         self._json_response = json_response
@@ -49,7 +61,13 @@ class FakeLLM:
 
     def complete_json(self, messages):
         self.calls.append(messages)
-        return self._json_response
+        responses = (
+            self._json_response
+            if isinstance(self._json_response, list)
+            else [self._json_response]
+        )
+        index = min(len(self.calls) - 1, len(responses) - 1)
+        return responses[index]
 
     def complete(self, messages):
         self.calls.append(messages)
@@ -89,7 +107,7 @@ def _event(pubkey=OWNER_PUBKEY, content="hi", tags=None, event_id="evt-1"):
     }
 
 
-def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan"):
+def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan", recap_store=None):
     audit = AuditLog(tmp_path / "audit.jsonl")
     router = IntentRouter(llm, CONFIG, audit=audit)
     return Daemon(
@@ -100,6 +118,7 @@ def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan"):
         llm,
         audit,
         dm_id=dm_id,
+        recap_store=recap_store,
     )
 
 
@@ -111,8 +130,10 @@ def _sent(monkeypatch):
     return calls
 
 
-def _handle_event_and_get_first_sent(tmp_path, llm, sent, event=None, store=None):
-    bot = _daemon(tmp_path, llm, store=store)
+def _handle_event_and_get_first_sent(
+    tmp_path, llm, sent, event=None, store=None, recap_store=None
+):
+    bot = _daemon(tmp_path, llm, store=store, recap_store=recap_store)
     asyncio.run(bot._handle_event(event or _event()))
     return sent[0]
 
@@ -164,10 +185,162 @@ def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch)
 
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
-    llm = FakeLLM(json_response={"intent": "recap"}, text_response="here's the recap")
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap"},
+            {"text": "here's the recap", "items": []},
+        ]
+    )
     (args, kwargs) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
     assert args == ("dm-chan", "here's the recap")
     assert kwargs == {"reply_to": "evt-1"}
+
+
+def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap"},
+            {
+                "text": "here's the recap",
+                "items": [
+                    {
+                        "channel": "backend",
+                        "label": "F4",
+                        "summary": "unused-ignore propagation",
+                        "instruction": "Fix the deterministic directive trip-check.",
+                    }
+                ],
+            },
+        ]
+    )
+    bot = _daemon(tmp_path, llm)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    stored = bot._recap_store.get("dm-chan")
+    assert stored is not None
+    assert stored[0].label == "F4"
+
+
+F4_ITEM = RecapItem(
+    channel="backend",
+    label="F4",
+    summary="unused-ignore propagation",
+    instruction="Fix the deterministic directive trip-check.",
+)
+
+
+def _recap_store_with(thread_id, *items):
+    store = RecapActionStore()
+    store.set(thread_id, tuple(items))
+    return store
+
+
+def test_recap_action_proposes_dispatch_for_the_matched_item(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    expected_reply = (
+        "About to relay to backend (for Codex): 'Fix the deterministic "
+        "directive trip-check.'. Confirm to send, or cancel."
+    )
+    assert args == ("dm-chan", expected_reply)
+
+
+def test_recap_action_logs_the_resolved_reference(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+
+    bot = _daemon(tmp_path, llm, recap_store=recap_store)
+    asyncio.run(bot._handle_event(_event()))
+
+    records = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    (recap_reference,) = [r for r in records if r["kind"] == "recap_reference"]
+    assert recap_reference["recap_kind"] == "recap_action"
+    assert recap_reference["reference"] == "F4"
+    assert recap_reference["channel"] == "backend"
+    assert recap_reference["label"] == "F4"
+
+
+def test_recap_action_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args == (
+        "dm-chan",
+        (
+            "Couldn't do that: I don't have a recent recap to reference here -- "
+            "ask for a recap first."
+        ),
+    )
+
+
+def test_recap_action_ambiguous_reference_lists_candidates(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    other_item = dataclasses.replace(F4_ITEM, label="F5", channel="frontend")
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "all"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1].startswith("Couldn't do that: That matches more than one item")
+    assert "backend/F4" in args[1]
+    assert "frontend/F5" in args[1]
+
+
+def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F9"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
+
+
+def test_recap_detail_returns_the_stored_item_without_a_proposal(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == (
+        "dm-chan",
+        (
+            "backend -- unused-ignore propagation\n\n"
+            "Fix the deterministic directive trip-check."
+        ),
+    )
+
+
+def test_recap_detail_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args[1].startswith("Couldn't do that: I don't have a recent recap")
 
 
 def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch):
@@ -176,8 +349,10 @@ def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch)
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(
-        json_response={"intent": "recap", "detail": "detailed"},
-        text_response="here's the detailed recap",
+        json_response=[
+            {"intent": "recap", "detail": "detailed"},
+            {"text": "here's the detailed recap", "items": []},
+        ]
     )
 
     _handle_event_and_get_first_sent(tmp_path, llm, sent)

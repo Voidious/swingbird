@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from swingbird import recap
@@ -14,6 +16,7 @@ from swingbird.recap import (
     _CONCISE_SYSTEM_PROMPT,
     _DETAILED_SYSTEM_PROMPT,
     RecapError,
+    RecapItem,
     build_recap,
 )
 
@@ -69,7 +72,16 @@ class FakeOpenAI:
         self.chat = FakeChat(FakeCompletions(content))
 
 
-def _llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
+def _llm(
+    text: str = "recap", items: list[dict] | None = None
+) -> tuple[LLMClient, FakeOpenAI]:
+    content = json.dumps({"text": text, "items": items or []})
+    fake = FakeOpenAI(content)
+    return LLMClient(LLM_CONFIG, client=fake), fake
+
+
+def _raw_llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
+    """For responses that don't match the normal {"text": ...} shape."""
     fake = FakeOpenAI(content)
     return LLMClient(LLM_CONFIG, client=fake), fake
 
@@ -99,12 +111,60 @@ def test_build_recap_summarizes_all_channels(monkeypatch):
 
     result = build_recap(llm, CONFIG)
 
-    assert result == "here's the recap"
+    assert result.text == "here's the recap"
     transcript = _transcript(fake)
     assert "## backend" in transcript
     assert "backend msg" in transcript
     assert "## frontend" in transcript
     assert "frontend msg" in transcript
+
+
+def test_build_recap_parses_structured_items(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "unused-ignore propagation",
+                "instruction": "Fix the deterministic directive trip-check.",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items == (
+        RecapItem(
+            channel="backend",
+            label="F4",
+            summary="unused-ignore propagation",
+            instruction="Fix the deterministic directive trip-check.",
+        ),
+    )
+
+
+def test_build_recap_drops_items_without_an_instruction(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {"channel": "backend", "label": "F4", "summary": "no next step yet"},
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items == ()
+
+
+def test_build_recap_rejects_response_missing_text(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _raw_llm(json.dumps({"items": []}))
+
+    with pytest.raises(RecapError, match="missing recap text"):
+        build_recap(llm, CONFIG)
 
 
 def test_build_recap_restricts_to_named_channels(monkeypatch):
@@ -115,7 +175,7 @@ def test_build_recap_restricts_to_named_channels(monkeypatch):
         return []
 
     monkeypatch.setattr(recap, "fetch_recent_messages", fake_fetch)
-    llm, _ = _llm("recap")
+    llm, _ = _llm()
 
     build_recap(llm, CONFIG, channel_names=["backend"])
 
@@ -123,7 +183,7 @@ def test_build_recap_restricts_to_named_channels(monkeypatch):
 
 
 def test_build_recap_rejects_unknown_channel_name(monkeypatch):
-    llm, _ = _llm("recap")
+    llm, _ = _llm()
 
     with pytest.raises(RecapError, match="unknown channel"):
         build_recap(llm, CONFIG, channel_names=["nonexistent"])
@@ -135,7 +195,7 @@ def _setup_empty_channel_recap(monkeypatch, channel_names=None):
     monkeypatch.setattr(
         recap, "fetch_recent_messages", lambda channel_id, limit=None: []
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, CONFIG, channel_names=channel_names)
     return fake
@@ -145,6 +205,14 @@ def test_build_recap_notes_empty_channel(monkeypatch):
     fake = _setup_empty_channel_recap(monkeypatch)
 
     assert "(no recent activity)" in _transcript(fake)
+
+
+def _setup_and_build_recap(monkeypatch, fake_fetch, config):
+    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    llm, fake = _llm()
+
+    build_recap(llm, config)
+    return fake
 
 
 def test_build_recap_passes_configured_max_messages_through(monkeypatch):
@@ -161,19 +229,13 @@ def test_build_recap_passes_configured_max_messages_through(monkeypatch):
         seen_max.append(max_messages)
         return []
 
-    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
-    llm, _ = _llm("recap")
-
-    build_recap(llm, config)
+    _setup_and_build_recap(monkeypatch, fake_fetch, config)
 
     assert seen_max == [42, 42]
 
 
 def _build_recap_and_get_transcript(monkeypatch, fake_fetch, config):
-    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
-    llm, fake = _llm("recap")
-
-    build_recap(llm, config)
+    fake = _setup_and_build_recap(monkeypatch, fake_fetch, config)
 
     return _transcript(fake)
 
@@ -197,7 +259,7 @@ def test_build_recap_includes_stale_channel_when_named_explicitly(monkeypatch):
         "fetch_recent_messages",
         lambda channel_id, limit=None: [{"created_at": STALE, "content": "old msg"}],
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, CONFIG, channel_names=["backend"])
 
@@ -212,7 +274,7 @@ def test_build_recap_all_channels_stale_yields_placeholder_transcript(monkeypatc
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, CONFIG)
 
@@ -241,7 +303,7 @@ def test_build_recap_includes_goal_in_channel_header(monkeypatch):
             {"created_at": FRESH, "content": "msg"}
         ],
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, config)
 
@@ -280,7 +342,7 @@ def test_build_recap_uses_detailed_prompt_when_requested(monkeypatch):
     monkeypatch.setattr(
         recap, "fetch_recent_messages", lambda channel_id, limit=None: []
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, CONFIG, channel_names=["backend"], detail="detailed")
 
@@ -291,7 +353,7 @@ def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
     monkeypatch.setattr(
         recap, "fetch_recent_messages", lambda channel_id, limit=None: []
     )
-    llm, fake = _llm("recap")
+    llm, fake = _llm()
 
     build_recap(llm, CONFIG, channel_names=["backend"], detail="bogus")
 

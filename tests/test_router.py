@@ -159,6 +159,24 @@ def test_route_dispatch_with_ambiguous_target_leaves_fields_null():
     assert intent.target_agent is None
 
 
+def test_route_recap_action_extracts_reference_verbatim():
+    router, _ = _router(json.dumps({"intent": "recap_action", "message": "F4"}))
+
+    intent = router.route("go ahead with F4 for dripbird")
+
+    assert intent == Intent(kind="recap_action", message="F4")
+
+
+def test_route_recap_detail_extracts_reference_verbatim():
+    router, _ = _router(
+        json.dumps({"intent": "recap_detail", "message": "the duplicate extractor fix"})
+    )
+
+    intent = router.route("tell me more about the duplicate extractor fix")
+
+    assert intent == Intent(kind="recap_detail", message="the duplicate extractor fix")
+
+
 def test_route_confirm_and_cancel():
     router, _ = _router('{"intent": "confirm"}')
     assert router.route("yes, do it").kind == "confirm"
