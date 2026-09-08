@@ -49,6 +49,19 @@ def open_dm(pubkey: str) -> str:
     return run_buzz_cli(["dms", "open", "--pubkey", pubkey])["dm_id"]
 
 
+def join_channel(channel_id: str) -> None:
+    """Join `channel_id`; a no-op if the identity is already a member.
+
+    The relay accepts a join for an open channel unconditionally and
+    silently no-ops a join for a channel the identity already belongs to,
+    so the only way this raises `RelayError` is a real problem: notably a
+    private channel the identity isn't already in ("restricted: channel is
+    private"). Callers (see `daemon.py`'s `_join_project_channels`) treat
+    that as an expected, reportable condition rather than a crash.
+    """
+    run_buzz_cli(["channels", "join", "--channel", channel_id])
+
+
 def set_presence(status: str) -> None:
     """Publish the daemon's own presence (kind:20001) so its availability dot
     in Buzz Desktop reflects whether it's actually up, not just deployed."""

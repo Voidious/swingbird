@@ -6,6 +6,7 @@ from swingbird import outbound
 from swingbird.outbound import (
     RelayError,
     get_own_display_name,
+    join_channel,
     open_dm,
     relay_dispatch,
     send_message,
@@ -86,6 +87,27 @@ def test_open_dm_returns_dm_id(monkeypatch):
 
     assert open_dm("deadbeef") == "dm-chan-1"
     assert fake.calls[0]["args"] == ["buzz", "dms", "open", "--pubkey", "deadbeef"]
+
+
+def test_join_channel_posts_join(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-7", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    join_channel("chan-1")
+
+    assert fake.calls[0]["args"] == ["buzz", "channels", "join", "--channel", "chan-1"]
+
+
+def test_join_channel_raises_on_a_private_channel_rejection(monkeypatch):
+    fake = FakeRun(
+        returncode=1,
+        stderr='{"error": "relay_error", '
+        '"message": "relay error 403: restricted: channel is private"}',
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    with pytest.raises(RelayError, match="restricted: channel is private"):
+        join_channel("chan-1")
 
 
 def test_set_presence_posts_status(monkeypatch):

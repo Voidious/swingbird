@@ -19,6 +19,18 @@ its own 1:1 DM with the owner (resolved via `outbound.open_dm`) -- Buzz DMs
 turn out to be ordinary #h-tagged channel events under the hood, so this
 needed no new wire format, just one more channel id in the subscription.
 
+On startup the daemon also joins every configured project channel it isn't
+already a member of (`_join_project_channels`) -- good bot manners, since
+membership isn't actually required to read or write an *open* channel (the
+relay allows either membership or open visibility), so posting into
+channels it never joined would otherwise look odd in the member list. A
+join only fails for a private channel the identity isn't already in; that's
+logged and never fatal. The same failure mode can also surface later, from
+`relay_dispatch`/a recap fetch against a channel configured as private
+without the daemon in it -- `_ACTIONABLE_ERRORS` including `RelayError`
+turns that into a "Couldn't do that" reply to the owner (asking them to add
+the bot) instead of a silently swallowed exception.
+
 The daemon also publishes its own presence (online while the event loop is
 running, offline on exit) so its availability dot in Buzz Desktop reflects
 whether it's actually up -- a deployed daemon that isn't running should
@@ -65,7 +77,13 @@ _CHIT_CHAT_REPLY = (
     "That's outside what I handle -- ask me for a recap, or to dispatch an "
     "instruction to a project channel."
 )
-_ACTIONABLE_ERRORS = (RouterError, PendingActionError, RecapError, LLMError)
+_ACTIONABLE_ERRORS = (
+    RouterError,
+    PendingActionError,
+    RecapError,
+    LLMError,
+    outbound.RelayError,
+)
 
 
 class DaemonError(Exception):
@@ -111,6 +129,7 @@ class Daemon:
         # still coming up.
         since = int(time.time())
         self._sync_display_name()
+        self._join_project_channels()
         # Resolved here rather than in build_daemon() so construction stays
         # side-effect-free; this is the daemon's own DM with the owner,
         # opened (or resurfaced) fresh each run via the same buzz-cli path
@@ -139,6 +158,21 @@ class Daemon:
             outbound.set_presence(status)
         except outbound.RelayError as exc:
             print(f"swingbird: failed to set presence to {status!r}: {exc}")
+
+    def _join_project_channels(self) -> None:
+        # Best-effort, like presence/display-name sync: joining a channel
+        # the identity already belongs to (or an open one) always succeeds
+        # on the relay, so a failure here means a real, reportable problem
+        # (a private channel the identity isn't in) -- never a reason to
+        # block startup. See module docstring.
+        for channel in self._config.channels:
+            try:
+                outbound.join_channel(channel.id)
+            except outbound.RelayError as exc:
+                print(
+                    f"swingbird: couldn't join channel {channel.name!r} "
+                    f"({channel.id}) -- if it's private, add me to it: {exc}"
+                )
 
     def _sync_display_name(self) -> None:
         # Keeps a fresh identity (or a renamed deployment) from showing up

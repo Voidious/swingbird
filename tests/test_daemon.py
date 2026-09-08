@@ -248,6 +248,41 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
     assert store.get("dm-chan") is None
 
 
+def test_confirm_against_an_inaccessible_channel_becomes_a_helpful_reply(
+    tmp_path, monkeypatch
+):
+    """A private project channel the daemon isn't a member of shouldn't
+    crash the daemon or vanish into a console-only log -- the owner should
+    get told plainly that the dispatch didn't go through."""
+    sent = _sent(monkeypatch)
+
+    def _fail(*a):
+        raise outbound.RelayError("restricted: not a channel member")
+
+    monkeypatch.setattr(outbound, "relay_dispatch", _fail)
+    store = PendingActionStore()
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        }
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store)
+    asyncio.run(bot._handle_event(_event(event_id="evt-1")))
+
+    bot._llm._json_response = {"intent": "confirm"}
+    asyncio.run(bot._handle_event(_event(event_id="evt-2")))
+
+    (args, _) = sent[-1]
+    assert args == (
+        "dm-chan",
+        "Couldn't do that: restricted: not a channel member",
+    )
+    assert store.get("dm-chan") is None
+
+
 def _setup_dispatch_test(monkeypatch):
     sent = _sent(monkeypatch)
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
@@ -448,6 +483,7 @@ def _setup_outbound_mocks(monkeypatch):
     sent = _sent(monkeypatch)
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
     monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
     return sent
 
 
@@ -476,14 +512,56 @@ def test_run_connects_subscribes_and_survives_a_malformed_event(
     assert presence_calls == ["online", "offline"]
 
 
+def _run_daemon_with_llm(tmp_path, json_response=None):
+    llm = FakeLLM(json_response=json_response or {"intent": "chit_chat"})
+    bot = _daemon(tmp_path, llm)
+
+    asyncio.run(bot.run())
+    return bot, llm
+
+
+def test_run_joins_every_configured_project_channel(tmp_path, monkeypatch):
+    sent = _setup_outbound_mocks(monkeypatch)
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    joined = []
+    monkeypatch.setattr(outbound, "join_channel", joined.append)
+    _run_daemon_with_llm(tmp_path)
+
+    assert joined == ["chan-1", "chan-2"]
+    assert sent == []
+
+
+def test_join_channel_failure_is_logged_and_does_not_block_startup(
+    tmp_path, monkeypatch, capsys
+):
+    sent = _setup_outbound_mocks(monkeypatch)
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+
+    def _fail(channel_id):
+        raise outbound.RelayError("restricted: channel is private")
+
+    monkeypatch.setattr(outbound, "join_channel", _fail)
+    _run_daemon_with_llm(tmp_path)
+
+    out = capsys.readouterr().out
+    assert "couldn't join channel 'backend'" in out
+    assert "restricted: channel is private" in out
+    assert sent == []  # startup still reached "connected and listening"
+
+
+def _stub_outbound_network_calls(monkeypatch):
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
+
+
 def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     calls = []
     monkeypatch.setattr(
         outbound, "open_dm", lambda pubkey: calls.append(pubkey) or "dm-chan"
     )
-    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    _stub_outbound_network_calls(monkeypatch)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     dm_event = _event(tags=[["h", "dm-chan"]], event_id="dm-evt")
     inbound = FakeInbound([dm_event])
@@ -522,8 +600,7 @@ def test_run_captures_since_before_the_startup_network_round_trips(
         return "dm-chan"
 
     monkeypatch.setattr(outbound, "open_dm", _slow_open_dm)
-    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    _stub_outbound_network_calls(monkeypatch)
     (_, inbound) = _run_daemon(tmp_path)
 
     after = int(time.time())
@@ -546,9 +623,14 @@ def test_presence_set_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys
     assert "offline" in out
 
 
-def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys):
+def _stub_common_outbound(monkeypatch, outbound):
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
+
+
+def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys):
+    _stub_common_outbound(monkeypatch, outbound)
     monkeypatch.setattr(outbound, "get_own_display_name", lambda: "old-name")
     set_calls = []
     monkeypatch.setattr(outbound, "set_display_name", set_calls.append)
@@ -560,8 +642,7 @@ def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys)
 
 
 def test_sync_display_name_skips_when_already_matching(tmp_path, monkeypatch):
-    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
-    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    _stub_common_outbound(monkeypatch, outbound)
     monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
     monkeypatch.setattr(
         outbound, "set_display_name", lambda name: pytest.fail("should not update")
@@ -571,8 +652,7 @@ def test_sync_display_name_skips_when_already_matching(tmp_path, monkeypatch):
 
 
 def test_sync_display_name_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
-    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
+    _stub_common_outbound(monkeypatch, outbound)
 
     def _fail():
         raise outbound.RelayError("boom")
