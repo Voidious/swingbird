@@ -12,12 +12,36 @@ one place that knows how to invoke and parse `buzz` CLI output.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
+
+# Matches an `@` that `buzz messages send` would try to resolve as a member
+# mention: at start-of-string or after whitespace, immediately followed by a
+# name character. Mirrors buzz-cli's own `extract_at_names` matcher (see
+# buzz-sdk/src/mentions.rs) so this catches exactly what would otherwise
+# error out.
+_STRAY_MENTION_RE = re.compile(r"(?:^|(?<=\s))@(?=[A-Za-z0-9._-])")
 
 
 class RelayError(Exception):
     """Raised when a buzz-cli invocation fails or returns something unusable."""
+
+
+def _escape_stray_mentions(content: str) -> str:
+    """Defang `@word` tokens in free-form (LLM-generated) content.
+
+    `buzz messages send` treats any `@word` in `content` as an attempted
+    member mention and hard-fails (non-retryable) if it doesn't resolve to
+    exactly one channel member -- and recap/chit-chat/reply-summary text can
+    easily contain an incidental `@word` (quoting another channel's mention,
+    or a name that isn't a member of the DM it's being posted into). None of
+    that text is ever meant to notify anyone, so a zero-width space is
+    inserted right after the `@` to break the match while leaving the text
+    visually unchanged.
+    """
+    zero_width_space = "\u200b"
+    return _STRAY_MENTION_RE.sub("@" + zero_width_space, content)
 
 
 def run_buzz_cli(args: list[str], stdin: str | None = None) -> Any:
@@ -99,7 +123,15 @@ def send_message(
     against the channel's membership (e.g. the owner posting into their
     own DM, then having that instruction relayed into a project channel
     they aren't a member of).
+
+    When `mentions` is empty, `content` is free-form (recap/chit-chat/reply
+    -summary text with no intended live mention) and any stray `@word` in
+    it is defanged via `_escape_stray_mentions` -- see that function for
+    why. Callers that build an intentional `@name` mention (`relay_dispatch`)
+    always pass `mentions`, so they're unaffected.
     """
+    if not mentions:
+        content = _escape_stray_mentions(content)
     args = ["messages", "send", "--channel", channel_id, "--content", "-"]
     if reply_to is not None:
         args += ["--reply-to", reply_to]

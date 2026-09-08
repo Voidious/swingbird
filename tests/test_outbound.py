@@ -66,6 +66,35 @@ def test_send_message_includes_reply_to(monkeypatch):
     )
 
 
+def test_send_message_escapes_stray_at_word_when_no_mentions(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-2c", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    send_message("chan-1", "no one @mentioned you, so @here is moot")
+
+    assert fake.calls[0]["input"] == (
+        "no one @\u200bmentioned you, so @\u200bhere is moot"
+    )
+
+
+def test_send_message_leaves_email_like_text_alone(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-2d", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    send_message("chan-1", "reach user@host.example for details")
+
+    assert fake.calls[0]["input"] == "reach user@host.example for details"
+
+
+def test_send_message_does_not_escape_when_mentions_given(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-2e", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    send_message("chan-1", "hey @someone", mentions=["pubkey-a"])
+
+    assert fake.calls[0]["input"] == "hey @someone"
+
+
 def test_send_message_includes_mentions(monkeypatch):
     fake = FakeRun(stdout='{"event_id": "evt-2b", "accepted": true, "message": ""}')
     monkeypatch.setattr(outbound.subprocess, "run", fake)
