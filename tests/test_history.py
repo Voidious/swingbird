@@ -2,7 +2,11 @@ import json
 import subprocess
 
 from swingbird import outbound
-from swingbird.history import fetch_messages_since, fetch_recent_messages
+from swingbird.history import (
+    fetch_messages_since,
+    fetch_recent_messages,
+    fetch_thread_root,
+)
 
 
 class FakeRun:
@@ -84,6 +88,68 @@ def test_fetch_recent_messages_passes_before(monkeypatch):
         "--before",
         "12345",
     ]
+
+
+def test_fetch_thread_root_returns_the_event_with_no_e_tag(monkeypatch):
+    fake = FakeRun(
+        stdout=json.dumps(
+            [
+                {"id": "root-evt", "content": "root", "tags": [["h", "chan-1"]]},
+                {
+                    "id": "mid-evt",
+                    "content": "mid",
+                    "tags": [["h", "chan-1"], ["e", "root-evt", "", "reply"]],
+                },
+                {
+                    "id": "leaf-evt",
+                    "content": "leaf",
+                    "tags": [
+                        ["h", "chan-1"],
+                        ["e", "root-evt", "", "root"],
+                        ["e", "mid-evt", "", "reply"],
+                    ],
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    root = fetch_thread_root("chan-1", "leaf-evt")
+
+    assert root == "root-evt"
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "messages",
+        "thread",
+        "--channel",
+        "chan-1",
+        "--event",
+        "leaf-evt",
+    ]
+
+
+def test_fetch_thread_root_falls_back_to_event_id_without_a_rootless_event(
+    monkeypatch,
+):
+    """Defensive: if the thread lookup doesn't contain an event with no `e`
+    tag at all (shouldn't happen for a real thread), fall back to the
+    event id that was asked about rather than guessing at a wrong root."""
+    fake = FakeRun(
+        stdout=json.dumps(
+            [
+                {
+                    "id": "evt-1",
+                    "content": "hi",
+                    "tags": [["e", "missing-root", "", "reply"]],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    root = fetch_thread_root("chan-1", "evt-1")
+
+    assert root == "evt-1"
 
 
 def test_fetch_messages_since_stops_at_a_single_page(monkeypatch):

@@ -44,6 +44,16 @@ the main event loop rather than blocking it, since the reply (if any)
 arrives as just another event on the same subscription; matching it to
 the right wait is done by NIP-10 `e`-tag, not by agent identity, since
 the daemon doesn't track individual coding agents' pubkeys.
+
+A coding agent's own reply frequently doesn't `e`-tag the relayed message
+directly: an async status update often threads to the whole conversation's
+root instead of the specific message that carried the instruction, and a
+reply nested two or more levels deep NIP-10-tags both a "root" and a
+"reply" id, in either order. `_reply_watch_id` resolves the id actually
+worth watching up front (the thread's true root for a grounded dispatch,
+the relayed event's own id for a fresh top-level one), and
+`_reply_target_ids` checks every `e`-tag id on an inbound event against
+it, so either shape of reply is caught -- see both for why.
 """
 
 from __future__ import annotations
@@ -58,9 +68,11 @@ from swingbird import outbound
 from swingbird.audit import AuditLog
 from swingbird.config import Config, load_config
 from swingbird.dispatch_phrasing import rephrase_for_dispatch
+from swingbird.history import fetch_thread_root
 from swingbird.inbound import InboundClient, InboundError
 from swingbird.llm import LLMClient, LLMError
 from swingbird.pending_actions import (
+    DispatchProposal,
     PendingActionError,
     PendingActionStore,
     cancel_dispatch,
@@ -230,18 +242,25 @@ class Daemon:
             print(f"swingbird: failed to send reply to {event['id']}: {exc}")
 
     def _resolve_reply_watch(self, event: dict) -> bool:
-        """If `event` replies to a relayed instruction we're waiting on,
+        """If `event` replies anywhere within a thread we're waiting on,
         fulfill that wait and report it as handled.
 
-        Matched by NIP-10 `e`-tag, not by who posted it -- a reply is never
+        Checked against every NIP-10 `e`-tag id on `event`
+        (`_reply_target_ids`), not just one -- see `_reply_watch_id` for why
+        a reply can legitimately carry a different id than the one that was
+        actually watched while still belonging to the same watched thread.
+        Matched by tag id alone, not by who posted it -- a reply is never
         itself treated as an owner command (§5), regardless of its author.
         """
-        reply_to = _reply_to(event)
-        future = self._reply_watches.pop(reply_to, None) if reply_to else None
-        if future is None or future.done():
-            return False
-        future.set_result(event)
-        return True
+        for target_id in _reply_target_ids(event):
+            future = self._reply_watches.pop(target_id, None)
+            if future is None:
+                continue
+            if future.done():
+                return False
+            future.set_result(event)
+            return True
+        return False
 
     def _watch_for_reply(
         self, relayed_event_id: str, dm_channel_id: str, dm_reply_to: str
@@ -383,13 +402,39 @@ class Daemon:
         )
 
     def _confirm(self, thread_id: str, dm_reply_to: str) -> str:
-        event_id, _proposal = confirm_dispatch(
+        event_id, proposal = confirm_dispatch(
             self._store, thread_id, self._config.owner, audit=self._audit
         )
         self._watch_for_reply(
-            event_id, dm_channel_id=thread_id, dm_reply_to=dm_reply_to
+            self._reply_watch_id(event_id, proposal),
+            dm_channel_id=thread_id,
+            dm_reply_to=dm_reply_to,
         )
         return f"Confirmed and relayed (event {event_id})."
+
+    def _reply_watch_id(self, event_id: str, proposal: DispatchProposal) -> str:
+        """Return the id to register a reply-wait against for this dispatch.
+
+        A fresh (ungrounded) dispatch posts top-level, so it's already its
+        own thread root and `event_id` is exactly right. A recap-action
+        dispatch instead threads to `proposal.reply_to` (see
+        `pending_actions.py`) -- a message inside an existing thread whose
+        real root can be several messages further up, and a coding agent's
+        own status-update reply often threads to *that* root rather than to
+        the specific relayed message (see module docstring). Resolving the
+        true root here, once, up front, is what lets a single dict lookup in
+        `_resolve_reply_watch` match either shape of reply. Best-effort: a
+        lookup failure falls back to `event_id` (matching a direct reply
+        only, the pre-existing behavior) rather than losing the
+        wait-and-summarize outright.
+        """
+        if proposal.reply_to is None:
+            return event_id
+        try:
+            return fetch_thread_root(proposal.channel_id, proposal.reply_to)
+        except outbound.RelayError as exc:
+            print(f"swingbird: failed to resolve thread root for {event_id}: {exc}")
+            return event_id
 
 
 def _channel_of(event: dict) -> str:
@@ -406,12 +451,14 @@ def _channel_of(event: dict) -> str:
     raise DaemonError(f"event {event.get('id')} has no channel (#h) tag")
 
 
-def _reply_to(event: dict) -> str | None:
-    """Return the event id this event replies to (NIP-10 `e` tag), or None."""
-    for tag in event.get("tags", []):
-        if len(tag) >= 2 and tag[0] == "e":
-            return tag[1]
-    return None
+def _reply_target_ids(event: dict) -> list[str]:
+    """Return every event id referenced by an `e` tag on `event` (NIP-10).
+
+    A reply can carry a "root" tag, a "reply" tag, or both depending on
+    thread depth, in either order -- see `Daemon._reply_watch_id` -- so
+    matching a reply-wait needs to check all of them, not just the first.
+    """
+    return [tag[1] for tag in event.get("tags", []) if len(tag) >= 2 and tag[0] == "e"]
 
 
 def build_daemon(config_path: str, audit_log_path: str) -> Daemon:

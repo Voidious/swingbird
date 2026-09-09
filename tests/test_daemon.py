@@ -301,6 +301,10 @@ def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkey
     monkeypatch.setattr(
         outbound, "relay_dispatch", lambda *a: relayed.append(a) or "posted-evt"
     )
+    # Root resolution (see _reply_watch_id) is exercised by its own tests
+    # below -- stubbed here so this test's own assertions (about what got
+    # relayed) don't depend on it, and so it never shells out for real.
+    monkeypatch.setattr(daemon, "fetch_thread_root", lambda *a: "source-evt")
     grounded_item = dataclasses.replace(F4_ITEM, source_event_id="source-evt")
     recap_store = _recap_store_with("dm-chan", grounded_item)
     llm = FakeLLM(
@@ -323,6 +327,157 @@ def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkey
             "source-evt",
         )
     ]
+
+
+def _assert_last_sent(sent, channel="dm-chan", content="Fixed it.", reply_to="evt-2"):
+    (args, kwargs) = sent[-1]
+    assert args == (channel, content)
+    assert kwargs == {"reply_to": reply_to}
+
+
+def _setup_grounded_recap_bot(tmp_path, store):
+    grounded_item = dataclasses.replace(F4_ITEM, source_event_id="source-evt")
+    recap_store = _recap_store_with("dm-chan", grounded_item)
+    llm = FakeLLM(
+        json_response={"intent": "recap_action", "message": "F4"},
+        text_response="Fixed it.",
+    )
+    bot = _daemon(tmp_path, llm, store=store, recap_store=recap_store)
+    return bot, recap_store
+
+
+def test_grounded_dispatch_reply_watch_matches_the_threads_true_root(
+    tmp_path, monkeypatch
+):
+    """A grounded (recap-action) dispatch threads to the item's source
+    event, which can itself be nested in an existing thread. A coding
+    agent's own status-update reply commonly threads to that thread's
+    root instead of to the specific relayed message -- see the daemon
+    module docstring -- so the wait-and-summarize must match a reply
+    e-tagged only to the resolved root, not to `proposal.reply_to` or the
+    relayed event's own id."""
+    sent, store = _setup_dispatch_test(monkeypatch)
+    monkeypatch.setattr(
+        daemon, "fetch_thread_root", lambda channel_id, event_id: "thread-root-evt"
+    )
+    (bot, _) = _setup_grounded_recap_bot(tmp_path, store)
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        # Neither "posted-evt" (the relayed message) nor "source-evt"
+        # (what it was grounded in) -- only the resolved thread root.
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="Fixed it.",
+            tags=[["h", "chan-1"], ["e", "thread-root-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    _assert_last_sent(sent)
+    assert bot._reply_watches == {}
+
+
+def test_reply_watch_id_falls_back_when_root_lookup_fails(
+    tmp_path, monkeypatch, capsys
+):
+    """A thread-root lookup failure (e.g. the project channel isn't
+    accessible for reads either) must not sink the confirm reply or the
+    wait entirely -- it falls back to watching the relayed event's own id,
+    same as before this behavior existed."""
+    sent, store = _setup_dispatch_test(monkeypatch)
+
+    def _fail(*a):
+        raise outbound.RelayError("not found")
+
+    monkeypatch.setattr(daemon, "fetch_thread_root", _fail)
+    (bot, _) = _setup_grounded_recap_bot(tmp_path, store)
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="Fixed it.",
+            tags=[["h", "chan-1"], ["e", "posted-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    _assert_last_sent(sent)
+    assert "failed to resolve thread root for posted-evt: not found" in (
+        capsys.readouterr().out
+    )
+
+
+def test_reply_target_ids_checks_every_e_tag_not_just_the_first(tmp_path, monkeypatch):
+    """A reply nested two or more levels deep NIP-10-tags both a "root" and
+    a "reply" id (root first, per the relay's own convention) -- the watch
+    must still match even when the id it's keyed on isn't the first e-tag
+    on the reply."""
+    sent, store = _setup_dispatch_test(monkeypatch)
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        },
+        text_response="Fixed it.",
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store)
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="Fixed it.",
+            tags=[
+                ["h", "chan-1"],
+                ["e", "some-older-root", "", "root"],
+                ["e", "posted-evt", "", "reply"],
+            ],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    _assert_last_sent(sent)
+
+
+def test_resolve_reply_watch_discards_an_already_done_future(tmp_path):
+    """Defends against a narrow race between a reply-wait timing out and a
+    reply for the same id arriving before the timeout's own cleanup pops
+    the dict entry (see _await_and_summarize's TimeoutError branch): the
+    stale, already-resolved future must be discarded, not fulfilled again,
+    and the event must be reported as unhandled so it still falls through
+    to normal routing."""
+    bot = _daemon(tmp_path, FakeLLM())
+
+    async def scenario():
+        future = asyncio.get_running_loop().create_future()
+        future.cancel()
+        bot._reply_watches["stale-evt"] = future
+        event = _event(tags=[["h", "dm-chan"], ["e", "stale-evt", "", "reply"]])
+        return bot._resolve_reply_watch(event)
+
+    handled = asyncio.run(scenario())
+
+    assert handled is False
+    assert bot._reply_watches == {}
 
 
 def test_recap_action_logs_the_resolved_reference(tmp_path, monkeypatch):

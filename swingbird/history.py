@@ -33,6 +33,27 @@ def fetch_recent_messages(
     return run_buzz_cli(args)
 
 
+def fetch_thread_root(channel_id: str, event_id: str) -> str:
+    """Return the root event id of the thread containing `event_id`.
+
+    Used by daemon.py's reply-wait to resolve what a grounded dispatch was
+    threaded into: a coding agent's own reply often threads to the whole
+    thread's root instead of the specific message it received (see
+    `daemon.py`'s `_reply_watch_id`), which can be several messages above
+    `event_id` itself. The root is the one event in `buzz messages thread`'s
+    result with no `e` tag at all (NIP-10: nothing replies to the root) --
+    falls back to `event_id` itself if the thread doesn't contain one (e.g.
+    `event_id` is already the root), never guessing at a wrong one.
+    """
+    events = run_buzz_cli(
+        ["messages", "thread", "--channel", channel_id, "--event", event_id]
+    )
+    for event in events:
+        if not any(tag and tag[0] == "e" for tag in event.get("tags", [])):
+            return event["id"]
+    return event_id
+
+
 def fetch_messages_since(
     channel_id: str,
     since_ts: float,
