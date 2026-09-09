@@ -27,6 +27,13 @@ from swingbird.recap import RecapItem
 
 _ALL_MARKERS = {"", "all", "everything"}
 
+# Connector words stripped out when falling back to word-level label matching
+# (see `resolve_reference`) -- common enough to show up in almost any
+# channel-qualified reference ("F4 for dripbird") without carrying any of
+# the reference's actual meaning, so treating them as match candidates would
+# just invite coincidental false positives.
+_STOPWORDS = {"for", "the", "a", "an", "in", "on", "of", "to", "with", "about"}
+
 
 class RecapActionError(Exception):
     """Raised when a recap-item reference can't be resolved."""
@@ -66,6 +73,16 @@ def resolve_reference(
     is narrowed to that channel's items first, so a label that happens to
     recur across channels (or a channel name that happens to look like
     another item's label) can't cross-match.
+
+    A channel-qualified reference can still fail the whole-string
+    bidirectional test even after narrowing: a bundled multi-option item
+    (e.g. one item's label covering a "F4 or F5 or F6" decision) isn't a
+    substring of "F4 for dripbird", and "F4 for dripbird" isn't a substring
+    of it either -- only the "F4" fragment actually identifies the item. So
+    matching also falls back to individual (non-stopword) words of
+    `reference`: if any single word is itself a substring of the label,
+    that's enough. This can't spuriously match an empty label (no word is a
+    substring of "").
     """
     normalized = (reference or "").strip().lower()
     if normalized in _ALL_MARKERS:
@@ -80,12 +97,14 @@ def resolve_reference(
         if len(channels_named) == 1
         else items
     )
+    words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
     matches = [
         item
         for item in candidates
         if normalized in item.label.lower()
         or (item.label and item.label.lower() in normalized)
         or normalized in item.channel.lower()
+        or any(word in item.label.lower() for word in words)
     ]
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")

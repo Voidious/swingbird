@@ -128,6 +128,38 @@ def test_resolve_reference_channel_qualifier_that_matches_no_label_raises():
         resolve_reference((ITEM_F4, ITEM_F5), "F9 for dripbird")
 
 
+def test_resolve_reference_by_word_within_a_bundled_multi_option_label():
+    # A recap item covering a multi-way decision (e.g. "F4 or F5 or F6, pick
+    # one") gets a compound label -- neither the whole label nor the whole
+    # channel-qualified reference is a substring of the other, so only a
+    # word-level fallback resolves "F4 for dripbird" against it.
+    bundled = RecapItem(
+        channel="dripbird",
+        label="F4/F5/F6",
+        summary="three issues found",
+        instruction="pick one to fix first",
+    )
+
+    matches = resolve_reference((bundled, ITEM_BACKEND), "F4 for dripbird")
+
+    assert matches == [bundled]
+
+
+def test_resolve_reference_word_fallback_ignores_stopwords():
+    # "for" and "dripbird" are both words in the reference, but only "F4"
+    # should be able to identify the item -- a stray label containing a
+    # common connector word must not spuriously match via "for" alone.
+    decoy = RecapItem(
+        channel="crispen",
+        label="wait for CI",
+        summary="s",
+        instruction="i",
+    )
+
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((decoy,), "F4 for dripbird")
+
+
 def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
     # An empty label must never reverse-match as a substring of everything
     # -- otherwise every reference would spuriously match an unlabeled item.
