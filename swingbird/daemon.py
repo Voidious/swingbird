@@ -322,7 +322,10 @@ class Daemon:
         item = self._resolve_single_recap_item(thread_id, intent.message)
         self._audit.log_recap_reference(thread_id, "recap_action", intent.message, item)
         dispatch_intent = Intent(
-            kind="dispatch", channel=item.channel, message=item.instruction
+            kind="dispatch",
+            channel=item.channel,
+            message=item.instruction,
+            reply_to=item.source_event_id,
         )
         return self._dispatch_or_ask(dispatch_intent, thread_id)
 

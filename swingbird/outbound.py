@@ -146,6 +146,7 @@ def relay_dispatch(
     requested_by_name: str,
     requested_by_pubkey: str,
     target_agent: str | None = None,
+    reply_to: str | None = None,
 ) -> str:
     """Post `instruction` into `channel_id`, attributed to the requester.
 
@@ -161,7 +162,14 @@ def relay_dispatch(
     `target_agent` was identified the relayed message leads with an
     `@name` mention -- otherwise it's relayed but nothing in the channel
     is guaranteed to ever look at it.
+
+    `reply_to`, when given (a recap follow-up whose item resolved a
+    `source_event_id`), threads the relayed message to whatever it was
+    grounded in instead of posting disconnected from it. `None` for a
+    fresh dispatch, which has no such message to thread to.
     """
     prefix = f"@{target_agent} " if target_agent else ""
     content = f"{prefix}Relaying instruction from @{requested_by_name}: {instruction}"
-    return send_message(channel_id, content, mentions=[requested_by_pubkey])
+    return send_message(
+        channel_id, content, reply_to=reply_to, mentions=[requested_by_pubkey]
+    )

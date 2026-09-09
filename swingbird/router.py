@@ -109,6 +109,10 @@ class Intent:
     target_agent: str | None = None
     message: str | None = None
     detail: str = "concise"
+    # Never set by the router's own LLM classification -- only by
+    # `daemon._recap_action`, to thread a recap follow-up's dispatch back to
+    # the message the recap grounded it in (see `RecapItem.source_event_id`).
+    reply_to: str | None = None
 
 
 class IntentRouter:

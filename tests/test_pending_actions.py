@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from swingbird import outbound
@@ -134,9 +136,39 @@ def test_confirm_dispatch_posts_and_clears(monkeypatch):
         target_agent="Codex",
     )
     assert calls == [
-        ("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey", "Codex")
+        (
+            "chan-1",
+            "fix the login timeout bug",
+            "Voidious",
+            "owner-pubkey",
+            "Codex",
+            None,
+        )
     ]
     assert store.get("thread-1") is None
+
+
+def test_propose_dispatch_carries_reply_to_from_the_intent():
+    store = PendingActionStore()
+    intent = dataclasses.replace(DISPATCH_INTENT, reply_to="evt-source")
+
+    proposal = propose_dispatch(store, CONFIG, "thread-1", intent)
+
+    assert proposal.reply_to == "evt-source"
+
+
+def test_confirm_dispatch_passes_reply_to_through(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        outbound, "relay_dispatch", lambda *a: calls.append(a) or "evt-1"
+    )
+    store = PendingActionStore()
+    intent = dataclasses.replace(DISPATCH_INTENT, reply_to="evt-source")
+    propose_dispatch(store, CONFIG, "thread-1", intent)
+
+    confirm_dispatch(store, "thread-1", CONFIG.owner)
+
+    assert calls[0][-1] == "evt-source"
 
 
 def test_cancel_dispatch_clears_without_posting(monkeypatch):

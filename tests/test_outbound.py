@@ -228,6 +228,31 @@ def test_relay_dispatch_mentions_target_agent(monkeypatch):
     )
 
 
+def test_relay_dispatch_threads_to_reply_to_when_given(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-6", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    relay_dispatch(
+        "chan-1",
+        "fix the login timeout bug",
+        "Voidious",
+        "owner-pubkey",
+        reply_to="source-evt",
+    )
+
+    args = fake.calls[0]["args"]
+    assert args[args.index("--reply-to") + 1] == "source-evt"
+
+
+def test_relay_dispatch_omits_reply_to_by_default(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-7", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    relay_dispatch("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey")
+
+    assert "--reply-to" not in fake.calls[0]["args"]
+
+
 def test_buzz_cli_not_found(monkeypatch):
     fake = FakeRun(error=FileNotFoundError())
     monkeypatch.setattr(outbound.subprocess, "run", fake)

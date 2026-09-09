@@ -256,6 +256,33 @@ def test_recap_action_proposes_dispatch_for_the_matched_item(tmp_path, monkeypat
     assert args == ("dm-chan", expected_reply)
 
 
+def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    relayed = []
+    monkeypatch.setattr(
+        outbound, "relay_dispatch", lambda *a: relayed.append(a) or "posted-evt"
+    )
+    grounded_item = dataclasses.replace(F4_ITEM, source_event_id="source-evt")
+    recap_store = _recap_store_with("dm-chan", grounded_item)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+    bot = _daemon(tmp_path, llm, recap_store=recap_store)
+
+    asyncio.run(bot._handle_event(_event(event_id="evt-1")))
+    bot._llm._json_response = {"intent": "confirm"}
+    asyncio.run(bot._handle_event(_event(event_id="evt-2")))
+
+    assert relayed == [
+        (
+            "chan-1",
+            "Fix the deterministic directive trip-check.",
+            "Voidious",
+            OWNER_PUBKEY,
+            "Codex",
+            "source-evt",
+        )
+    ]
+
+
 def test_recap_action_logs_the_resolved_reference(tmp_path, monkeypatch):
     _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
@@ -433,7 +460,7 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
     bot._llm._json_response = {"intent": "confirm"}
     asyncio.run(bot._handle_event(_event(event_id="evt-2")))
 
-    assert relayed == [("chan-1", "fix it", "Voidious", OWNER_PUBKEY, "Codex")]
+    assert relayed == [("chan-1", "fix it", "Voidious", OWNER_PUBKEY, "Codex", None)]
     (args, _) = sent[-1]
     assert args == ("dm-chan", "Confirmed and relayed (event posted-evt).")
     assert store.get("dm-chan") is None

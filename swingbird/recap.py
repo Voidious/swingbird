@@ -51,7 +51,8 @@ _QUESTION_GUARD = (
 
 _ITEMS_INSTRUCTIONS = """
 
-Respond with JSON only, matching this shape:
+Each transcript message is tagged with a short id like "m3" (e.g. "[m3]
+[<timestamp>] some message"). Respond with JSON only, matching this shape:
 {"text": "<the recap text described above>", "items": [{"channel":
 "<the channel name from a \\"## <name>\\" transcript heading>", "label":
 "<a short identifier the user could refer to later -- reuse an id like
@@ -59,12 +60,15 @@ Respond with JSON only, matching this shape:
 the item>", "summary": "<one clause describing the item>", "instruction":
 "<the actual next step or recommendation, preserved as closely to the
 transcript's own wording as possible -- extract it, don't paraphrase or
-invent it>"}]}
+invent it>", "source_id": "<the tag (e.g. \\"m3\\") of the single transcript
+message that most directly states this instruction -- omit or use an empty
+string if it isn't clearly grounded in one specific message>"}]}
 
 Include one item per channel for the same actionable next step "text" already
 leads with for that channel -- omit a channel from "items" entirely if it has
 no open/actionable item (e.g. it said "no open item"). Never fabricate an
-item, a label, or instruction wording that isn't grounded in the transcript."""
+item, a label, an instruction, or a "source_id" that isn't grounded in the
+transcript."""
 
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
@@ -101,12 +105,19 @@ class RecapError(Exception):
 class RecapItem:
     """One channel's current actionable next step, extracted alongside the
     recap text so a later "go ahead with X" DM can refer back to it (see
-    `recap_actions.py`) without re-parsing rendered prose."""
+    `recap_actions.py`) without re-parsing rendered prose.
+
+    `source_event_id` is the transcript message the instruction was grounded
+    in, when the LLM could point to one specific message -- it's what lets a
+    later `recap_action` thread its relayed dispatch as a reply to that
+    message instead of posting disconnected from it (see `daemon.py`). `None`
+    when nothing single message grounds the item; never guessed."""
 
     channel: str
     label: str
     summary: str
     instruction: str
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,7 +143,7 @@ def build_recap(
     three-bucket summary).
     """
     channels = _select_channels(config, channel_names)
-    transcript = _build_transcript(
+    transcript, id_map = _build_transcript(
         channels,
         stale_after_days=config.recap.stale_after_days,
         max_messages_per_channel=config.recap.max_messages_per_channel,
@@ -145,10 +156,10 @@ def build_recap(
         },
         {"role": "user", "content": transcript},
     ]
-    return _parse_recap(llm.complete_json(messages))
+    return _parse_recap(llm.complete_json(messages), id_map)
 
 
-def _parse_recap(response: dict) -> Recap:
+def _parse_recap(response: dict, id_map: dict[str, dict[str, str]]) -> Recap:
     text = response.get("text")
     if not isinstance(text, str):
         raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
@@ -158,11 +169,28 @@ def _parse_recap(response: dict) -> Recap:
             label=item.get("label", ""),
             summary=item.get("summary", ""),
             instruction=item.get("instruction", ""),
+            source_event_id=_resolve_source_id(
+                id_map, item.get("channel", ""), item.get("source_id")
+            ),
         )
         for item in response.get("items") or []
         if isinstance(item, dict) and item.get("instruction")
     )
     return Recap(text=text, items=items)
+
+
+def _resolve_source_id(
+    id_map: dict[str, dict[str, str]], channel: str, tag: object
+) -> str | None:
+    """Resolve an LLM-cited `tag` (e.g. "m3") to a real event id.
+
+    Never trusts the LLM's tag blindly -- a missing tag, an empty string, an
+    unknown channel, or a tag that doesn't match any message actually shown
+    for that channel all resolve to `None` (a plain dict miss, in the latter
+    three cases) rather than a guess."""
+    if not isinstance(tag, str):
+        return None
+    return id_map.get(channel, {}).get(tag)
 
 
 def _select_channels(config: Config, channel_names: list[str] | None):
@@ -182,9 +210,20 @@ def _build_transcript(
     stale_after_days: int,
     max_messages_per_channel: int,
     explicit: bool,
-) -> str:
+) -> tuple[str, dict[str, dict[str, str]]]:
+    """Return the transcript text and a `{channel_name: {tag: event_id}}` map.
+
+    Each message is tagged with a short per-channel local id ("m1", "m2",
+    ...) rather than its real (64-char) event id -- cheap for the LLM to
+    copy back verbatim in `source_id` (see `_ITEMS_INSTRUCTIONS`) without
+    risking a garbled hex string. The map only gets an entry for messages
+    that actually carry an `"id"` -- real `buzz messages get` events always
+    do; this just means a message without one can't be cited as a source,
+    never a crash.
+    """
     cutoff = time.time() - stale_after_days * 86400
     sections = []
+    id_map: dict[str, dict[str, str]] = {}
     for channel in channels:
         if explicit:
             # Staleness never applies to a channel the user named on
@@ -204,10 +243,21 @@ def _build_transcript(
         header = f"## {channel.name}"
         if channel.goal:
             header += f" (goal: {channel.goal})"
-        body = (
-            "\n".join(f"[{event['created_at']}] {event['content']}" for event in events)
-            if events
-            else "(no recent activity)"
-        )
+        if events:
+            lines = []
+            tags = {}
+            for i, event in enumerate(events, start=1):
+                tag = f"m{i}"
+                lines.append(f"[{tag}] [{event['created_at']}] {event['content']}")
+                if "id" in event:
+                    tags[tag] = event["id"]
+            body = "\n".join(lines)
+            if tags:
+                id_map[channel.name] = tags
+        else:
+            body = "(no recent activity)"
         sections.append(f"{header}\n{body}")
-    return "\n\n".join(sections) if sections else "(no channels with recent activity)"
+    transcript = (
+        "\n\n".join(sections) if sections else "(no channels with recent activity)"
+    )
+    return transcript, id_map

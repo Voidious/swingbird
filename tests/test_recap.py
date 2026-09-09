@@ -119,6 +119,154 @@ def test_build_recap_summarizes_all_channels(monkeypatch):
     assert "frontend msg" in transcript
 
 
+def test_build_recap_tags_transcript_messages_with_a_local_id(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [
+                {"created_at": FRESH, "content": "first", "id": "evt-a"},
+                {"created_at": FRESH, "content": "second", "id": "evt-b"},
+            ]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, fake = _llm()
+
+    build_recap(llm, CONFIG)
+
+    transcript = _transcript(fake)
+    assert "[m1] " in transcript
+    assert "[m2] " in transcript
+
+
+def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [
+                {"created_at": FRESH, "content": "first", "id": "evt-a"},
+                {"created_at": FRESH, "content": "second", "id": "evt-b"},
+            ]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "source_id": "m2",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].source_event_id == "evt-b"
+
+
+def test_build_recap_leaves_source_event_id_none_without_a_source_id(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].source_event_id is None
+
+
+def test_build_recap_leaves_source_event_id_none_for_an_unknown_tag(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "source_id": "m9",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].source_event_id is None
+
+
+def test_build_recap_leaves_source_event_id_none_for_an_unmapped_channel(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "source_id": "m1",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].source_event_id is None
+
+
+def test_build_recap_skips_map_entry_for_messages_without_an_id(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [{"created_at": FRESH, "content": "no id here"}]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "source_id": "m1",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].source_event_id is None
+
+
 def test_build_recap_parses_structured_items(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(

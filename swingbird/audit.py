@@ -33,6 +33,7 @@ class AuditLog:
             channel_id=proposal.channel_id,
             instruction=proposal.instruction,
             target_agent=proposal.target_agent,
+            reply_to=proposal.reply_to,
         )
 
     def log_recap_reference(
@@ -45,6 +46,7 @@ class AuditLog:
             reference=reference,
             channel=item.channel,
             label=item.label,
+            source_event_id=item.source_event_id,
         )
 
     def log_decision(

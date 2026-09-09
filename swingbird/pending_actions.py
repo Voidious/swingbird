@@ -32,6 +32,10 @@ class DispatchProposal:
     channel_id: str
     instruction: str
     target_agent: str | None
+    # Set when the intent it was built from carried one (see
+    # `Intent.reply_to`) -- threads the relayed message back to whatever it
+    # was grounded in instead of posting disconnected from it.
+    reply_to: str | None = None
 
 
 class PendingActionStore:
@@ -110,6 +114,7 @@ def propose_dispatch(
         channel_id=channel.id,
         instruction=intent.message,
         target_agent=target_agent,
+        reply_to=intent.reply_to,
     )
     store.propose(thread_id, proposal)
     if audit is not None:
@@ -136,6 +141,7 @@ def confirm_dispatch(
         owner.name,
         owner.pubkey,
         proposal.target_agent,
+        proposal.reply_to,
     )
     if audit is not None:
         audit.log_decision(resolved_thread_id, "confirmed", proposal, event_id=event_id)

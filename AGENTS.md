@@ -56,10 +56,16 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 - A `dispatch` intent never posts directly; it becomes a `DispatchProposal` in
   `pending_actions.py` and only reaches `outbound.relay_dispatch` via `confirm_dispatch`.
   A `recap_action` ("go ahead with F4") resolves to a `dispatch` `Intent` and goes through
-  this exact same path -- there is no separate posting route for a recap follow-up.
+  this exact same path -- there is no separate posting route for a recap follow-up. When the
+  matched `RecapItem` has a `source_event_id`, the relayed message threads to it
+  (`Intent.reply_to` -> `DispatchProposal.reply_to` -> `relay_dispatch`); a fresh dispatch has
+  no such message and always posts top-level.
 - On any ambiguity (unresolvable channel/agent, multiple pending proposals for a bare
   "confirm"), the router/store asks the user rather than guessing. Don't add
-  best-guess fallbacks here -- guessing wrong means dispatching to the wrong channel.
+  best-guess fallbacks here -- guessing wrong means dispatching to the wrong channel. The same
+  applies to `RecapItem.source_event_id`: `recap.py` only sets it when the LLM cites one
+  specific transcript message, never a "closest guess" like the last message in the channel
+  (rejected explicitly -- an item can be an older, still-unfinished thing).
 - A single bad or unexpected inbound event must never crash the daemon loop; known failure
   modes become a reply to the sender, unexpected ones are logged and the loop continues.
 

@@ -51,6 +51,7 @@ def test_log_proposed_action_writes_proposal_fields(tmp_path):
     assert record["channel_id"] == "chan-1"
     assert record["instruction"] == "fix the login timeout bug"
     assert record["target_agent"] == "Codex"
+    assert record["reply_to"] is None
 
 
 def test_log_decision_without_event_id_omits_event_id(tmp_path):
@@ -86,6 +87,7 @@ def test_log_recap_reference_writes_item_fields(tmp_path):
     assert record["reference"] == "F4"
     assert record["channel"] == "dripbird"
     assert record["label"] == "F4"
+    assert record["source_event_id"] is None
 
 
 def test_appends_records_across_calls(tmp_path):
