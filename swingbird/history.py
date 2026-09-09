@@ -33,6 +33,18 @@ def fetch_recent_messages(
     return run_buzz_cli(args)
 
 
+def fetch_thread_messages(channel_id: str, event_id: str) -> list[dict]:
+    """Return every event in the thread containing `event_id`.
+
+    Backs both `fetch_thread_root` (below) and `recap_detail.py`'s
+    elaboration, which grounds a "tell me more" follow-up in the whole
+    thread a recap item was drawn from, not just the one message it cited.
+    """
+    return run_buzz_cli(
+        ["messages", "thread", "--channel", channel_id, "--event", event_id]
+    )
+
+
 def fetch_thread_root(channel_id: str, event_id: str) -> str:
     """Return the root event id of the thread containing `event_id`.
 
@@ -45,9 +57,7 @@ def fetch_thread_root(channel_id: str, event_id: str) -> str:
     falls back to `event_id` itself if the thread doesn't contain one (e.g.
     `event_id` is already the root), never guessing at a wrong one.
     """
-    events = run_buzz_cli(
-        ["messages", "thread", "--channel", channel_id, "--event", event_id]
-    )
+    events = fetch_thread_messages(channel_id, event_id)
     for event in events:
         if not any(tag and tag[0] == "e" for tag in event.get("tags", [])):
             return event["id"]

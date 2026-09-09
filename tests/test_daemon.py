@@ -540,10 +540,22 @@ def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):
     assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
 
 
-def test_recap_detail_returns_the_stored_item_without_a_proposal(tmp_path, monkeypatch):
+def _setup_recap_test(monkeypatch, channel_id="dm-chan", item=F4_ITEM):
+    monkeypatch.setattr(daemon, "fetch_recent_messages", lambda *a, **k: [])
     sent = _sent(monkeypatch)
-    recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+    recap_store = _recap_store_with(channel_id, item)
+    return sent, recap_store
+
+
+def test_recap_detail_elaborates_using_the_llm_not_a_flat_echo(tmp_path, monkeypatch):
+    """recap_detail must not just replay the recap's own summary/instruction
+    (see the recap follow-up plan's Goal 1) -- it goes through
+    recap_detail.elaborate, an LLM call, and returns whatever that says."""
+    sent, recap_store = _setup_recap_test(monkeypatch)
+    llm = FakeLLM(
+        json_response={"intent": "recap_detail", "message": "F4"},
+        text_response="It's blocked on a design call about the trip-check scope.",
+    )
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -551,10 +563,88 @@ def test_recap_detail_returns_the_stored_item_without_a_proposal(tmp_path, monke
 
     assert args == (
         "dm-chan",
-        (
-            "backend -- unused-ignore propagation\n\n"
-            "Fix the deterministic directive trip-check."
-        ),
+        "It's blocked on a design call about the trip-check scope.",
+    )
+
+
+def test_recap_detail_without_a_grounded_item_skips_the_thread_fetch(
+    tmp_path, monkeypatch
+):
+    """F4_ITEM has no `source_event_id` -- nothing to fetch, so
+    `fetch_thread_messages` must never be called for it."""
+    thread_calls = []
+    monkeypatch.setattr(
+        daemon,
+        "fetch_thread_messages",
+        lambda *a, **k: thread_calls.append((a, k)) or [],
+    )
+    sent, recap_store = _setup_recap_test(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent, recap_store=recap_store)
+
+    assert thread_calls == []
+
+
+GROUNDED_F4_ITEM = RecapItem(
+    channel="backend",
+    label="F4",
+    summary="unused-ignore propagation",
+    instruction="Fix the deterministic directive trip-check.",
+    source_event_id="src-evt",
+)
+
+
+def test_recap_detail_fetches_the_grounded_thread_and_dm_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        daemon,
+        "fetch_thread_messages",
+        lambda channel_id, event_id: [
+            {"created_at": 1, "content": f"original message ({channel_id}/{event_id})"}
+        ],
+    )
+    monkeypatch.setattr(
+        daemon,
+        "fetch_recent_messages",
+        lambda *a, **k: [{"created_at": 2, "content": "the recap dm history"}],
+    )
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", GROUNDED_F4_ITEM)
+    llm = FakeLLM(
+        json_response={"intent": "recap_detail", "message": "F4"},
+        text_response="more detail",
+    )
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent, recap_store=recap_store)
+
+    user_content = llm.calls[-1][1]["content"]
+    assert "original message (chan-1/src-evt)" in user_content
+    assert "the recap dm history" in user_content
+
+
+UNKNOWN_CHANNEL_ITEM = RecapItem(
+    channel="ghost-channel",
+    label="F4",
+    summary="unused-ignore propagation",
+    instruction="Fix the deterministic directive trip-check.",
+    source_event_id="src-evt",
+)
+
+
+def test_recap_detail_unknown_channel_becomes_a_helpful_reply(tmp_path, monkeypatch):
+    """`item.channel` is LLM-sourced (see recap.py) and never trusted
+    blindly (§5) -- an unresolvable name is a reportable error, not a
+    silent drop of the thread context or a crash."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", UNKNOWN_CHANNEL_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1] == (
+        "Couldn't do that: recap item names an unknown channel: 'ghost-channel'"
     )
 
 

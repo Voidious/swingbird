@@ -5,6 +5,7 @@ from swingbird import outbound
 from swingbird.history import (
     fetch_messages_since,
     fetch_recent_messages,
+    fetch_thread_messages,
     fetch_thread_root,
 )
 
@@ -87,6 +88,34 @@ def test_fetch_recent_messages_passes_before(monkeypatch):
         "10",
         "--before",
         "12345",
+    ]
+
+
+def test_fetch_thread_messages_returns_every_event_in_the_thread(monkeypatch):
+    fake = FakeRun(
+        stdout=json.dumps(
+            [
+                {"id": "root-evt", "content": "root"},
+                {"id": "leaf-evt", "content": "leaf"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    events = fetch_thread_messages("chan-1", "leaf-evt")
+
+    assert events == [
+        {"id": "root-evt", "content": "root"},
+        {"id": "leaf-evt", "content": "leaf"},
+    ]
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "messages",
+        "thread",
+        "--channel",
+        "chan-1",
+        "--event",
+        "leaf-evt",
     ]
 
 

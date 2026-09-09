@@ -68,7 +68,11 @@ from swingbird import outbound
 from swingbird.audit import AuditLog
 from swingbird.config import Config, load_config
 from swingbird.dispatch_phrasing import rephrase_for_dispatch
-from swingbird.history import fetch_thread_root
+from swingbird.history import (
+    fetch_recent_messages,
+    fetch_thread_messages,
+    fetch_thread_root,
+)
 from swingbird.inbound import InboundClient, InboundError
 from swingbird.llm import LLMClient, LLMError
 from swingbird.pending_actions import (
@@ -85,11 +89,17 @@ from swingbird.recap_actions import (
     RecapActionStore,
     resolve_reference,
 )
+from swingbird.recap_detail import elaborate
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
 
 DEFAULT_CONFIG_PATH = "swingbird.toml"
 DEFAULT_AUDIT_LOG_PATH = "audit.jsonl"
+# How much DM history to give recap_detail's elaboration as "the recap
+# conversation so far" -- generous enough to cover the recap and this
+# follow-up (plus a bit of prior back-and-forth) without pulling in an
+# unbounded amount of unrelated DM history.
+_RECAP_DETAIL_DM_HISTORY_LIMIT = 20
 
 _CHIT_CHAT_REPLY = (
     "That's outside what I handle -- ask me for a recap, or to dispatch an "
@@ -353,7 +363,34 @@ class Daemon:
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
         item = self._resolve_single_recap_item(thread_id, intent.message)
         self._audit.log_recap_reference(thread_id, "recap_detail", intent.message, item)
-        return f"{item.channel} -- {item.summary}\n\n{item.instruction}"
+        thread_messages = self._fetch_item_thread(item)
+        dm_messages = fetch_recent_messages(
+            thread_id, limit=_RECAP_DETAIL_DM_HISTORY_LIMIT
+        )
+        return elaborate(self._llm, item, thread_messages, dm_messages, intent.message)
+
+    def _fetch_item_thread(self, item: RecapItem) -> list[dict]:
+        """Return every message in the thread `item.source_event_id`
+        belongs to, so `recap_detail`'s elaboration can draw on more than
+        the recap's own condensed summary/instruction.
+
+        `[]` when the item wasn't grounded in one specific transcript
+        message (see `RecapItem.source_event_id`) -- nothing to fetch,
+        never guessed. `item.channel` is always one of the config's known
+        channel names in practice (see `recap.py`'s extraction prompt), but
+        an LLM-sourced field is never trusted blindly (§5) -- an unresolved
+        name raises the same as an unknown dispatch target does in
+        `pending_actions.propose_dispatch`, rather than guessing or
+        silently dropping the thread context.
+        """
+        if item.source_event_id is None:
+            return []
+        channel = self._config.channel_by_name(item.channel)
+        if channel is None:
+            raise RecapActionError(
+                f"recap item names an unknown channel: {item.channel!r}"
+            )
+        return fetch_thread_messages(channel.id, item.source_event_id)
 
     def _resolve_single_recap_item(
         self, thread_id: str, reference: str | None
