@@ -57,16 +57,35 @@ def resolve_reference(
     matches raises rather than guessing, but whether more than one match is
     acceptable is the caller's policy to enforce, not this function's (see
     module docstring).
+
+    The match is bidirectional (does `reference` contain the label, or does
+    the label contain `reference`) since a bare label like "F4" needs the
+    former and a reference that also names the channel ("F4 for dripbird")
+    needs the latter -- neither string is a substring of the other in that
+    second case. When `reference` names exactly one known channel, matching
+    is narrowed to that channel's items first, so a label that happens to
+    recur across channels (or a channel name that happens to look like
+    another item's label) can't cross-match.
     """
     normalized = (reference or "").strip().lower()
     if normalized in _ALL_MARKERS:
         if not items:
             raise RecapActionError("no items in the last recap")
         return list(items)
+    channels_named = {
+        item.channel for item in items if item.channel.lower() in normalized
+    }
+    candidates = (
+        [item for item in items if item.channel in channels_named]
+        if len(channels_named) == 1
+        else items
+    )
     matches = [
         item
-        for item in items
-        if normalized in item.label.lower() or normalized in item.channel.lower()
+        for item in candidates
+        if normalized in item.label.lower()
+        or (item.label and item.label.lower() in normalized)
+        or normalized in item.channel.lower()
     ]
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")

@@ -57,6 +57,7 @@ from dataclasses import replace
 from swingbird import outbound
 from swingbird.audit import AuditLog
 from swingbird.config import Config, load_config
+from swingbird.dispatch_phrasing import rephrase_for_dispatch
 from swingbird.inbound import InboundClient, InboundError
 from swingbird.llm import LLMClient, LLMError
 from swingbird.pending_actions import (
@@ -321,10 +322,11 @@ class Daemon:
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
         item = self._resolve_single_recap_item(thread_id, intent.message)
         self._audit.log_recap_reference(thread_id, "recap_action", intent.message, item)
+        instruction = rephrase_for_dispatch(self._llm, item, intent.message)
         dispatch_intent = Intent(
             kind="dispatch",
             channel=item.channel,
-            message=item.instruction,
+            message=instruction,
             reply_to=item.source_event_id,
         )
         return self._dispatch_or_ask(dispatch_intent, thread_id)

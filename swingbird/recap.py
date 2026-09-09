@@ -118,14 +118,19 @@ class RecapItem:
     `source_event_id` is the transcript message the instruction was grounded
     in, when the LLM could point to one specific message -- it's what lets a
     later `recap_action` thread its relayed dispatch as a reply to that
-    message instead of posting disconnected from it (see `daemon.py`). `None`
-    when nothing single message grounds the item; never guessed."""
+    message instead of posting disconnected from it (see `daemon.py`).
+    `source_content` is that same message's own text, carried alongside so a
+    later dispatch-phrasing rewrite (see `dispatch_phrasing.py`) can ground
+    itself in the coding agent's own wording instead of just the recap's
+    condensed summary/instruction. Both are `None` under the same
+    conditions -- nothing single message grounds the item; never guessed."""
 
     channel: str
     label: str
     summary: str
     instruction: str
     source_event_id: str | None = None
+    source_content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,7 +156,7 @@ def build_recap(
     three-bucket summary).
     """
     channels = _select_channels(config, channel_names)
-    transcript, id_map = _build_transcript(
+    transcript, id_map, content_map = _build_transcript(
         channels,
         stale_after_days=config.recap.stale_after_days,
         max_messages_per_channel=config.recap.max_messages_per_channel,
@@ -164,10 +169,14 @@ def build_recap(
         },
         {"role": "user", "content": transcript},
     ]
-    return _parse_recap(llm.complete_json(messages), id_map)
+    return _parse_recap(llm.complete_json(messages), id_map, content_map)
 
 
-def _parse_recap(response: dict, id_map: dict[str, dict[str, str]]) -> Recap:
+def _parse_recap(
+    response: dict,
+    id_map: dict[str, dict[str, str]],
+    content_map: dict[str, dict[str, str]],
+) -> Recap:
     text = response.get("text")
     if not isinstance(text, str):
         raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
@@ -177,8 +186,11 @@ def _parse_recap(response: dict, id_map: dict[str, dict[str, str]]) -> Recap:
             label=item.get("label", ""),
             summary=item.get("summary", ""),
             instruction=item.get("instruction", ""),
-            source_event_id=_resolve_source_id(
+            source_event_id=_resolve_tag(
                 id_map, item.get("channel", ""), item.get("source_id")
+            ),
+            source_content=_resolve_tag(
+                content_map, item.get("channel", ""), item.get("source_id")
             ),
         )
         for item in response.get("items") or []
@@ -187,18 +199,20 @@ def _parse_recap(response: dict, id_map: dict[str, dict[str, str]]) -> Recap:
     return Recap(text=text, items=items)
 
 
-def _resolve_source_id(
-    id_map: dict[str, dict[str, str]], channel: str, tag: object
+def _resolve_tag(
+    mapping: dict[str, dict[str, str]], channel: str, tag: object
 ) -> str | None:
-    """Resolve an LLM-cited `tag` (e.g. "m3") to a real event id.
+    """Resolve an LLM-cited `tag` (e.g. "m3") against `mapping` for `channel`.
 
     Never trusts the LLM's tag blindly -- a missing tag, an empty string, an
     unknown channel, or a tag that doesn't match any message actually shown
     for that channel all resolve to `None` (a plain dict miss, in the latter
-    three cases) rather than a guess."""
+    three cases) rather than a guess. Shared by both `RecapItem.
+    source_event_id` and `source_content`, resolved from the same tag against
+    two parallel maps built in `_build_transcript`."""
     if not isinstance(tag, str):
         return None
-    return id_map.get(channel, {}).get(tag)
+    return mapping.get(channel, {}).get(tag)
 
 
 def _select_channels(config: Config, channel_names: list[str] | None):
@@ -218,20 +232,24 @@ def _build_transcript(
     stale_after_days: int,
     max_messages_per_channel: int,
     explicit: bool,
-) -> tuple[str, dict[str, dict[str, str]]]:
-    """Return the transcript text and a `{channel_name: {tag: event_id}}` map.
+) -> tuple[str, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """Return the transcript text and `{channel_name: {tag: event_id}}` /
+    `{channel_name: {tag: content}}` maps.
 
     Each message is tagged with a short per-channel local id ("m1", "m2",
     ...) rather than its real (64-char) event id -- cheap for the LLM to
     copy back verbatim in `source_id` (see `_ITEMS_INSTRUCTIONS`) without
-    risking a garbled hex string. The map only gets an entry for messages
+    risking a garbled hex string. Both maps only get an entry for messages
     that actually carry an `"id"` -- real `buzz messages get` events always
     do; this just means a message without one can't be cited as a source,
-    never a crash.
+    never a crash. The content map exists alongside the id map so a
+    resolved `source_id` can carry the message's own text forward too (see
+    `RecapItem.source_content`), not just its event id.
     """
     cutoff = time.time() - stale_after_days * 86400
     sections = []
     id_map: dict[str, dict[str, str]] = {}
+    content_map: dict[str, dict[str, str]] = {}
     for channel in channels:
         if explicit:
             # Staleness never applies to a channel the user named on
@@ -254,18 +272,21 @@ def _build_transcript(
         if events:
             lines = []
             tags = {}
+            contents = {}
             for i, event in enumerate(events, start=1):
                 tag = f"m{i}"
                 lines.append(f"[{tag}] [{event['created_at']}] {event['content']}")
                 if "id" in event:
                     tags[tag] = event["id"]
+                    contents[tag] = event["content"]
             body = "\n".join(lines)
             if tags:
                 id_map[channel.name] = tags
+                content_map[channel.name] = contents
         else:
             body = "(no recent activity)"
         sections.append(f"{header}\n{body}")
     transcript = (
         "\n\n".join(sections) if sections else "(no channels with recent activity)"
     )
-    return transcript, id_map
+    return transcript, id_map, content_map

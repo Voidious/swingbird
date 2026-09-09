@@ -141,7 +141,7 @@ def test_build_recap_tags_transcript_messages_with_a_local_id(monkeypatch):
     assert "[m2] " in transcript
 
 
-def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
+def _setup_channel_with_messages_and_build_recap(monkeypatch, text="recap", items=None):
     monkeypatch.setattr(
         recap,
         "fetch_messages_since",
@@ -155,8 +155,9 @@ def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
         ),
     )
     llm, _ = _llm(
-        "recap",
-        items=[
+        text,
+        items=items
+        or [
             {
                 "channel": "backend",
                 "label": "F4",
@@ -168,15 +169,27 @@ def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
     )
 
     result = build_recap(llm, CONFIG)
+    return result
+
+
+def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
+    result = _setup_channel_with_messages_and_build_recap(monkeypatch)
 
     assert result.items[0].source_event_id == "evt-b"
 
 
-def test_build_recap_leaves_source_event_id_none_without_a_source_id(monkeypatch):
+def test_build_recap_resolves_source_id_to_the_message_content(monkeypatch):
+    result = _setup_channel_with_messages_and_build_recap(monkeypatch)
+
+    assert result.items[0].source_content == "second"
+
+
+def _build_empty_channel_recap(monkeypatch, items=None):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "recap",
-        items=[
+        items=items
+        or [
             {
                 "channel": "backend",
                 "label": "F4",
@@ -187,6 +200,17 @@ def test_build_recap_leaves_source_event_id_none_without_a_source_id(monkeypatch
     )
 
     result = build_recap(llm, CONFIG)
+    return result
+
+
+def test_build_recap_leaves_source_content_none_without_a_source_id(monkeypatch):
+    result = _build_empty_channel_recap(monkeypatch)
+
+    assert result.items[0].source_content is None
+
+
+def test_build_recap_leaves_source_event_id_none_without_a_source_id(monkeypatch):
+    result = _build_empty_channel_recap(monkeypatch)
 
     assert result.items[0].source_event_id is None
 

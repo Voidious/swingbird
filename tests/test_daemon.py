@@ -243,7 +243,10 @@ def _recap_store_with(thread_id, *items):
 def test_recap_action_proposes_dispatch_for_the_matched_item(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+    llm = FakeLLM(
+        json_response={"intent": "recap_action", "message": "F4"},
+        text_response="Fix the deterministic directive trip-check.",
+    )
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -256,6 +259,42 @@ def test_recap_action_proposes_dispatch_for_the_matched_item(tmp_path, monkeypat
     assert args == ("dm-chan", expected_reply)
 
 
+def test_recap_action_relays_the_dispatch_phrasing_rewrite(tmp_path, monkeypatch):
+    # The relayed message is the LLM's rewrite, not the recap item's own
+    # instruction verbatim -- that instruction may bundle several candidate
+    # next steps the recap couldn't tell apart, so relaying it unchanged
+    # would send the owner's whole undecided bundle to the coding agent
+    # instead of just what the user picked.
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response={"intent": "recap_action", "message": "F4"},
+        text_response="Go ahead and implement F4: add the trip-check.",
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert "Go ahead and implement F4: add the trip-check." in args[1]
+
+
+def test_recap_action_sends_the_item_and_reference_to_dispatch_phrasing(
+    tmp_path, monkeypatch
+):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent, recap_store=recap_store)
+
+    rephrase_call = llm.calls[-1]
+    user_content = rephrase_call[1]["content"]
+    assert F4_ITEM.summary in user_content
+    assert F4_ITEM.instruction in user_content
+    assert "F4" in user_content
+
+
 def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkeypatch):
     _sent(monkeypatch)
     relayed = []
@@ -264,7 +303,10 @@ def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkey
     )
     grounded_item = dataclasses.replace(F4_ITEM, source_event_id="source-evt")
     recap_store = _recap_store_with("dm-chan", grounded_item)
-    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+    llm = FakeLLM(
+        json_response={"intent": "recap_action", "message": "F4"},
+        text_response="Fix the deterministic directive trip-check.",
+    )
     bot = _daemon(tmp_path, llm, recap_store=recap_store)
 
     asyncio.run(bot._handle_event(_event(event_id="evt-1")))

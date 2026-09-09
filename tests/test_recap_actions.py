@@ -99,3 +99,44 @@ def test_resolve_reference_returns_every_item_that_matches():
     matches = resolve_reference((ITEM_F4, ITEM_F5), "dripbird")
 
     assert matches == [ITEM_F4, ITEM_F5]
+
+
+def test_resolve_reference_by_label_qualified_with_its_channel():
+    # "F4 for dripbird" is longer than either "F4" or "dripbird" alone, so
+    # it can't be a substring of either -- the channel narrows the
+    # candidates first, then the label matches within them.
+    matches = resolve_reference((ITEM_F4, ITEM_F5, ITEM_BACKEND), "F4 for dripbird")
+
+    assert matches == [ITEM_F4]
+
+
+def test_resolve_reference_by_label_qualified_with_a_channel_that_recurs():
+    other_channel_f4 = RecapItem(
+        channel="crispen",
+        label="F4",
+        summary="a different F4",
+        instruction="do the crispen thing",
+    )
+
+    matches = resolve_reference((ITEM_F4, other_channel_f4), "F4 for crispen")
+
+    assert matches == [other_channel_f4]
+
+
+def test_resolve_reference_channel_qualifier_that_matches_no_label_raises():
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((ITEM_F4, ITEM_F5), "F9 for dripbird")
+
+
+def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
+    # An empty label must never reverse-match as a substring of everything
+    # -- otherwise every reference would spuriously match an unlabeled item.
+    unlabeled = RecapItem(
+        channel="dripbird",
+        label="",
+        summary="s",
+        instruction="i",
+    )
+
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((unlabeled,), "F4 for dripbird")
