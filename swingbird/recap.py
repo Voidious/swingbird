@@ -49,6 +49,14 @@ _QUESTION_GUARD = (
     "that one was given."
 )
 
+_FORMAT_GUARD = (
+    'Format "text" as one paragraph per channel, each starting with the '
+    'channel name in bold Markdown (e.g. "**backend**: ..."), separated '
+    "from the next channel's paragraph by a blank line (a literal \\n\\n "
+    "between them in the JSON string). Never merge multiple channels into "
+    "a single run-on paragraph."
+)
+
 _ITEMS_INSTRUCTIONS = """
 
 Each transcript message is tagged with a short id like "m3" (e.g. "[m3]
@@ -78,17 +86,17 @@ phrased as status then next step. If there are additional open items \
 beyond the one you lead with, note how many there are rather than \
 listing them. If a channel has no open item, say so briefly, and if a \
 goal is given for it, add one short sentence naming that goal as what's \
-next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip routine \
-chatter. Be concise -- 1-2 sentences per channel, not a \
+next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_FORMAT_GUARD} \
+Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
 transcript.{_ITEMS_INSTRUCTIONS}"""
 
 _DETAILED_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. \
 Given recent messages from one or more project channels, write a short, \
 prioritized summary: lead with what needs the user's attention \
 (blockers, decisions needed, open questions), then what's in flight, \
-then what finished recently. {_LAUNDERING_GUARD} {_QUESTION_GUARD} Skip \
-routine chatter. Be concise -- a few sentences per channel, not a \
-transcript.{_ITEMS_INSTRUCTIONS}"""
+then what finished recently. {_LAUNDERING_GUARD} {_QUESTION_GUARD} \
+{_FORMAT_GUARD} Skip routine chatter. Be concise -- a few sentences per \
+channel, not a transcript.{_ITEMS_INSTRUCTIONS}"""
 
 _SYSTEM_PROMPTS = {
     "concise": _CONCISE_SYSTEM_PROMPT,
