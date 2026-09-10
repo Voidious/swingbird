@@ -163,6 +163,9 @@ def test_resolve_reference_word_fallback_ignores_stopwords():
 def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
     # An empty label must never reverse-match as a substring of everything
     # -- otherwise every reference would spuriously match an unlabeled item.
+    # Two dripbird items here (rather than one) so the single-candidate
+    # channel fallback below doesn't mask this: it only kicks in when
+    # channel-narrowing leaves exactly one item.
     unlabeled = RecapItem(
         channel="dripbird",
         label="",
@@ -171,4 +174,54 @@ def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
     )
 
     with pytest.raises(RecapActionError, match="no recap item matches"):
-        resolve_reference((unlabeled,), "F4 for dripbird")
+        resolve_reference((unlabeled, ITEM_F5), "F4 for dripbird")
+
+
+def test_resolve_reference_by_explicit_channel_narrows_even_without_label_words():
+    # `channel` (the router's own `Intent.channel` classification) narrows
+    # candidates even when the reference text itself doesn't name the
+    # channel or the item's label at all -- "the open items" never mentions
+    # "dripbird" or "F4", so only the explicit channel makes this resolvable.
+    matches = resolve_reference(
+        (ITEM_F4, ITEM_BACKEND), "the open items", channel="dripbird"
+    )
+
+    assert matches == [ITEM_F4]
+
+
+def test_resolve_reference_explicit_channel_takes_priority_over_message_text():
+    # A reference that happens to name a different channel in its own text
+    # must not override the router's authoritative `channel` classification.
+    matches = resolve_reference(
+        (ITEM_F4, ITEM_BACKEND),
+        "the backend issue",
+        channel="dripbird",
+    )
+
+    assert matches == [ITEM_F4]
+
+
+def test_resolve_reference_generic_reference_resolves_to_the_channels_one_item():
+    # A generic reference ("the first one for dripbird") never names any
+    # label, but channel-narrowing (derived from the reference text itself
+    # here, no explicit `channel` needed) leaves exactly one dripbird item,
+    # so it resolves rather than raising.
+    matches = resolve_reference((ITEM_F4, ITEM_BACKEND), "the first one for dripbird")
+
+    assert matches == [ITEM_F4]
+
+
+def test_resolve_reference_generic_reference_without_a_channel_still_raises():
+    # No channel signal at all (neither explicit `channel` nor a channel
+    # name in the reference text) -- a generic reference must not guess
+    # across channels just because there happen to be few items.
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((ITEM_F4, ITEM_BACKEND), "the first one")
+
+
+def test_resolve_reference_generic_reference_with_ambiguous_channel_still_raises():
+    # Two items share the "dripbird" channel here, so even though the
+    # reference names it, channel-narrowing leaves more than one candidate
+    # -- a generic reference can't pick between them.
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((ITEM_F4, ITEM_F5), "the first one for dripbird")

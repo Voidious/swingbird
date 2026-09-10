@@ -54,7 +54,9 @@ class RecapActionStore:
 
 
 def resolve_reference(
-    items: tuple[RecapItem, ...], reference: str | None
+    items: tuple[RecapItem, ...],
+    reference: str | None,
+    channel: str | None = None,
 ) -> list[RecapItem]:
     """Return the `RecapItem`s `reference` refers to.
 
@@ -69,10 +71,17 @@ def resolve_reference(
     the label contain `reference`) since a bare label like "F4" needs the
     former and a reference that also names the channel ("F4 for dripbird")
     needs the latter -- neither string is a substring of the other in that
-    second case. When `reference` names exactly one known channel, matching
-    is narrowed to that channel's items first, so a label that happens to
+    second case. Candidates are narrowed to a single channel's items first
+    whenever exactly one channel is identified, so a label that happens to
     recur across channels (or a channel name that happens to look like
-    another item's label) can't cross-match.
+    another item's label) can't cross-match. `channel`, when given, is the
+    authoritative source for that narrowing -- it's the router's own
+    classification of the message (`Intent.channel`), which can identify the
+    channel even when the leftover reference text doesn't name it at all
+    (e.g. "tell me more about the open items" once the router has already
+    resolved which channel "the open items" belongs to). Only when `channel`
+    is `None` does this fall back to searching for a channel name as a
+    substring of `reference` itself.
 
     A channel-qualified reference can still fail the whole-string
     bidirectional test even after narrowing: a bundled multi-option item
@@ -83,15 +92,29 @@ def resolve_reference(
     `reference`: if any single word is itself a substring of the label,
     that's enough. This can't spuriously match an empty label (no word is a
     substring of "").
+
+    If none of that identifies a label match but the channel narrowing above
+    left exactly one candidate, that candidate is returned anyway -- a
+    generic reference like "the open items" or "the first one" never names
+    any label, but once the channel is unambiguous it can only be pointing
+    at that channel's one item. This mirrors the empty/"all" handling above,
+    just scoped to one channel's candidates instead of every item, and it
+    only fires when the channel is unambiguous -- a bare, channel-less
+    generic reference still raises rather than guessing across channels.
     """
     normalized = (reference or "").strip().lower()
     if normalized in _ALL_MARKERS:
         if not items:
             raise RecapActionError("no items in the last recap")
         return list(items)
-    channels_named = {
-        item.channel for item in items if item.channel.lower() in normalized
-    }
+    if channel is not None:
+        channels_named = {
+            item.channel for item in items if item.channel.lower() == channel.lower()
+        }
+    else:
+        channels_named = {
+            item.channel for item in items if item.channel.lower() in normalized
+        }
     candidates = (
         [item for item in items if item.channel in channels_named]
         if len(channels_named) == 1
@@ -106,6 +129,8 @@ def resolve_reference(
         or normalized in item.channel.lower()
         or any(word in item.label.lower() for word in words)
     ]
+    if not matches and len(channels_named) == 1 and len(candidates) == 1:
+        return candidates
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")
     return matches

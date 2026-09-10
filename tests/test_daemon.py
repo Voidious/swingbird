@@ -259,6 +259,34 @@ def test_recap_action_proposes_dispatch_for_the_matched_item(tmp_path, monkeypat
     assert args == ("dm-chan", expected_reply)
 
 
+def test_recap_action_resolves_via_intent_channel_when_message_is_generic(
+    tmp_path, monkeypatch
+):
+    """A generic reference like "the open items" never names a label or the
+    channel in its own text -- only `intent.channel`, threaded through to
+    `resolve_reference`, can resolve it to the channel's one item."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_action",
+            "channel": "backend",
+            "message": "the open items",
+        },
+        text_response="Fix the deterministic directive trip-check.",
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    expected_reply = (
+        "About to relay to backend (for Codex): 'Fix the deterministic "
+        "directive trip-check.'. Confirm to send, or cancel."
+    )
+    assert args == ("dm-chan", expected_reply)
+
+
 def test_recap_action_relays_the_dispatch_phrasing_rewrite(tmp_path, monkeypatch):
     # The relayed message is the LLM's rewrite, not the recap item's own
     # instruction verbatim -- that instruction may bundle several candidate
@@ -565,6 +593,28 @@ def test_recap_detail_elaborates_using_the_llm_not_a_flat_echo(tmp_path, monkeyp
         "dm-chan",
         "It's blocked on a design call about the trip-check scope.",
     )
+
+
+def test_recap_detail_resolves_via_intent_channel_when_message_is_generic(
+    tmp_path, monkeypatch
+):
+    """Same gap as recap_action's equivalent test above, for recap_detail:
+    "the open items" carries no label or channel text of its own."""
+    sent, recap_store = _setup_recap_test(monkeypatch)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_detail",
+            "channel": "backend",
+            "message": "the open items",
+        },
+        text_response="More detail on the open items.",
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "More detail on the open items.")
 
 
 def test_recap_detail_without_a_grounded_item_skips_the_thread_fetch(

@@ -349,7 +349,9 @@ class Daemon:
         return _CHIT_CHAT_REPLY
 
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
-        item = self._resolve_single_recap_item(thread_id, intent.message)
+        item = self._resolve_single_recap_item(
+            thread_id, intent.message, intent.channel
+        )
         self._audit.log_recap_reference(thread_id, "recap_action", intent.message, item)
         instruction = rephrase_for_dispatch(self._llm, item, intent.message)
         dispatch_intent = Intent(
@@ -361,7 +363,9 @@ class Daemon:
         return self._dispatch_or_ask(dispatch_intent, thread_id)
 
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
-        item = self._resolve_single_recap_item(thread_id, intent.message)
+        item = self._resolve_single_recap_item(
+            thread_id, intent.message, intent.channel
+        )
         self._audit.log_recap_reference(thread_id, "recap_detail", intent.message, item)
         thread_messages = self._fetch_item_thread(item)
         dm_messages = fetch_recent_messages(
@@ -393,11 +397,20 @@ class Daemon:
         return fetch_thread_messages(channel.id, item.source_event_id)
 
     def _resolve_single_recap_item(
-        self, thread_id: str, reference: str | None
+        self,
+        thread_id: str,
+        reference: str | None,
+        channel: str | None = None,
     ) -> RecapItem:
         """Resolve `reference` against the last recap's items for `thread_id`,
         raising `RecapActionError` (caught centrally, see `_ACTIONABLE_ERRORS`)
         for anything that isn't exactly one match.
+
+        `channel` is `intent.channel` from the router's own classification --
+        passed through as `resolve_reference`'s authoritative channel signal
+        rather than leaving it to re-derive a channel by searching `reference`
+        for a known name, which misses whenever the router already stripped
+        the channel out of the leftover reference text.
 
         v1 scope: a reference matching more than one item (including an
         explicit "all") is treated the same as an ambiguous single-item
@@ -411,7 +424,7 @@ class Daemon:
                 "I don't have a recent recap to reference here -- ask for a "
                 "recap first."
             )
-        matched = resolve_reference(items, reference)
+        matched = resolve_reference(items, reference, channel)
         if len(matched) > 1:
             labels = ", ".join(f"{item.channel}/{item.label}" for item in matched)
             raise RecapActionError(
