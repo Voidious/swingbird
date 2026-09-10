@@ -366,15 +366,16 @@ class Daemon:
         return self._dispatch_or_ask(dispatch_intent, thread_id)
 
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
-        item = self._resolve_single_recap_item(
-            thread_id, intent.message, intent.channel
-        )
-        self._audit.log_recap_reference(thread_id, "recap_detail", intent.message, item)
-        thread_messages = self._fetch_item_thread(item)
+        items = self._resolve_recap_items(thread_id, intent.message, intent.channel)
+        for item in items:
+            self._audit.log_recap_reference(
+                thread_id, "recap_detail", intent.message, item
+            )
+        threads = [self._fetch_item_thread(item) for item in items]
         dm_messages = fetch_recent_messages(
             thread_id, limit=_RECAP_DETAIL_DM_HISTORY_LIMIT
         )
-        return elaborate(self._llm, item, thread_messages, dm_messages, intent.message)
+        return elaborate(self._llm, items, threads, dm_messages, intent.message)
 
     def _fetch_item_thread(self, item: RecapItem) -> list[dict]:
         """Return every message in the thread `item.source_event_id`
@@ -399,15 +400,13 @@ class Daemon:
             )
         return fetch_thread_messages(channel.id, item.source_event_id)
 
-    def _resolve_single_recap_item(
+    def _resolve_recap_items(
         self,
         thread_id: str,
         reference: str | None,
         channel: str | None = None,
-    ) -> RecapItem:
-        """Resolve `reference` against the last recap's items for `thread_id`,
-        raising `RecapActionError` (caught centrally, see `_ACTIONABLE_ERRORS`)
-        for anything that isn't exactly one match.
+    ) -> list[RecapItem]:
+        """Resolve `reference` against the last recap's items for `thread_id`.
 
         `channel` is `intent.channel` from the router's own classification --
         passed through as `resolve_reference`'s authoritative channel signal
@@ -415,11 +414,12 @@ class Daemon:
         for a known name, which misses whenever the router already stripped
         the channel out of the leftover reference text.
 
-        v1 scope: a reference matching more than one item (including an
-        explicit "all") is treated the same as an ambiguous single-item
-        reference -- ask which one, rather than acting on a batch. See
-        recap_actions.py's module docstring for why that policy lives here
-        rather than in `resolve_reference` itself.
+        Can return more than one item -- e.g. "the additional items" resolves
+        to every non-primary item for a channel (see `recap_actions.
+        resolve_reference`). `_recap_detail` elaborates on however many come
+        back; `_resolve_single_recap_item` (for `recap_action`, which posts a
+        dispatch and so can't act on a batch -- see recap_actions.py's module
+        docstring) narrows that further to exactly one.
         """
         items = self._recap_store.get(thread_id)
         if not items:
@@ -427,7 +427,22 @@ class Daemon:
                 "I don't have a recent recap to reference here -- ask for a "
                 "recap first."
             )
-        matched = resolve_reference(items, reference, channel)
+        return resolve_reference(items, reference, channel)
+
+    def _resolve_single_recap_item(
+        self,
+        thread_id: str,
+        reference: str | None,
+        channel: str | None = None,
+    ) -> RecapItem:
+        """Like `_resolve_recap_items`, but raises `RecapActionError` (caught
+        centrally, see `_ACTIONABLE_ERRORS`) for anything that isn't exactly
+        one match -- v1 scope for `recap_action`: a reference matching more
+        than one item (including an explicit "all") is treated the same as
+        an ambiguous single-item reference, since it's about to become a
+        dispatch and can't act on a batch.
+        """
+        matched = self._resolve_recap_items(thread_id, reference, channel)
         if len(matched) > 1:
             labels = ", ".join(f"{item.channel}/{item.label}" for item in matched)
             raise RecapActionError(

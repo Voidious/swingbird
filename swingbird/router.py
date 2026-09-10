@@ -80,9 +80,13 @@ Classify the user's message into exactly one of these intents:
   needed to look it back up.
 - recap_detail: asking for more detail on something the *recap* surfaced,
   without asking to proceed with it -- e.g. "tell me more about F4", "what
-  did dripbird say about the duplicate extractor". Same "message" handling
-  as recap_action: preserve the user's own reference to which item, don't
-  restate its content.
+  did dripbird say about the duplicate extractor". Also covers asking to
+  enumerate the recap's additional/open items instead of elaborating on one
+  named thing -- e.g. "what are the other items", "what else is there",
+  "show me the rest", "what other items" -- these are recap_detail too, not
+  a request for something new, even without any "tell me more" phrasing.
+  Same "message" handling as recap_action: preserve the user's own
+  reference to which item(s), don't restate its content.
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:
@@ -113,16 +117,17 @@ the agent that receives the relayed message."""
 
 _OPEN_RECAP_NOTE = """
 
-Conversation state: this thread already has an open recap -- the agent's
-most recent reply here gave the user a structured recap with per-channel
-items they can still reference. Prefer recap_detail or recap_action over a
+Conversation state: this thread already has an open recap -- a structured
+recap with per-channel items was given earlier in this conversation, and the
+user can still reference it. Prefer recap_detail or recap_action over a
 plain recap when the wording could describe either (e.g. "tell me more
 about the open items for dripbird", "what's the status on F4", "go ahead
-with the duplicate extractor fix") -- treat these as referring back to what
-that recap already surfaced, not as a request to regenerate a fresh one.
-Only classify as recap when the user is clearly asking for a new or
-refreshed summary instead (e.g. "give me an update", "what's changed since
-then", naming a channel that wasn't part of the open recap)."""
+with the duplicate extractor fix", "what are the other items", "what else
+is there") -- treat these as referring back to what that recap already
+surfaced, not as a request to regenerate a fresh one. Only classify as recap
+when the user is clearly asking for a new or refreshed summary instead (e.g.
+"give me an update", "what's changed since then", naming a channel that
+wasn't part of the open recap)."""
 
 _NO_OPEN_RECAP_NOTE = """
 

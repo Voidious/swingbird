@@ -34,6 +34,24 @@ _ALL_MARKERS = {"", "all", "everything"}
 # just invite coincidental false positives.
 _STOPWORDS = {"for", "the", "a", "an", "in", "on", "of", "to", "with", "about"}
 
+# Words that signal "give me the rest", not "give me one specific item" --
+# covers every phrasing the recap's own "N additional/open items" prose uses
+# (see recap.py's _CONCISE_SYSTEM_PROMPT/_DETAILED_SYSTEM_PROMPT) plus the
+# router's recap_detail enumeration examples (see router.py). Checked as
+# whole reference words (post-stopword-strip), not a substring, so it can't
+# accidentally fire just because a label happens to contain one of these.
+_PLURAL_INTENT_WORDS = {
+    "additional",
+    "other",
+    "others",
+    "open",
+    "remaining",
+    "backlogged",
+    "follow-up",
+    "follow-ups",
+    "rest",
+}
+
 
 class RecapActionError(Exception):
     """Raised when a recap-item reference can't be resolved."""
@@ -93,14 +111,24 @@ def resolve_reference(
     that's enough. This can't spuriously match an empty label (no word is a
     substring of "").
 
-    If none of that identifies a label match but the channel narrowing above
-    left exactly one candidate, that candidate is returned anyway -- a
-    generic reference like "the open items" or "the first one" never names
-    any label, but once the channel is unambiguous it can only be pointing
-    at that channel's one item. This mirrors the empty/"all" handling above,
-    just scoped to one channel's candidates instead of every item, and it
-    only fires when the channel is unambiguous -- a bare, channel-less
-    generic reference still raises rather than guessing across channels.
+    If no label match was found but the reference itself asks for "the rest"
+    (a word in `_PLURAL_INTENT_WORDS`, e.g. "the additional items", "what
+    other items") and the channel narrowing above left exactly one channel,
+    every non-primary item (`RecapItem.is_primary` is `False`) for that
+    channel is returned -- this is what lets "tell me more about the
+    additional items" resolve to real items without needing its own thread
+    of message ids (see `recap.py`'s `is_primary`). If that channel has no
+    non-primary items (e.g. it only ever had one open item), this falls
+    through to the next rule instead of returning an empty list.
+
+    If none of that identifies a match but the channel narrowing above left
+    exactly one candidate, that candidate is returned anyway -- a generic
+    reference like "the open item" or "the first one" never names any label,
+    but once the channel is unambiguous it can only be pointing at that
+    channel's one item. This mirrors the empty/"all" handling above, just
+    scoped to one channel's candidates instead of every item, and it only
+    fires when the channel is unambiguous -- a bare, channel-less generic
+    reference still raises rather than guessing across channels.
     """
     normalized = (reference or "").strip().lower()
     if normalized in _ALL_MARKERS:
@@ -129,8 +157,13 @@ def resolve_reference(
         or normalized in item.channel.lower()
         or any(word in item.label.lower() for word in words)
     ]
-    if not matches and len(channels_named) == 1 and len(candidates) == 1:
-        return candidates
+    if not matches and len(channels_named) == 1:
+        if any(word in _PLURAL_INTENT_WORDS for word in words):
+            non_primary = [item for item in candidates if not item.is_primary]
+            if non_primary:
+                return non_primary
+        if len(candidates) == 1:
+            return candidates
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")
     return matches

@@ -72,11 +72,14 @@ invent it>", "source_id": "<the tag (e.g. \\"m3\\") of the single transcript
 message that most directly states this instruction -- omit or use an empty
 string if it isn't clearly grounded in one specific message>"}]}
 
-Include one item per channel for the same actionable next step "text" already
-leads with for that channel -- omit a channel from "items" entirely if it has
-no open/actionable item (e.g. it said "no open item"). Never fabricate an
-item, a label, an instruction, or a "source_id" that isn't grounded in the
-transcript."""
+Include every currently open/actionable item for each channel, not just one
+-- list the same leading item "text" already narrates for that channel
+first, then any other open items for that channel afterward, in whatever
+order they matter most. Omit a channel from "items" entirely if it has no
+open/actionable item (e.g. it said "no open item"). Never fabricate an item,
+a label, an instruction, or a "source_id" that isn't grounded in the
+transcript -- every item is grounded independently, exactly like the single
+leading item was before."""
 
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
@@ -111,9 +114,16 @@ class RecapError(Exception):
 
 @dataclass(frozen=True)
 class RecapItem:
-    """One channel's current actionable next step, extracted alongside the
-    recap text so a later "go ahead with X" DM can refer back to it (see
+    """One channel's current actionable item, extracted alongside the recap
+    text so a later "go ahead with X" DM can refer back to it (see
     `recap_actions.py`) without re-parsing rendered prose.
+
+    `is_primary` marks the one item per channel that "text" itself narrates
+    (the first item the LLM listed for that channel, per `_ITEMS_
+    INSTRUCTIONS` -- see `_parse_recap`); every other item for that channel
+    is one of the "N additional/open items" the recap text only counts.
+    `resolve_reference` (`recap_actions.py`) uses this to answer "what are
+    the other items" with exactly the non-primary ones.
 
     `source_event_id` is the transcript message the instruction was grounded
     in, when the LLM could point to one specific message -- it's what lets a
@@ -129,6 +139,7 @@ class RecapItem:
     label: str
     summary: str
     instruction: str
+    is_primary: bool = True
     source_event_id: str | None = None
     source_content: str | None = None
 
@@ -180,23 +191,31 @@ def _parse_recap(
     text = response.get("text")
     if not isinstance(text, str):
         raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
-    items = tuple(
-        RecapItem(
-            channel=item.get("channel", ""),
-            label=item.get("label", ""),
-            summary=item.get("summary", ""),
-            instruction=item.get("instruction", ""),
-            source_event_id=_resolve_tag(
-                id_map, item.get("channel", ""), item.get("source_id")
-            ),
-            source_content=_resolve_tag(
-                content_map, item.get("channel", ""), item.get("source_id")
-            ),
+    items = []
+    seen_channels: set[str] = set()
+    for item in response.get("items") or []:
+        if not isinstance(item, dict) or not item.get("instruction"):
+            continue
+        channel = item.get("channel", "")
+        # The LLM lists a channel's leading item first (see
+        # _ITEMS_INSTRUCTIONS) -- the first item seen for a channel is its
+        # primary one, everything after is one of the "additional" items.
+        is_primary = channel not in seen_channels
+        seen_channels.add(channel)
+        items.append(
+            RecapItem(
+                channel=channel,
+                label=item.get("label", ""),
+                summary=item.get("summary", ""),
+                instruction=item.get("instruction", ""),
+                is_primary=is_primary,
+                source_event_id=_resolve_tag(id_map, channel, item.get("source_id")),
+                source_content=_resolve_tag(
+                    content_map, channel, item.get("source_id")
+                ),
+            )
         )
-        for item in response.get("items") or []
-        if isinstance(item, dict) and item.get("instruction")
-    )
-    return Recap(text=text, items=items)
+    return Recap(text=text, items=tuple(items))
 
 
 def _resolve_tag(

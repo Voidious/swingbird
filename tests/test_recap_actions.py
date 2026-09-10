@@ -225,3 +225,49 @@ def test_resolve_reference_generic_reference_with_ambiguous_channel_still_raises
     # -- a generic reference can't pick between them.
     with pytest.raises(RecapActionError, match="no recap item matches"):
         resolve_reference((ITEM_F4, ITEM_F5), "the first one for dripbird")
+
+
+def test_resolve_reference_plural_intent_returns_every_non_primary_item():
+    # ITEM_F4 is the (default) primary item for dripbird; a non-primary F5
+    # is what "the additional items" should resolve to -- not the primary
+    # one "text" already narrated.
+    non_primary_f5 = RecapItem(
+        channel="dripbird",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+
+    matches = resolve_reference(
+        (ITEM_F4, non_primary_f5), "the additional items", channel="dripbird"
+    )
+
+    assert matches == [non_primary_f5]
+
+
+def test_resolve_reference_plural_intent_without_a_channel_signal_still_raises():
+    # "other(s)"/"additional"/etc only resolves once the channel is
+    # unambiguous -- same "no guessing across channels" rule as the generic
+    # single-item fallback.
+    non_primary_f5 = RecapItem(
+        channel="dripbird",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((ITEM_F4, non_primary_f5, ITEM_BACKEND), "the other items")
+
+
+def test_resolve_reference_plural_intent_with_no_non_primary_items_falls_back():
+    # A generic plural reference for a channel that only ever had one open
+    # item has nothing non-primary to return -- falls through to the same
+    # single-item fallback a non-plural generic reference would use.
+    matches = resolve_reference(
+        (ITEM_F4,), "what are the other items", channel="dripbird"
+    )
+
+    assert matches == [ITEM_F4]

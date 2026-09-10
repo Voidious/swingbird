@@ -647,6 +647,49 @@ def test_recap_detail_resolves_via_intent_channel_when_message_is_generic(
     assert args == ("dm-chan", "More detail on the open items.")
 
 
+def test_recap_detail_elaborates_every_non_primary_item_for_additional_items(
+    tmp_path, monkeypatch
+):
+    """ "tell me more about the additional items" should resolve to every
+    non-primary item for the channel and elaborate on all of them in one
+    call -- not just the leading item the recap text itself narrated."""
+    monkeypatch.setattr(daemon, "fetch_recent_messages", lambda *a, **k: [])
+    sent = _sent(monkeypatch)
+    other_item = RecapItem(
+        channel="backend",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+    third_item = RecapItem(
+        channel="backend",
+        label="F6",
+        summary="lower priority follow-up",
+        instruction="Revisit once F4/F5 land.",
+        is_primary=False,
+    )
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item, third_item)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_detail",
+            "channel": "backend",
+            "message": "the additional items",
+        },
+        text_response="More on F5 and F6.",
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "More on F5 and F6.")
+    user_content = llm.calls[-1][1]["content"]
+    assert "undefined-sentinel cloneDeep split" in user_content
+    assert "lower priority follow-up" in user_content
+    assert "unused-ignore propagation" not in user_content
+
+
 def test_recap_detail_without_a_grounded_item_skips_the_thread_fetch(
     tmp_path, monkeypatch
 ):

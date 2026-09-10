@@ -7,6 +7,13 @@ ITEM = RecapItem(
     summary="unused-ignore propagation",
     instruction="Fix the deterministic directive trip-check.",
 )
+OTHER_ITEM = RecapItem(
+    channel="dripbird",
+    label="F5",
+    summary="undefined-sentinel cloneDeep split",
+    instruction="Design a fix for the cloneDeep split.",
+    is_primary=False,
+)
 
 
 class FakeLLM:
@@ -22,14 +29,20 @@ class FakeLLM:
 def test_elaborate_returns_the_llm_completion():
     llm = FakeLLM(text_response="Here's more on F4: it's blocked on a design call.")
 
-    result = elaborate(llm, ITEM, [], [], "F4")
+    result = elaborate(llm, [ITEM], [[]], [], "F4")
 
     assert result == "Here's more on F4: it's blocked on a design call."
 
 
-def _user_content(item=ITEM, thread_messages=(), dm_messages=(), reference="F4"):
+def _user_content(items=(ITEM,), threads=None, dm_messages=(), reference="F4"):
     llm = FakeLLM()
-    elaborate(llm, item, list(thread_messages), list(dm_messages), reference)
+    elaborate(
+        llm,
+        list(items),
+        threads if threads is not None else [[] for _ in items],
+        list(dm_messages),
+        reference,
+    )
     return llm.calls[0][1]["content"]
 
 
@@ -42,7 +55,7 @@ def test_elaborate_includes_summary_instruction_and_reference():
 
 def test_elaborate_includes_thread_messages_when_present():
     content = _user_content(
-        thread_messages=[{"created_at": 1, "content": "the original message"}]
+        threads=[[{"created_at": 1, "content": "the original message"}]]
     )
     assert "Full thread this was grounded in" in content
     assert "the original message" in content
@@ -69,7 +82,21 @@ def test_elaborate_omits_dm_section_when_absent():
 def test_elaborate_defaults_reference_to_all():
     llm = FakeLLM()
 
-    elaborate(llm, ITEM, [], [], None)
+    elaborate(llm, [ITEM], [[]], [], None)
 
     content = llm.calls[0][1]["content"]
     assert "User's reference: all" in content
+
+
+def test_elaborate_single_item_omits_item_numbering():
+    content = _user_content()
+    assert "Item 1/1" not in content
+
+
+def test_elaborate_multiple_items_numbers_and_includes_both():
+    content = _user_content(items=(ITEM, OTHER_ITEM), threads=[[], []])
+
+    assert "Item 1/2" in content
+    assert "Item 2/2" in content
+    assert ITEM.summary in content
+    assert OTHER_ITEM.summary in content
