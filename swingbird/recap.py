@@ -49,6 +49,20 @@ _QUESTION_GUARD = (
     "that one was given."
 )
 
+_RESOLUTION_GUARD = (
+    "A thread's status is set by its most recent resolution, not by the "
+    'most detailed or alarming message in it: if the user later says "go '
+    'ahead", "that\'s fine", "you can ignore X", or otherwise dismisses or '
+    "answers an earlier question or concern, treat that concern as closed "
+    "-- don't lead with it or describe it as still needing attention just "
+    "because it generated the most discussion. If the transcript's last "
+    "message is an interruption rather than a substantive reply (e.g. a "
+    "session-limit, retry, or error notice), the open item is whatever "
+    "the user's last instruction before that was, not any earlier "
+    'resolved concern -- phrase status like "told to do X, interrupted '
+    'before doing it," not the concern that preceded that instruction.'
+)
+
 _FORMAT_GUARD = (
     'Format "text" as one paragraph per channel, each starting with the '
     'channel name in bold Markdown (e.g. "**backend**: ..."), separated '
@@ -89,7 +103,8 @@ phrased as status then next step. If there are additional open items \
 beyond the one you lead with, note how many there are rather than \
 listing them. If a channel has no open item, say so briefly, and if a \
 goal is given for it, add one short sentence naming that goal as what's \
-next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_FORMAT_GUARD} \
+next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} \
+{_RESOLUTION_GUARD} {_FORMAT_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
 transcript.{_ITEMS_INSTRUCTIONS}"""
 
@@ -98,8 +113,8 @@ Given recent messages from one or more project channels, write a short, \
 prioritized summary: lead with what needs the user's attention \
 (blockers, decisions needed, open questions), then what's in flight, \
 then what finished recently. {_LAUNDERING_GUARD} {_QUESTION_GUARD} \
-{_FORMAT_GUARD} Skip routine chatter. Be concise -- a few sentences per \
-channel, not a transcript.{_ITEMS_INSTRUCTIONS}"""
+{_RESOLUTION_GUARD} {_FORMAT_GUARD} Skip routine chatter. Be concise -- \
+a few sentences per channel, not a transcript.{_ITEMS_INSTRUCTIONS}"""
 
 _SYSTEM_PROMPTS = {
     "concise": _CONCISE_SYSTEM_PROMPT,
