@@ -226,6 +226,36 @@ def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
     assert stored[0].label == "F4"
 
 
+def test_process_tells_the_router_no_recap_is_open_when_none_is_stored(
+    tmp_path, monkeypatch
+):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    system_content = llm.calls[0][0]["content"]
+    assert "no open recap" in system_content
+
+
+def _setup_recap_detail_test(monkeypatch, item, channel="dm-chan"):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with(channel, item)
+    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+    return sent, recap_store, llm
+
+
+def test_process_tells_the_router_a_recap_is_open_for_this_thread(
+    tmp_path, monkeypatch
+):
+    sent, recap_store, llm = _setup_recap_detail_test(monkeypatch, F4_ITEM)
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent, recap_store=recap_store)
+
+    system_content = llm.calls[0][0]["content"]
+    assert "already has an open recap" in system_content
+
+
 F4_ITEM = RecapItem(
     channel="backend",
     label="F4",
@@ -685,9 +715,7 @@ def test_recap_detail_unknown_channel_becomes_a_helpful_reply(tmp_path, monkeypa
     """`item.channel` is LLM-sourced (see recap.py) and never trusted
     blindly (§5) -- an unresolvable name is a reportable error, not a
     silent drop of the thread context or a crash."""
-    sent = _sent(monkeypatch)
-    recap_store = _recap_store_with("dm-chan", UNKNOWN_CHANNEL_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
+    sent, recap_store, llm = _setup_recap_detail_test(monkeypatch, UNKNOWN_CHANNEL_ITEM)
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store

@@ -319,7 +319,10 @@ class Daemon:
 
     def _process(self, event: dict, thread_id: str) -> str:
         try:
-            intent = self._router.route(event["content"], thread_id=thread_id)
+            has_open_recap = self._recap_store.get(thread_id) is not None
+            intent = self._router.route(
+                event["content"], thread_id=thread_id, has_open_recap=has_open_recap
+            )
             return self._act(intent, thread_id, event["id"])
         except _ACTIONABLE_ERRORS as exc:
             return f"Couldn't do that: {exc}"

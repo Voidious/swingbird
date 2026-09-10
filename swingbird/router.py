@@ -8,6 +8,19 @@ on ambiguity"), the prompt instructs the model to leave `channel` /
 `target_agent` null rather than pick a plausible-looking match -- the
 pending-action store (a later step) is responsible for turning an
 ambiguous or unknown target into a clarifying question.
+
+`route()` also takes `has_open_recap`, whether the calling thread currently
+has a stored recap it can still reference (see
+`recap_actions.RecapActionStore`). The classification call otherwise has
+zero visibility into anything outside the single message being classified,
+so wording that could equally describe "elaborate on what the recap just
+said" or "give me a fresh recap" (e.g. "tell me more about the open items
+for dripbird") was observed to flip unpredictably between `recap` and
+`recap_detail` on identical input -- the model had no way to know a recap
+had just been given. Appending an explicit conversation-state note to the
+system prompt per call, rather than trying to infer that state from the
+message's wording alone, gives the model the one piece of context it
+actually needs to disambiguate deterministically.
 """
 
 from __future__ import annotations
@@ -98,6 +111,28 @@ directly -- collapsing the name into "you" erases that distinction for
 the agent that receives the relayed message."""
 
 
+_OPEN_RECAP_NOTE = """
+
+Conversation state: this thread already has an open recap -- the agent's
+most recent reply here gave the user a structured recap with per-channel
+items they can still reference. Prefer recap_detail or recap_action over a
+plain recap when the wording could describe either (e.g. "tell me more
+about the open items for dripbird", "what's the status on F4", "go ahead
+with the duplicate extractor fix") -- treat these as referring back to what
+that recap already surfaced, not as a request to regenerate a fresh one.
+Only classify as recap when the user is clearly asking for a new or
+refreshed summary instead (e.g. "give me an update", "what's changed since
+then", naming a channel that wasn't part of the open recap)."""
+
+_NO_OPEN_RECAP_NOTE = """
+
+Conversation state: this thread has no open recap right now -- nothing has
+been recapped yet, or too much has happened since for one to still apply.
+recap_detail and recap_action both require an existing recap to reference,
+so don't classify as either here; a message asking about a channel's
+status is a plain recap instead."""
+
+
 class RouterError(Exception):
     """Raised when the LLM's response can't be trusted as a classification."""
 
@@ -125,12 +160,22 @@ class IntentRouter:
             channel_list=_format_channel_list(config)
         )
 
-    def route(self, text: str, thread_id: str | None = None) -> Intent:
+    def route(
+        self,
+        text: str,
+        thread_id: str | None = None,
+        has_open_recap: bool = False,
+    ) -> Intent:
         """Classify `text` into an `Intent`, calling the configured LLM.
 
         Every call is recorded as a `transcript_in` audit entry (if an
         `AuditLog` was configured) before the LLM call, so the audit trail
         covers what came in even if classification itself fails.
+
+        `has_open_recap` -- whether the calling thread has a stored recap it
+        can still reference -- is appended to the system prompt as an
+        explicit conversation-state note (see module docstring) rather than
+        left for the model to guess from the message text alone.
 
         Retries the classification once if the first attempt comes back
         `chit_chat`, since that's the catch-all bucket an under-confident
@@ -144,8 +189,11 @@ class IntentRouter:
         """
         if self._audit is not None:
             self._audit.log_transcript_in(thread_id, text)
+        system_prompt = self._system_prompt + (
+            _OPEN_RECAP_NOTE if has_open_recap else _NO_OPEN_RECAP_NOTE
+        )
         messages = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ]
         intent = _parse_intent(self._llm.complete_json(messages))

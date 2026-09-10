@@ -216,12 +216,29 @@ def test_route_raises_on_unknown_intent():
         router.route("???")
 
 
-def test_system_prompt_includes_known_channels_and_agents():
+def _route_and_get_system_content():
     router, fake = _router('{"intent": "recap"}')
-
     router.route("what's going on?")
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    return router, system_content
+
+
+def test_route_notes_no_open_recap_by_default():
+    (_, system_content) = _route_and_get_system_content()
+    assert "no open recap" in system_content
+
+
+def test_route_notes_open_recap_when_flagged():
+    router, fake = _router('{"intent": "recap_detail", "message": "F4"}')
+
+    router.route("tell me more about F4", has_open_recap=True)
 
     system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "already has an open recap" in system_content
+
+
+def test_system_prompt_includes_known_channels_and_agents():
+    (_, system_content) = _route_and_get_system_content()
     assert "backend" in system_content
     assert "Codex" in system_content
     assert "frontend" in system_content
