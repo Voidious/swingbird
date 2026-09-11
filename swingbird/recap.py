@@ -84,7 +84,11 @@ the item>", "summary": "<one clause describing the item>", "instruction":
 transcript's own wording as possible -- extract it, don't paraphrase or
 invent it>", "source_id": "<the tag (e.g. \\"m3\\") of the single transcript
 message that most directly states this instruction -- omit or use an empty
-string if it isn't clearly grounded in one specific message>"}]}
+string if it isn't clearly grounded in one specific message>", "keywords":
+["<2-4 short alternate phrases someone might later use to refer to this
+item -- synonyms, a category, or a plainer description of this same item's
+own label/summary/instruction, not new claims about the work; may be
+empty>"]}]}
 
 Include every currently open/actionable item for each channel, not just one
 -- list the same leading item "text" already narrates for that channel
@@ -93,7 +97,10 @@ order they matter most. Omit a channel from "items" entirely if it has no
 open/actionable item (e.g. it said "no open item"). Never fabricate an item,
 a label, an instruction, or a "source_id" that isn't grounded in the
 transcript -- every item is grounded independently, exactly like the single
-leading item was before."""
+leading item was before. "keywords" is the one exception: it doesn't need to
+be grounded in the transcript's own wording -- ground it in the item's own
+label/summary/instruction instead, listing other natural ways someone might
+refer to that same item later."""
 
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
@@ -149,7 +156,17 @@ class RecapItem:
     later dispatch-phrasing rewrite (see `dispatch_phrasing.py`) can ground
     itself in the coding agent's own wording instead of just the recap's
     condensed summary/instruction. Both are `None` under the same
-    conditions -- nothing single message grounds the item; never guessed."""
+    conditions -- nothing single message grounds the item; never guessed.
+
+    `keywords` are alternate phrases the LLM thought of at extraction time
+    for referring to this same item later (see `_ITEMS_INSTRUCTIONS`) --
+    unlike every other field here, they're deliberately *not* required to be
+    grounded in the transcript's literal wording, since their whole job is
+    covering synonyms/categories the transcript never used. `resolve_
+    reference` (`recap_actions.py`) matches a follow-up reference against
+    these the same way it matches `label`, so a user can say "the lint
+    issue" for an item whose label is "F6" without needing to guess the
+    LLM's exact label string."""
 
     channel: str
     label: str
@@ -158,6 +175,7 @@ class RecapItem:
     is_primary: bool = True
     source_event_id: str | None = None
     source_content: str | None = None
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -234,9 +252,21 @@ def _parse_recap(
                 source_content=_resolve_tag(
                     content_map, channel, item.get("source_id")
                 ),
+                keywords=_parse_keywords(item.get("keywords")),
             )
         )
     return Recap(text=text, items=tuple(items))
+
+
+def _parse_keywords(raw: object) -> tuple[str, ...]:
+    """Coerce the LLM's "keywords" field into a tuple of non-empty strings,
+    silently dropping anything malformed (a non-list, or non-string/blank
+    entries) rather than raising -- keywords are a matching aid, not load-
+    bearing content, so a malformed entry should never fail the whole
+    recap."""
+    if not isinstance(raw, list):
+        return ()
+    return tuple(k.strip() for k in raw if isinstance(k, str) and k.strip())
 
 
 def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:

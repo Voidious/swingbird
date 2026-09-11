@@ -92,6 +92,22 @@ class RecapActionStore:
         return self._items.get(thread_id)
 
 
+def _matches_text(candidate: str, normalized: str, words: list[str]) -> bool:
+    """Bidirectional + word-level match of `normalized` (and its non-stopword
+    `words`) against one piece of candidate text -- the same three-way check
+    `resolve_reference` applies to `label`, factored out so it can also be
+    applied to each of an item's `keywords` without duplicating the logic
+    (see `resolve_reference`'s docstring for why each half of the check
+    exists). Can't spuriously match an empty `candidate` -- no word is a
+    substring of ""."""
+    lowered = candidate.lower()
+    return (
+        normalized in lowered
+        or (candidate and lowered in normalized)
+        or any(word in lowered for word in words)
+    )
+
+
 def resolve_reference(
     items: tuple[RecapItem, ...],
     reference: str | None,
@@ -102,26 +118,26 @@ def resolve_reference(
 
     An empty reference or "all"/"everything" (case-insensitive) refers to
     every item. Otherwise, `reference` is matched case-insensitively against
-    each item's `label` or `channel`, and every match is returned -- zero
-    matches raises rather than guessing, but whether more than one match is
-    acceptable is the caller's policy to enforce, not this function's (see
-    module docstring).
+    each item's `label`, `keywords`, or `channel`, and every match is
+    returned -- zero matches raises rather than guessing, but whether more
+    than one match is acceptable is the caller's policy to enforce, not this
+    function's (see module docstring).
 
-    The match is bidirectional (does `reference` contain the label, or does
-    the label contain `reference`) since a bare label like "F4" needs the
-    former and a reference that also names the channel ("F4 for dripbird")
-    needs the latter -- neither string is a substring of the other in that
-    second case. Candidates are narrowed to a single channel's items first
-    whenever exactly one channel is identified, so a label that happens to
-    recur across channels (or a channel name that happens to look like
-    another item's label) can't cross-match. `channel`, when given, is the
-    authoritative source for that narrowing -- it's the router's own
-    classification of the message (`Intent.channel`), which can identify the
-    channel even when the leftover reference text doesn't name it at all
-    (e.g. "tell me more about the open items" once the router has already
-    resolved which channel "the open items" belongs to). Only when `channel`
-    is `None` does this fall back to searching for a channel name as a
-    substring of `reference` itself.
+    The match (`_matches_text`) is bidirectional (does `reference` contain
+    the label, or does the label contain `reference`) since a bare label
+    like "F4" needs the former and a reference that also names the channel
+    ("F4 for dripbird") needs the latter -- neither string is a substring of
+    the other in that second case. Candidates are narrowed to a single
+    channel's items first whenever exactly one channel is identified, so a
+    label that happens to recur across channels (or a channel name that
+    happens to look like another item's label) can't cross-match. `channel`,
+    when given, is the authoritative source for that narrowing -- it's the
+    router's own classification of the message (`Intent.channel`), which can
+    identify the channel even when the leftover reference text doesn't name
+    it at all (e.g. "tell me more about the open items" once the router has
+    already resolved which channel "the open items" belongs to). Only when
+    `channel` is `None` does this fall back to searching for a channel name
+    as a substring of `reference` itself.
 
     A channel-qualified reference can still fail the whole-string
     bidirectional test even after narrowing: a bundled multi-option item
@@ -132,6 +148,13 @@ def resolve_reference(
     `reference`: if any single word is itself a substring of the label,
     that's enough. This can't spuriously match an empty label (no word is a
     substring of "").
+
+    Each of an item's `keywords` (see `recap.py`'s `_ITEMS_INSTRUCTIONS`) is
+    checked with this exact same three-way test, independently of `label` --
+    a keyword is just another name for the item, extracted by the LLM at
+    recap time from the item's own content rather than the user's later
+    phrasing, so it deserves the same substring/word-level leniency `label`
+    gets, not a stricter one.
 
     If no label match was found but the reference itself asks for "the rest"
     (a word in `_PLURAL_INTENT_WORDS`, e.g. "the additional items", "what
@@ -190,10 +213,9 @@ def resolve_reference(
     matches = [
         item
         for item in candidates
-        if normalized in item.label.lower()
-        or (item.label and item.label.lower() in normalized)
+        if _matches_text(item.label, normalized, words)
         or normalized in item.channel.lower()
-        or any(word in item.label.lower() for word in words)
+        or any(_matches_text(keyword, normalized, words) for keyword in item.keywords)
     ]
     plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if not matches and len(channels_named) == 1:

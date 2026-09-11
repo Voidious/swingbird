@@ -298,6 +298,47 @@ def test_resolve_reference_plural_intent_without_a_channel_signal_still_raises()
         resolve_reference((ITEM_F4, non_primary_f5, ITEM_BACKEND), "the other items")
 
 
+def test_resolve_reference_matches_by_keyword():
+    item_with_keywords = RecapItem(
+        channel="dripbird",
+        label="F6",
+        summary="lint residue",
+        instruction="fix the prefer-const finding",
+        keywords=("lint issue", "prefer-const finding"),
+    )
+
+    resolved = resolve_reference(
+        (item_with_keywords, ITEM_BACKEND), "the lint issue for dripbird"
+    )
+
+    assert resolved.items == [item_with_keywords]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_matches_by_keyword_word_fallback():
+    # Same word-level fallback label matching gets ("F4 for dripbird" isn't a
+    # substring of a longer keyword and vice versa) applies to keywords too.
+    item_with_keywords = RecapItem(
+        channel="dripbird",
+        label="F6",
+        summary="lint residue",
+        instruction="fix the prefer-const finding",
+        keywords=("the prefer-const lint finding",),
+    )
+
+    resolved = resolve_reference(
+        (item_with_keywords, ITEM_BACKEND), "prefer-const for dripbird"
+    )
+
+    assert resolved.items == [item_with_keywords]
+
+
+def test_resolve_reference_does_not_crash_on_an_item_with_no_keywords():
+    resolved = resolve_reference((ITEM_F4, ITEM_BACKEND), "F4")
+
+    assert resolved.items == [ITEM_F4]
+
+
 def test_resolve_reference_plural_intent_with_no_non_primary_items_falls_back():
     # A generic plural reference for a channel that only ever had one open
     # item has nothing non-primary to return -- falls through to the same

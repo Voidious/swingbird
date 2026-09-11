@@ -317,6 +317,85 @@ def test_build_recap_parses_structured_items(monkeypatch):
     )
 
 
+def test_build_recap_parses_keywords(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F6",
+                "summary": "lint residue",
+                "instruction": "fix the prefer-const finding",
+                "keywords": ["lint issue", "prefer-const finding"],
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].keywords == ("lint issue", "prefer-const finding")
+
+
+def test_build_recap_defaults_keywords_to_empty_tuple_when_omitted(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].keywords == ()
+
+
+def test_build_recap_drops_non_string_and_blank_keyword_entries(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "keywords": ["real one", "  ", 7, ""],
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].keywords == ("real one",)
+
+
+def test_build_recap_ignores_a_non_list_keywords_value(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "here's the recap",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "s",
+                "instruction": "do it",
+                "keywords": "not a list",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.items[0].keywords == ()
+
+
 def test_build_recap_drops_items_without_an_instruction(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
