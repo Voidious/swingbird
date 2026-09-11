@@ -87,6 +87,7 @@ from swingbird.recap import RecapError, RecapItem, build_recap
 from swingbird.recap_actions import (
     RecapActionError,
     RecapActionStore,
+    ResolvedReference,
     resolve_reference,
 )
 from swingbird.recap_detail import elaborate
@@ -366,16 +367,23 @@ class Daemon:
         return self._dispatch_or_ask(dispatch_intent, thread_id)
 
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
-        items = self._resolve_recap_items(thread_id, intent.message, intent.channel)
-        for item in items:
+        resolved = self._resolve_recap_items(thread_id, intent.message, intent.channel)
+        for item in resolved.items:
             self._audit.log_recap_reference(
                 thread_id, "recap_detail", intent.message, item
             )
-        threads = [self._fetch_item_thread(item) for item in items]
+        threads = [self._fetch_item_thread(item) for item in resolved.items]
         dm_messages = fetch_recent_messages(
             thread_id, limit=_RECAP_DETAIL_DM_HISTORY_LIMIT
         )
-        return elaborate(self._llm, items, threads, dm_messages, intent.message)
+        return elaborate(
+            self._llm,
+            resolved.items,
+            threads,
+            dm_messages,
+            intent.message,
+            no_other_items=resolved.degraded,
+        )
 
     def _fetch_item_thread(self, item: RecapItem) -> list[dict]:
         """Return every message in the thread `item.source_event_id`
@@ -405,7 +413,7 @@ class Daemon:
         thread_id: str,
         reference: str | None,
         channel: str | None = None,
-    ) -> list[RecapItem]:
+    ) -> ResolvedReference:
         """Resolve `reference` against the last recap's items for `thread_id`.
 
         `channel` is `intent.channel` from the router's own classification --
@@ -414,12 +422,15 @@ class Daemon:
         for a known name, which misses whenever the router already stripped
         the channel out of the leftover reference text.
 
-        Can return more than one item -- e.g. "the additional items" resolves
-        to every non-primary item for a channel (see `recap_actions.
+        `.items` can hold more than one item -- e.g. "the additional items"
+        resolves to every non-primary item for a channel (see `recap_actions.
         resolve_reference`). `_recap_detail` elaborates on however many come
-        back; `_resolve_single_recap_item` (for `recap_action`, which posts a
-        dispatch and so can't act on a batch -- see recap_actions.py's module
-        docstring) narrows that further to exactly one.
+        back, and passes `.degraded` through to `elaborate` so the user is
+        told when that resolved to the same single item rather than a real
+        additional one; `_resolve_single_recap_item` (for `recap_action`,
+        which posts a dispatch and so can't act on a batch or care about
+        `.degraded` -- see recap_actions.py's module docstring) narrows
+        `.items` further to exactly one.
         """
         items = self._recap_store.get(thread_id)
         if not items:
@@ -442,7 +453,7 @@ class Daemon:
         an ambiguous single-item reference, since it's about to become a
         dispatch and can't act on a batch.
         """
-        matched = self._resolve_recap_items(thread_id, reference, channel)
+        matched = self._resolve_recap_items(thread_id, reference, channel).items
         if len(matched) > 1:
             labels = ", ".join(f"{item.channel}/{item.label}" for item in matched)
             raise RecapActionError(

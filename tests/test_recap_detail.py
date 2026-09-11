@@ -34,7 +34,9 @@ def test_elaborate_returns_the_llm_completion():
     assert result == "Here's more on F4: it's blocked on a design call."
 
 
-def _user_content(items=(ITEM,), threads=None, dm_messages=(), reference="F4"):
+def _user_content(
+    items=(ITEM,), threads=None, dm_messages=(), reference="F4", no_other_items=False
+):
     llm = FakeLLM()
     elaborate(
         llm,
@@ -42,6 +44,7 @@ def _user_content(items=(ITEM,), threads=None, dm_messages=(), reference="F4"):
         threads if threads is not None else [[] for _ in items],
         list(dm_messages),
         reference,
+        no_other_items,
     )
     return llm.calls[0][1]["content"]
 
@@ -100,3 +103,15 @@ def test_elaborate_multiple_items_numbers_and_includes_both():
     assert "Item 2/2" in content
     assert ITEM.summary in content
     assert OTHER_ITEM.summary in content
+
+
+def test_elaborate_no_other_items_tells_the_llm_there_is_nothing_else():
+    content = _user_content(no_other_items=True)
+
+    assert "no items beyond the one below" in content
+
+
+def test_elaborate_omits_no_other_items_note_by_default():
+    content = _user_content()
+
+    assert "no items beyond" not in content

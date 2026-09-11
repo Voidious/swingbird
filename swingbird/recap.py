@@ -99,12 +99,13 @@ _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
 actionable item: current status in one clause, then a proposed next \
 step, distilled into a single decision where possible -- 1-2 sentences, \
-phrased as status then next step. If there are additional open items \
-beyond the one you lead with, note how many there are rather than \
-listing them. If a channel has no open item, say so briefly, and if a \
-goal is given for it, add one short sentence naming that goal as what's \
-next for the project. {_LAUNDERING_GUARD} {_QUESTION_GUARD} \
-{_RESOLUTION_GUARD} {_FORMAT_GUARD} \
+phrased as status then next step. Describe only that one leading item -- \
+if the channel has other open items, don't mention them or fold their \
+content into this paragraph; a count of how many more there are is \
+appended separately, not narrated by you. If a channel has no open \
+item, say so briefly, and if a goal is given for it, add one short \
+sentence naming that goal as what's next for the project. \
+{_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
 transcript.{_ITEMS_INSTRUCTIONS}"""
 
@@ -195,7 +196,12 @@ def build_recap(
         },
         {"role": "user", "content": transcript},
     ]
-    return _parse_recap(llm.complete_json(messages), id_map, content_map)
+    recap = _parse_recap(llm.complete_json(messages), id_map, content_map)
+    if detail != "detailed":
+        recap = Recap(
+            text=_append_item_counts(recap.text, recap.items), items=recap.items
+        )
+    return recap
 
 
 def _parse_recap(
@@ -231,6 +237,42 @@ def _parse_recap(
             )
         )
     return Recap(text=text, items=tuple(items))
+
+
+def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
+    """Append a deterministic "(N additional open items)" note to each
+    channel's paragraph in `text`, computed from the real non-primary item
+    count in `items` rather than left to the LLM's own prose judgment.
+
+    The LLM was previously asked to narrate this count itself (see
+    _CONCISE_SYSTEM_PROMPT's history), but proved unreliable in practice --
+    it would fold another item's content into the leading paragraph instead
+    of counting it, or drop the mention entirely, while the grounded
+    `items` list was correct the whole time. Only called for "concise"
+    recaps (see `build_recap`) -- "detailed" already narrates multiple
+    items itself as part of its three-bucket format, so a code-appended
+    count there would be redundant.
+
+    Relies on `_FORMAT_GUARD`'s "one paragraph per channel, each starting
+    with **<channel>**" contract to find the right paragraph; a channel
+    whose paragraph doesn't start that way (the LLM ignoring the format
+    guard) is silently left without a count rather than guessing which
+    paragraph it meant.
+    """
+    counts: dict[str, int] = {}
+    for item in items:
+        if not item.is_primary:
+            counts[item.channel] = counts.get(item.channel, 0) + 1
+    if not counts:
+        return text
+    paragraphs = text.split("\n\n")
+    for i, paragraph in enumerate(paragraphs):
+        for channel, count in counts.items():
+            if paragraph.startswith(f"**{channel}**:"):
+                noun = "item" if count == 1 else "items"
+                paragraphs[i] = f"{paragraph} ({count} additional open {noun}.)"
+                break
+    return "\n\n".join(paragraphs)
 
 
 def _resolve_tag(

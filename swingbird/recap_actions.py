@@ -23,6 +23,8 @@ deliberately out of scope here (see the recap follow-up plan).
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from swingbird.recap import RecapItem
 
 _ALL_MARKERS = {"", "all", "everything"}
@@ -57,6 +59,25 @@ class RecapActionError(Exception):
     """Raised when a recap-item reference can't be resolved."""
 
 
+class ResolvedReference(NamedTuple):
+    """The result of matching a reference against a recap's items.
+
+    `degraded` is True only when `reference` used plural-intent wording
+    (asking for "the other/additional items") but the channel it narrowed
+    to has no non-primary items at all, so `items` is just the sole
+    existing item handed back again rather than a genuine additional one.
+    `daemon._recap_detail` uses this to tell the user there's nothing else
+    instead of silently re-elaborating on the one item as if it were new
+    (see `resolve_reference`'s docstring for the exact fallback this
+    covers). Every other return path -- an explicit label match, "all", a
+    real non-primary-items match, or the single-candidate fallback for a
+    generic non-plural reference -- is `degraded=False`.
+    """
+
+    items: list[RecapItem]
+    degraded: bool
+
+
 class RecapActionStore:
     """The last recap's items per thread id, replaced wholesale by each new
     recap for that thread."""
@@ -75,8 +96,9 @@ def resolve_reference(
     items: tuple[RecapItem, ...],
     reference: str | None,
     channel: str | None = None,
-) -> list[RecapItem]:
-    """Return the `RecapItem`s `reference` refers to.
+) -> ResolvedReference:
+    """Return the `RecapItem`s `reference` refers to, plus whether that was
+    a degraded fallback (see `ResolvedReference`).
 
     An empty reference or "all"/"everything" (case-insensitive) refers to
     every item. Otherwise, `reference` is matched case-insensitively against
@@ -119,7 +141,9 @@ def resolve_reference(
     additional items" resolve to real items without needing its own thread
     of message ids (see `recap.py`'s `is_primary`). If that channel has no
     non-primary items (e.g. it only ever had one open item), this falls
-    through to the next rule instead of returning an empty list.
+    through to the next rule instead of returning an empty list -- with
+    `degraded=True` on the result, since asking for "the rest" and getting
+    the same one item back again isn't a real match.
 
     If none of that identifies a match but the channel narrowing above left
     exactly one candidate, that candidate is returned anyway -- a generic
@@ -134,7 +158,7 @@ def resolve_reference(
     if normalized in _ALL_MARKERS:
         if not items:
             raise RecapActionError("no items in the last recap")
-        return list(items)
+        return ResolvedReference(list(items), degraded=False)
     if channel is not None:
         channels_named = {
             item.channel for item in items if item.channel.lower() == channel.lower()
@@ -157,13 +181,14 @@ def resolve_reference(
         or normalized in item.channel.lower()
         or any(word in item.label.lower() for word in words)
     ]
+    plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if not matches and len(channels_named) == 1:
-        if any(word in _PLURAL_INTENT_WORDS for word in words):
+        if plural_intent:
             non_primary = [item for item in candidates if not item.is_primary]
             if non_primary:
-                return non_primary
+                return ResolvedReference(non_primary, degraded=False)
         if len(candidates) == 1:
-            return candidates
+            return ResolvedReference(candidates, degraded=plural_intent)
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")
-    return matches
+    return ResolvedReference(matches, degraded=False)

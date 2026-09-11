@@ -331,6 +331,90 @@ def test_build_recap_drops_items_without_an_instruction(monkeypatch):
     assert result.items == ()
 
 
+def test_build_recap_appends_additional_item_count_to_concise_text(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: primary item text.\n\n**frontend**: nothing new.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**backend**: primary item text. (1 additional open item.)\n\n"
+        "**frontend**: nothing new."
+    )
+
+
+def test_build_recap_pluralizes_additional_item_count(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: primary item text.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F6",
+                "summary": "tertiary",
+                "instruction": "do the tertiary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**backend**: primary item text. (2 additional open items.)"
+
+
+def test_build_recap_detailed_mode_does_not_append_item_counts(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: prose covering multiple items already.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG, detail="detailed")
+
+    assert result.text == "**backend**: prose covering multiple items already."
+
+
 def test_build_recap_rejects_response_missing_text(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _raw_llm(json.dumps({"items": []}))
