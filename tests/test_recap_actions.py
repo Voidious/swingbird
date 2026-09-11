@@ -229,11 +229,37 @@ def test_resolve_reference_generic_reference_without_a_channel_still_raises():
 
 
 def test_resolve_reference_generic_reference_with_ambiguous_channel_still_raises():
-    # Two items share the "dripbird" channel here, so even though the
-    # reference names it, channel-narrowing leaves more than one candidate
-    # -- a generic reference can't pick between them.
+    # Two items share the "dripbird" channel here, and both are (by
+    # fixture default) marked `is_primary=True` -- realistically only one
+    # item per channel is ever primary (see `recap.py`'s `_parse_recap`),
+    # but this exercises that the primary-item fallback below refuses to
+    # guess between multiple primaries rather than assuming the first one.
     with pytest.raises(RecapActionError, match="no recap item matches"):
         resolve_reference((ITEM_F4, ITEM_F5), "the first one for dripbird")
+
+
+def test_resolve_reference_generic_reference_resolves_to_the_primary_item():
+    # A generic, non-plural reference to a channel that's already
+    # unambiguous should default to that channel's primary item -- the one
+    # "text" itself narrated -- even when other (non-primary) items exist
+    # for it, rather than only working when it's the channel's sole item
+    # (see the single-item case above).
+    non_primary_f5 = RecapItem(
+        channel="dripbird",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (ITEM_F4, non_primary_f5, ITEM_BACKEND),
+        "tell me more about dripbird",
+        channel="dripbird",
+    )
+
+    assert resolved.items == [ITEM_F4]
+    assert resolved.degraded is False
 
 
 def test_resolve_reference_plural_intent_returns_every_non_primary_item():

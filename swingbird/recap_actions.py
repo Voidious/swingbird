@@ -145,13 +145,27 @@ def resolve_reference(
     `degraded=True` on the result, since asking for "the rest" and getting
     the same one item back again isn't a real match.
 
-    If none of that identifies a match but the channel narrowing above left
-    exactly one candidate, that candidate is returned anyway -- a generic
-    reference like "the open item" or "the first one" never names any label,
-    but once the channel is unambiguous it can only be pointing at that
-    channel's one item. This mirrors the empty/"all" handling above, just
-    scoped to one channel's candidates instead of every item, and it only
-    fires when the channel is unambiguous -- a bare, channel-less generic
+    If none of that identifies a match, the reference has no plural-intent
+    wording, and the channel narrowing above left exactly one candidate
+    marked `is_primary` (the common case: `text` always narrates the
+    primary item, so a generic non-plural reference like "the open item",
+    "the first one", or a description of the primary item's own content
+    reasonably defaults to it), that primary candidate is returned --
+    `degraded=False`, since this is exactly what the reference meant, not a
+    fallback of last resort. This fires even when the channel has other
+    (non-primary) candidates too, unlike the single-candidate case below --
+    a reference to "the" item for a channel means the one `text` already
+    described, not "whichever one happens to be the only candidate." If
+    more than one candidate is marked primary (only possible with
+    hand-built `RecapItem`s outside `recap.py`'s own invariant of one
+    primary per channel), this doesn't guess between them.
+
+    Failing that, if the channel narrowing left exactly one candidate
+    total, that candidate is returned anyway -- a generic reference can
+    only be pointing at that channel's one item once the channel is
+    unambiguous. This mirrors the empty/"all" handling above, just scoped
+    to one channel's candidates instead of every item, and it only fires
+    when the channel is unambiguous -- a bare, channel-less generic
     reference still raises rather than guessing across channels.
     """
     normalized = (reference or "").strip().lower()
@@ -187,6 +201,10 @@ def resolve_reference(
             non_primary = [item for item in candidates if not item.is_primary]
             if non_primary:
                 return ResolvedReference(non_primary, degraded=False)
+        else:
+            primary = [item for item in candidates if item.is_primary]
+            if len(primary) == 1:
+                return ResolvedReference(primary, degraded=False)
         if len(candidates) == 1:
             return ResolvedReference(candidates, degraded=plural_intent)
     if not matches:
