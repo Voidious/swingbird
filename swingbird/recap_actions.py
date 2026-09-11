@@ -1,11 +1,15 @@
-"""Recap follow-up commands: "go ahead with X" / "tell me more about X".
+"""Recap follow-up commands: "go ahead with X" / "tell me more about X" /
+"for X, ...".
 
 A `recap_action` or `recap_detail` intent from the router (see `router.py`)
 doesn't carry its own content -- it just carries the user's raw reference
-text ("F4", "all", "the duplicate extractor issue"). The actual content
-lives in the most recent recap's structured `RecapItem`s (see `recap.py`),
-so resolving a follow-up is a two-step job: look up the items stored for
-this thread, then match the reference against them.
+text ("F4", "all", "the duplicate extractor issue"). A `recap_relay` intent
+carries a reference too (`Intent.item_reference`, same handling), alongside
+separate content of its own (`Intent.message`) to forward -- see
+`recap_relay.py`. Either way, the actual item content lives in the most
+recent recap's structured `RecapItem`s (see `recap.py`), so resolving a
+follow-up is a two-step job: look up the items stored for this thread, then
+match the reference against them.
 
 `RecapActionStore` holds the last recap's items per thread, mirroring
 `PendingActionStore`'s per-thread shape. `resolve_reference` does the

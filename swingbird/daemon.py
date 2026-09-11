@@ -91,6 +91,7 @@ from swingbird.recap_actions import (
     resolve_reference,
 )
 from swingbird.recap_detail import elaborate
+from swingbird.recap_relay import relay_with_context
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
 
@@ -350,6 +351,8 @@ class Daemon:
             return self._recap_action(intent, thread_id)
         if intent.kind == "recap_detail":
             return self._recap_detail(intent, thread_id)
+        if intent.kind == "recap_relay":
+            return self._recap_relay(intent, thread_id)
         return _CHIT_CHAT_REPLY
 
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
@@ -362,6 +365,39 @@ class Daemon:
             kind="dispatch",
             channel=item.channel,
             message=instruction,
+            reply_to=item.source_event_id,
+        )
+        return self._dispatch_or_ask(dispatch_intent, thread_id)
+
+    def _recap_relay(self, intent: Intent, thread_id: str) -> str:
+        """Forward the user's own question/comment about a recap item to
+        its agent (see `recap_relay.py`).
+
+        Unlike `_recap_action` (which relays the *recap's own* instruction,
+        narrowed by `rephrase_for_dispatch`), `intent.message` here is new
+        content from the user that didn't come from the recap at all --
+        `relay_with_context` forwards it close to verbatim rather than
+        rewriting it. Reuses the exact same item-resolution
+        (`_resolve_single_recap_item`) and dispatch/confirm/reply-wait path
+        `_recap_action` does, so this gets "threaded to the item's source
+        message" and "wait-and-summarize back into the same DM thread" for
+        free -- see `AGENTS.md`'s safety invariants.
+        """
+        if intent.message is None:
+            return "I didn't catch what to relay -- what should I tell the agent?"
+        item = self._resolve_single_recap_item(
+            thread_id, intent.item_reference, intent.channel
+        )
+        self._audit.log_recap_reference(
+            thread_id, "recap_relay", intent.item_reference, item
+        )
+        relayed = relay_with_context(
+            self._llm, item, intent.item_reference, intent.message
+        )
+        dispatch_intent = Intent(
+            kind="dispatch",
+            channel=item.channel,
+            message=relayed,
             reply_to=item.source_event_id,
         )
         return self._dispatch_or_ask(dispatch_intent, thread_id)

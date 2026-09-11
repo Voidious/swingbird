@@ -177,6 +177,37 @@ def test_route_recap_detail_extracts_reference_verbatim():
     assert intent == Intent(kind="recap_detail", message="the duplicate extractor fix")
 
 
+def test_route_recap_relay_extracts_item_reference_and_message_separately():
+    router, _ = _router(
+        json.dumps(
+            {
+                "intent": "recap_relay",
+                "item_reference": "F4",
+                "message": "couldn't we just pre-compile it?",
+            }
+        )
+    )
+
+    intent = router.route("for dripbird F4, couldn't we just pre-compile it?")
+
+    assert intent == Intent(
+        kind="recap_relay",
+        item_reference="F4",
+        message="couldn't we just pre-compile it?",
+    )
+
+
+def test_route_recap_relay_without_item_reference_leaves_it_null():
+    router, _ = _router(
+        json.dumps({"intent": "recap_relay", "message": "what about caching instead?"})
+    )
+
+    intent = router.route("what about caching instead?")
+
+    assert intent.item_reference is None
+    assert intent.message == "what about caching instead?"
+
+
 def test_route_confirm_and_cancel():
     router, _ = _router('{"intent": "confirm"}')
     assert router.route("yes, do it").kind == "confirm"
@@ -235,6 +266,17 @@ def test_route_notes_open_recap_when_flagged():
 
     system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
     assert "already has an open recap" in system_content
+
+
+def test_route_open_recap_note_mentions_recap_relay():
+    router, fake = _router('{"intent": "recap_relay", "message": "F4"}')
+
+    router.route(
+        "for dripbird F4, couldn't we just pre-compile it?", has_open_recap=True
+    )
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "recap_relay" in system_content
 
 
 def test_system_prompt_includes_known_channels_and_agents():

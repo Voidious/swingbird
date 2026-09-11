@@ -55,9 +55,10 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
   See `daemon.py`.
 - A `dispatch` intent never posts directly; it becomes a `DispatchProposal` in
   `pending_actions.py` and only reaches `outbound.relay_dispatch` via `confirm_dispatch`.
-  A `recap_action` ("go ahead with F4") resolves to a `dispatch` `Intent` and goes through
-  this exact same path -- there is no separate posting route for a recap follow-up. When the
-  matched `RecapItem` has a `source_event_id`, the relayed message threads to it
+  A `recap_action` ("go ahead with F4") and a `recap_relay` ("for dripbird F4, couldn't we
+  just pre-compile it?") both resolve to a `dispatch` `Intent` and go through this exact same
+  path -- there is no separate posting route for a recap follow-up. When the matched
+  `RecapItem` has a `source_event_id`, the relayed message threads to it
   (`Intent.reply_to` -> `DispatchProposal.reply_to` -> `relay_dispatch`); a fresh dispatch has
   no such message and always posts top-level.
 - On any ambiguity (unresolvable channel/agent, multiple pending proposals for a bare
@@ -78,11 +79,13 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `outbound.py` | All writes, via the `buzz` CLI subprocess. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
-| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / chit-chat). |
+| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_relay / chit-chat). |
 | `pending_actions.py` | Confirm/cancel state machine for proposed dispatches. |
 | `history.py` | One-shot fetch of recent channel messages (via `outbound.run_buzz_cli`), for recaps. |
 | `recap.py` | LLM-summarizes recent channel activity into a short recap, plus structured per-channel `RecapItem`s. |
-| `recap_actions.py` | Stores the latest recap's items per thread and resolves a "go ahead with X" / "tell me more about X" reference against them. |
+| `recap_actions.py` | Stores the latest recap's items per thread and resolves a "go ahead with X" / "tell me more about X" / "for X, ..." reference against them. |
+| `dispatch_phrasing.py` | Narrows/rewrites a recap item's own instruction into a directive, for `recap_action`. |
+| `recap_relay.py` | Forwards the user's own question/comment about a recap item to its agent near-verbatim, resolving ambiguous references (e.g. "it") against the item's context, for `recap_relay`. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |

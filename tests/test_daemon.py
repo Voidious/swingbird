@@ -353,6 +353,12 @@ def test_recap_action_sends_the_item_and_reference_to_dispatch_phrasing(
     assert "F4" in user_content
 
 
+def _confirm_event_pair(bot, event_id_1="evt-1", event_id_2="evt-2"):
+    asyncio.run(bot._handle_event(_event(event_id=event_id_1)))
+    bot._llm._json_response = {"intent": "confirm"}
+    asyncio.run(bot._handle_event(_event(event_id=event_id_2)))
+
+
 def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkeypatch):
     _sent(monkeypatch)
     relayed = []
@@ -371,9 +377,7 @@ def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkey
     )
     bot = _daemon(tmp_path, llm, recap_store=recap_store)
 
-    asyncio.run(bot._handle_event(_event(event_id="evt-1")))
-    bot._llm._json_response = {"intent": "confirm"}
-    asyncio.run(bot._handle_event(_event(event_id="evt-2")))
+    _confirm_event_pair(bot)
 
     assert relayed == [
         (
@@ -538,22 +542,35 @@ def test_resolve_reply_watch_discards_an_already_done_future(tmp_path):
     assert bot._reply_watches == {}
 
 
-def test_recap_action_logs_the_resolved_reference(tmp_path, monkeypatch):
-    _sent(monkeypatch)
-    recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+def _assert_recap_reference(
+    recap_reference, reference="F4", channel="backend", label="F4"
+):
+    assert recap_reference["reference"] == reference
+    assert recap_reference["channel"] == channel
+    assert recap_reference["label"] == label
 
+
+def _run_event_and_get_recap_reference(tmp_path, llm, recap_store, event_factory):
     bot = _daemon(tmp_path, llm, recap_store=recap_store)
-    asyncio.run(bot._handle_event(_event()))
+    asyncio.run(bot._handle_event(event_factory()))
 
     records = [
         json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
     ]
     (recap_reference,) = [r for r in records if r["kind"] == "recap_reference"]
+    return recap_reference
+
+
+def test_recap_action_logs_the_resolved_reference(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_action", "message": "F4"})
+
+    recap_reference = _run_event_and_get_recap_reference(
+        tmp_path, llm, recap_store, _event
+    )
     assert recap_reference["recap_kind"] == "recap_action"
-    assert recap_reference["reference"] == "F4"
-    assert recap_reference["channel"] == "backend"
-    assert recap_reference["label"] == "F4"
+    _assert_recap_reference(recap_reference)
 
 
 def test_recap_action_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
@@ -596,6 +613,144 @@ def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):
     )
 
     assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
+
+
+def test_recap_relay_proposes_dispatch_with_the_relayed_message(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    relayed_text = "couldn't we just pre-compile it?"
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_relay",
+            "item_reference": "F4",
+            "message": relayed_text,
+        },
+        text_response=relayed_text,
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    expected_reply = (
+        f"About to relay to backend (for Codex): {relayed_text!r}. "
+        "Confirm to send, or cancel."
+    )
+    assert args == ("dm-chan", expected_reply)
+
+
+def test_recap_relay_sends_the_item_reference_and_message_to_relay_with_context(
+    tmp_path, monkeypatch
+):
+    # The relayed call gets the item's own context (summary/instruction) so
+    # it can resolve an ambiguous "it" -- and the user's message, which is
+    # what actually gets forwarded (see recap_relay.py).
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_relay",
+            "item_reference": "F4",
+            "message": "couldn't we just pre-compile it?",
+        }
+    )
+
+    _handle_event_and_get_first_sent(tmp_path, llm, sent, recap_store=recap_store)
+
+    relay_call = llm.calls[-1]
+    user_content = relay_call[1]["content"]
+    assert F4_ITEM.summary in user_content
+    assert F4_ITEM.instruction in user_content
+    assert "F4" in user_content
+    assert "couldn't we just pre-compile it?" in user_content
+
+
+def test_recap_relay_without_a_message_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_relay", "item_reference": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == (
+        "dm-chan",
+        "I didn't catch what to relay -- what should I tell the agent?",
+    )
+
+
+def test_recap_relay_logs_the_resolved_reference(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_relay",
+            "item_reference": "F4",
+            "message": "couldn't we just pre-compile it?",
+        }
+    )
+
+    recap_reference = _run_event_and_get_recap_reference(
+        tmp_path, llm, recap_store, _event
+    )
+    assert recap_reference["recap_kind"] == "recap_relay"
+    _assert_recap_reference(recap_reference)
+
+
+def test_recap_relay_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_relay",
+            "item_reference": "F4",
+            "message": "couldn't we just pre-compile it?",
+        }
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args == (
+        "dm-chan",
+        (
+            "Couldn't do that: I don't have a recent recap to reference here -- "
+            "ask for a recap first."
+        ),
+    )
+
+
+def test_recap_relay_confirm_threads_to_the_items_source_event(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    relayed = []
+    monkeypatch.setattr(
+        outbound, "relay_dispatch", lambda *a: relayed.append(a) or "posted-evt"
+    )
+    monkeypatch.setattr(daemon, "fetch_thread_root", lambda *a: "source-evt")
+    grounded_item = dataclasses.replace(F4_ITEM, source_event_id="source-evt")
+    recap_store = _recap_store_with("dm-chan", grounded_item)
+    relayed_text = "couldn't we just pre-compile it?"
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_relay",
+            "item_reference": "F4",
+            "message": relayed_text,
+        },
+        text_response=relayed_text,
+    )
+    bot = _daemon(tmp_path, llm, recap_store=recap_store)
+
+    _confirm_event_pair(bot)
+
+    assert relayed == [
+        (
+            "chan-1",
+            relayed_text,
+            "Voidious",
+            OWNER_PUBKEY,
+            "Codex",
+            "source-evt",
+        )
+    ]
 
 
 def _setup_recap_test(monkeypatch, channel_id="dm-chan", item=F4_ITEM):
@@ -861,12 +1016,9 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
         }
     )
     bot = _daemon(tmp_path, dispatch_llm, store=store)
-    asyncio.run(bot._handle_event(_event(event_id="evt-1")))
-
     # A bare "yes" typed as a new message, not a reply -- confirming still
     # resolves because it lands in the same channel the proposal was made in.
-    bot._llm._json_response = {"intent": "confirm"}
-    asyncio.run(bot._handle_event(_event(event_id="evt-2")))
+    _confirm_event_pair(bot)
 
     assert relayed == [("chan-1", "fix it", "Voidious", OWNER_PUBKEY, "Codex", None)]
     (args, _) = sent[-1]
@@ -896,10 +1048,7 @@ def test_confirm_against_an_inaccessible_channel_becomes_a_helpful_reply(
         }
     )
     bot = _daemon(tmp_path, dispatch_llm, store=store)
-    asyncio.run(bot._handle_event(_event(event_id="evt-1")))
-
-    bot._llm._json_response = {"intent": "confirm"}
-    asyncio.run(bot._handle_event(_event(event_id="evt-2")))
+    _confirm_event_pair(bot)
 
     (args, _) = sent[-1]
     assert args == (

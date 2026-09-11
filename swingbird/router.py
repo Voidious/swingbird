@@ -40,6 +40,7 @@ VALID_INTENTS = (
     "cancel",
     "recap_action",
     "recap_detail",
+    "recap_relay",
     "chit_chat",
 )
 
@@ -59,7 +60,10 @@ Classify the user's message into exactly one of these intents:
   channel/agent from the list below, and asking or telling it something,
   is dispatch even if it isn't phrased as an imperative command -- don't
   reserve dispatch for commands only and fall back to chit_chat just
-  because the message is a question.
+  because the message is a question. Exception: when there's an open
+  recap (see the conversation-state note below) and the message is
+  building on a specific item that recap surfaced, classify it as
+  recap_relay instead, even though it also names a channel.
 - clarify_response: answering a clarifying question the agent asked.
 - confirm: approving a previously proposed action (e.g. "yes", "do it") --
   only when the agent has already proposed a specific dispatch to relay
@@ -87,6 +91,23 @@ Classify the user's message into exactly one of these intents:
   a request for something new, even without any "tell me more" phrasing.
   Same "message" handling as recap_action: preserve the user's own
   reference to which item(s), don't restate its content.
+- recap_relay: forwarding the user's own new question, comment, or
+  pushback about a specific item the *recap* surfaced, on to the agent
+  that owns it -- e.g. "for dripbird F4, couldn't we just pre-compile
+  it?", "ask backend if F4 still needs the migration", "tell frontend
+  that sounds risky, what about caching instead". Unlike recap_action
+  (proceeding with the recap's own recommendation, nothing new from the
+  user) and recap_detail (asking *this* agent to elaborate, nothing gets
+  relayed anywhere), recap_relay is new content of the user's own that
+  should be sent on to the coding agent. Put the user's reference to
+  *which item* they mean into "item_reference" -- same handling as
+  recap_action's reference (preserve wording, e.g. "F4", "dripbird F4"),
+  do not identify the channel yourself. Put the actual text to relay
+  into "message", preserved as closely to the user's own wording as
+  possible, same rule as dispatch -- extract it, don't paraphrase, and
+  don't fold the item reference into it (e.g. for "for dripbird F4,
+  couldn't we just pre-compile it?", "item_reference" is "F4" or
+  "dripbird F4" and "message" is "couldn't we just pre-compile it?").
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:
@@ -96,6 +117,7 @@ Respond with JSON only, matching this shape:
 {{"intent": "<one of the intents above>", "channel": "<channel name or null>",
 "target_agent": "<agent name or null>",
 "message": "<instruction text to relay, or null>",
+"item_reference": "<recap_relay's reference to which item, or null>",
 "detail": "<\"concise\" or \"detailed\", default \"concise\">"}}
 
 Only set "channel" or "target_agent" to a name from the known list above,
@@ -119,23 +141,27 @@ _OPEN_RECAP_NOTE = """
 
 Conversation state: this thread already has an open recap -- a structured
 recap with per-channel items was given earlier in this conversation, and the
-user can still reference it. Prefer recap_detail or recap_action over a
-plain recap when the wording could describe either (e.g. "tell me more
-about the open items for dripbird", "what's the status on F4", "go ahead
-with the duplicate extractor fix", "what are the other items", "what else
-is there") -- treat these as referring back to what that recap already
-surfaced, not as a request to regenerate a fresh one. Only classify as recap
-when the user is clearly asking for a new or refreshed summary instead (e.g.
-"give me an update", "what's changed since then", naming a channel that
-wasn't part of the open recap)."""
+user can still reference it. Prefer recap_detail, recap_action, or
+recap_relay over a plain recap or a plain dispatch when the wording could
+describe either (e.g. "tell me more about the open items for dripbird",
+"what's the status on F4", "go ahead with the duplicate extractor fix",
+"what are the other items", "what else is there", "for dripbird F4,
+couldn't we just pre-compile it?") -- treat these as referring back to what
+that recap already surfaced, not as a request to regenerate a fresh one or
+post a fresh, unrelated dispatch. Only classify as recap when the user is
+clearly asking for a new or refreshed summary instead (e.g. "give me an
+update", "what's changed since then", naming a channel that wasn't part of
+the open recap); only classify as dispatch instead of recap_relay when the
+message doesn't build on any item the open recap surfaced at all."""
 
 _NO_OPEN_RECAP_NOTE = """
 
 Conversation state: this thread has no open recap right now -- nothing has
 been recapped yet, or too much has happened since for one to still apply.
-recap_detail and recap_action both require an existing recap to reference,
-so don't classify as either here; a message asking about a channel's
-status is a plain recap instead."""
+recap_detail, recap_action, and recap_relay all require an existing recap
+to reference, so don't classify as any of those here; a message asking
+about a channel's status is a plain recap instead, and a message meant for
+a channel/agent is a plain dispatch instead."""
 
 
 class RouterError(Exception):
@@ -149,9 +175,16 @@ class Intent:
     target_agent: str | None = None
     message: str | None = None
     detail: str = "concise"
+    # Only set by the router's own LLM classification for a `recap_relay`
+    # intent -- the user's reference to which recap item `message` is about
+    # (see router module docstring). `recap_action`/`recap_detail` instead
+    # put their own reference straight into `message`, since they have no
+    # separate content to relay alongside it.
+    item_reference: str | None = None
     # Never set by the router's own LLM classification -- only by
-    # `daemon._recap_action`, to thread a recap follow-up's dispatch back to
-    # the message the recap grounded it in (see `RecapItem.source_event_id`).
+    # `daemon._recap_action`/`daemon._recap_relay`, to thread a recap
+    # follow-up's dispatch back to the message the recap grounded it in (see
+    # `RecapItem.source_event_id`).
     reply_to: str | None = None
 
 
@@ -228,4 +261,5 @@ def _parse_intent(response: dict) -> Intent:
         target_agent=response.get("target_agent"),
         message=response.get("message"),
         detail=detail,
+        item_reference=response.get("item_reference"),
     )
