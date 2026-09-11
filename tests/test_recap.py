@@ -469,6 +469,99 @@ def test_build_recap_pluralizes_additional_item_count(monkeypatch):
     assert result.text == "**backend**: primary item text. (2 additional open items.)"
 
 
+def test_build_recap_strips_llm_narrated_count_before_appending_real_one(monkeypatch):
+    # Observed live: the LLM narrated its own "(1 more open item.)" despite
+    # the prompt telling it not to, right where our deterministic count
+    # would land -- without stripping first, the two would stack.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**swingbird**: primary item text. (1 more open item.)",
+        items=[
+            {
+                "channel": "swingbird",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "swingbird",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**swingbird**: primary item text. (1 additional open item.)"
+    )
+
+
+def test_build_recap_strips_llm_narrated_zero_count_with_nothing_to_append(
+    monkeypatch,
+):
+    # Observed live: the LLM narrated "(0 more open items.)" for a channel
+    # that really does have zero additional items -- there's no real count
+    # to append afterward, but the bogus note must still be removed rather
+    # than left standing uncorrected.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**crispen**: primary item text. (0 more open items.)",
+        items=[
+            {
+                "channel": "crispen",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**crispen**: primary item text."
+
+
+def test_build_recap_strips_llm_narrated_count_case_insensitively(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: primary item text. (2 More Open Items.)",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**backend**: primary item text."
+
+
+def test_build_recap_leaves_unrelated_trailing_parenthetical_alone(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: primary item text. (recommended)",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**backend**: primary item text. (recommended)"
+
+
 def test_build_recap_detailed_mode_does_not_append_item_counts(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(

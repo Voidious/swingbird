@@ -19,6 +19,7 @@ double the cost for no benefit.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 
@@ -269,6 +270,23 @@ def _parse_keywords(raw: object) -> tuple[str, ...]:
     return tuple(k.strip() for k in raw if isinstance(k, str) and k.strip())
 
 
+# A trailing "(N more/additional/other/remaining open items.)"-shaped
+# parenthetical the LLM sometimes narrates on its own, despite
+# _CONCISE_SYSTEM_PROMPT explicitly telling it not to ("a count of how many
+# more there are is appended separately, not narrated by you") -- that's a
+# prompt request, not an enforced constraint, so it can still leak through
+# (observed live: a "(1 more open item.)" from the LLM stacked right next to
+# our own correct "(1 additional open item.)", and a bare, occasionally wrong,
+# "(0 more open items.)" for a channel with nothing else). Stripped before
+# _append_item_counts adds the real, grounded count, so the two can never
+# stack and a wrong LLM-invented number is never left standing on its own.
+_LLM_COUNT_NOTE_RE = re.compile(
+    r"\s*\(\s*(?:\d+|no|zero)\s+(?:more|additional|other|remaining)\s+"
+    r"(?:open\s+)?items?\.?\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
 def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
     """Append a deterministic "(N additional open items)" note to each
     channel's paragraph in `text`, computed from the real non-primary item
@@ -283,6 +301,13 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
     items itself as part of its three-bucket format, so a code-appended
     count there would be redundant.
 
+    Every paragraph first has any `_LLM_COUNT_NOTE_RE`-shaped trailing note
+    stripped, regardless of whether that channel has a real count to append
+    afterward -- the LLM can narrate a bogus count even for a channel that
+    ends up with zero real additional items, and leaving it in place would
+    be worse than the stacked-duplicate case, since nothing would ever
+    correct it.
+
     Relies on `_FORMAT_GUARD`'s "one paragraph per channel, each starting
     with **<channel>**" contract to find the right paragraph; a channel
     whose paragraph doesn't start that way (the LLM ignoring the format
@@ -293,15 +318,21 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
     for item in items:
         if not item.is_primary:
             counts[item.channel] = counts.get(item.channel, 0) + 1
-    if not counts:
-        return text
     paragraphs = text.split("\n\n")
+    changed = False
     for i, paragraph in enumerate(paragraphs):
+        cleaned = _LLM_COUNT_NOTE_RE.sub("", paragraph)
+        if cleaned != paragraph:
+            changed = True
         for channel, count in counts.items():
-            if paragraph.startswith(f"**{channel}**:"):
+            if cleaned.startswith(f"**{channel}**:"):
                 noun = "item" if count == 1 else "items"
-                paragraphs[i] = f"{paragraph} ({count} additional open {noun}.)"
+                cleaned = f"{cleaned} ({count} additional open {noun}.)"
+                changed = True
                 break
+        paragraphs[i] = cleaned
+    if not changed:
+        return text
     return "\n\n".join(paragraphs)
 
 
