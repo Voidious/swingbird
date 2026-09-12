@@ -203,8 +203,8 @@ wheels = [
 
 [[package]]
 name = "crispen"
-version = "0.7.3"
-source = { git = "https://github.com/Voidious/crispen#a0734b60a0549d28ff7100046911888e0d89eb37" }
+version = "0.8.0"
+source = { git = "https://github.com/Voidious/crispen#4f0712dd8ae35d73b6eccf22ea7af2c9212308fe" }
 dependencies = [
     { name = "anthropic" },
     { name = "libcst" },
