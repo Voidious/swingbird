@@ -116,16 +116,32 @@ class ResolvedReference(NamedTuple):
 
 class RecapActionStore:
     """The last recap's items per thread id, replaced wholesale by each new
-    recap for that thread."""
+    recap for that thread.
+
+    Also remembers the channel that recap was scoped to (`None` for an
+    all-channels recap) -- `daemon.py` uses `channel_for` as the default
+    `channel` for a follow-up that doesn't name one itself, since a
+    project-scoped recap ("recap dripbird") already answers "which
+    channel" for everything that follows it in the same thread; there's no
+    reason to require the user to repeat the project name, or to leave it
+    to `resolve_reference`'s own (narrower) single-channel-items inference.
+    """
 
     def __init__(self) -> None:
         self._items: dict[str, tuple[RecapItem, ...]] = {}
+        self._channel: dict[str, str | None] = {}
 
-    def set(self, thread_id: str, items: tuple[RecapItem, ...]) -> None:
+    def set(
+        self, thread_id: str, items: tuple[RecapItem, ...], channel: str | None = None
+    ) -> None:
         self._items[thread_id] = items
+        self._channel[thread_id] = channel
 
     def get(self, thread_id: str) -> tuple[RecapItem, ...] | None:
         return self._items.get(thread_id)
+
+    def channel_for(self, thread_id: str) -> str | None:
+        return self._channel.get(thread_id)
 
 
 def _matches_text(candidate: str, normalized: str, words: list[str]) -> bool:

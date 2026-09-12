@@ -385,9 +385,9 @@ F4_ITEM = RecapItem(
 F5_ITEM = dataclasses.replace(F4_ITEM, label="F5", channel="frontend")
 
 
-def _recap_store_with(thread_id, *items):
+def _recap_store_with(thread_id, *items, channel=None):
     store = RecapActionStore()
-    store.set(thread_id, tuple(items))
+    store.set(thread_id, tuple(items), channel=channel)
     return store
 
 
@@ -1191,6 +1191,78 @@ def test_recap_detail_elaborates_every_non_primary_item_for_additional_items(
     assert "undefined-sentinel cloneDeep split" in user_content
     assert "lower priority follow-up" in user_content
     assert "unused-ignore propagation" not in user_content
+
+
+def test_recap_detail_falls_back_to_the_recaps_own_scoped_channel(
+    tmp_path, monkeypatch
+):
+    """Live bug (2026-09-12): after a project-scoped recap ("recap
+    dripbird"), "tell me about the additional items" names no channel and
+    the router's classifier -- seeing only this one message, with no
+    memory of the earlier recap -- has no way to report one either. The
+    store already knows which channel the recap it's holding was scoped
+    to, so that should be used without needing `intent.channel` set at
+    all."""
+    monkeypatch.setattr(daemon, "fetch_recent_messages", lambda *a, **k: [])
+    sent = _sent(monkeypatch)
+    other_item = RecapItem(
+        channel="backend",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item, channel="backend")
+    llm = FakeLLM(
+        json_response={"intent": "recap_detail", "message": "the additional items"},
+        text_response="More on F5.",
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "More on F5.")
+
+
+def test_recap_stores_the_scoped_channel_for_a_named_channel_recap(
+    tmp_path, monkeypatch
+):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap", "channel": "backend"},
+            {"text": "here's the recap", "items": []},
+        ]
+    )
+    bot = _daemon(tmp_path, llm)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    assert bot._recap_store.channel_for("dm-chan") == "backend"
+
+
+def test_recap_stores_no_scoped_channel_for_an_all_channels_recap(
+    tmp_path, monkeypatch
+):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap"},
+            {"text": "here's the recap", "items": []},
+        ]
+    )
+    bot = _daemon(tmp_path, llm)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    assert bot._recap_store.channel_for("dm-chan") is None
 
 
 def test_recap_detail_without_a_grounded_item_skips_the_thread_fetch(

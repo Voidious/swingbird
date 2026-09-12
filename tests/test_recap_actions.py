@@ -51,6 +51,26 @@ def test_store_set_replaces_previous_items_for_the_same_thread():
     assert store.get("thread-1") == (ITEM_BACKEND,)
 
 
+def test_store_channel_for_defaults_to_none():
+    store = RecapActionStore()
+    store.set("thread-1", (ITEM_F4,))
+
+    assert store.channel_for("thread-1") is None
+
+
+def test_store_channel_for_returns_the_scoped_channel():
+    store = RecapActionStore()
+    store.set("thread-1", (ITEM_F4,), channel="dripbird")
+
+    assert store.channel_for("thread-1") == "dripbird"
+
+
+def test_store_channel_for_unknown_thread_returns_none():
+    store = RecapActionStore()
+
+    assert store.channel_for("thread-1") is None
+
+
 def test_resolve_reference_by_label():
     resolved = resolve_reference((ITEM_F4, ITEM_F5), "F4")
 

@@ -426,7 +426,7 @@ class Daemon:
                 detail=intent.detail,
             )
             self._audit.log_recap_built(thread_id, built_recap.items)
-            self._recap_store.set(thread_id, built_recap.items)
+            self._recap_store.set(thread_id, built_recap.items, channel=intent.channel)
             # A fresh recap replaces this thread's items outright (see
             # RecapActionStore.set) -- any open disambiguation referred to
             # the old ones, so resuming it now would resolve against
@@ -562,7 +562,15 @@ class Daemon:
         passed through as `resolve_reference`'s authoritative channel signal
         rather than leaving it to re-derive a channel by searching `reference`
         for a known name, which misses whenever the router already stripped
-        the channel out of the leftover reference text.
+        the channel out of the leftover reference text. When `channel` is
+        `None`, this falls back to the channel the last recap in this thread
+        was itself scoped to (`RecapActionStore.channel_for`) -- the router
+        only ever classifies the current message in isolation, so it has no
+        way to report a channel for e.g. "tell me more" after "recap
+        dripbird" even though there's nothing left to disambiguate; the
+        thread already answered "which project" the moment it got a
+        project-scoped recap, and every follow-up in it should keep that
+        answer rather than needing the user to repeat it.
 
         `.items` can hold more than one item -- e.g. "the additional items"
         resolves to every non-primary item for a channel (see `recap_actions.
@@ -580,6 +588,8 @@ class Daemon:
                 "I don't have a recent recap to reference here -- ask for a "
                 "recap first."
             )
+        if channel is None:
+            channel = self._recap_store.channel_for(thread_id)
         return resolve_reference(items, reference, channel)
 
     def _resolve_single_recap_item(
