@@ -86,6 +86,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `recap_actions.py` | Stores the latest recap's items per thread and resolves a "go ahead with X" / "tell me more about X" / "for X, ..." reference against them. |
 | `dispatch_phrasing.py` | Narrows/rewrites a recap item's own instruction into a directive, for `recap_action`. |
 | `recap_relay.py` | Forwards the user's own question/comment about a recap item to its agent near-verbatim, resolving ambiguous references (e.g. "it") against the item's context, for `recap_relay`. |
+| `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |

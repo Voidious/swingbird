@@ -1,3 +1,12 @@
+# crispen: skip-file — this file is over max_file_lines because it covers every
+# intent daemon.py handles (dispatch/confirm/cancel/recap/recap_action/recap_relay/
+# recap_detail/reply-watch). A real fix means splitting it by concern, which is a
+# bigger restructuring tracked in a follow-up ticket; this is a stopgap so pre-commit
+# stops trying (and failing) to auto-split it in the meantime. Note this also exempts
+# the file from crispen's other refactors (duplicate_extractor, function_splitter,
+# tuple_dataclass, if_not_else), not just file_limiter -- crispen has no
+# file-scoped-but-refactor-specific marker, only skip-file (all refactors) or
+# skip=<name> (a single statement/function/entity).
 import asyncio
 import dataclasses
 import json
@@ -26,7 +35,8 @@ from swingbird.inbound import InboundError
 from swingbird.pending_actions import PendingActionStore
 from swingbird.recap import RecapItem
 from swingbird.recap_actions import RecapActionStore
-from swingbird.router import IntentRouter
+from swingbird.recap_disambiguation import DisambiguationStore, PendingDisambiguation
+from swingbird.router import Intent, IntentRouter
 
 OWNER_PUBKEY = "owner-pubkey"
 OTHER_PUBKEY = "someone-else"
@@ -115,6 +125,7 @@ def _daemon(
     store=None,
     dm_id="dm-chan",
     recap_store=None,
+    disambiguation=None,
     own_pubkey=None,
 ):
     audit = AuditLog(tmp_path / "audit.jsonl")
@@ -128,6 +139,7 @@ def _daemon(
         audit,
         dm_id=dm_id,
         recap_store=recap_store,
+        disambiguation=disambiguation,
         own_pubkey=own_pubkey,
     )
 
@@ -141,9 +153,15 @@ def _sent(monkeypatch):
 
 
 def _handle_event_and_get_first_sent(
-    tmp_path, llm, sent, event=None, store=None, recap_store=None
+    tmp_path, llm, sent, event=None, store=None, recap_store=None, disambiguation=None
 ):
-    bot = _daemon(tmp_path, llm, store=store, recap_store=recap_store)
+    bot = _daemon(
+        tmp_path,
+        llm,
+        store=store,
+        recap_store=recap_store,
+        disambiguation=disambiguation,
+    )
     asyncio.run(bot._handle_event(event or _event()))
     return sent[0]
 
@@ -320,6 +338,10 @@ F4_ITEM = RecapItem(
     summary="unused-ignore propagation",
     instruction="Fix the deterministic directive trip-check.",
 )
+# A second channel's item, alongside F4_ITEM, for the recap follow-up tests
+# that need a reference matching more than one item (see
+# _setup_ambiguous_recap_action and the disambiguation tests below).
+F5_ITEM = dataclasses.replace(F4_ITEM, label="F5", channel="frontend")
 
 
 def _recap_store_with(thread_id, *items):
@@ -698,11 +720,18 @@ def test_recap_action_without_a_recent_recap_replies_helpfully(tmp_path, monkeyp
     )
 
 
-def test_recap_action_ambiguous_reference_lists_candidates(tmp_path, monkeypatch):
+def _setup_ambiguous_recap_action(monkeypatch):
+    """Shared Arrange phase for the ambiguous-reference tests below --
+    same secondary item, recap store, and router response, differing only
+    in what's asserted afterward."""
     sent = _sent(monkeypatch)
-    other_item = dataclasses.replace(F4_ITEM, label="F5", channel="frontend")
-    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
     llm = FakeLLM(json_response={"intent": "recap_action", "message": "all"})
+    return sent, recap_store, llm, F5_ITEM
+
+
+def test_recap_action_ambiguous_reference_lists_candidates(tmp_path, monkeypatch):
+    sent, recap_store, llm, _ = _setup_ambiguous_recap_action(monkeypatch)
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -711,6 +740,174 @@ def test_recap_action_ambiguous_reference_lists_candidates(tmp_path, monkeypatch
     assert args[1].startswith("Couldn't do that: That matches more than one item")
     assert "backend/F4" in args[1]
     assert "frontend/F5" in args[1]
+
+
+def test_recap_action_ambiguous_reference_stores_a_pending_disambiguation(
+    tmp_path, monkeypatch
+):
+    sent, recap_store, llm, other_item = _setup_ambiguous_recap_action(monkeypatch)
+    disambiguation = DisambiguationStore()
+
+    _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store, disambiguation=disambiguation
+    )
+
+    pending = disambiguation.get("dm-chan")
+    assert pending.kind == "recap_action"
+    assert pending.candidates == (F4_ITEM, other_item)
+    assert pending.intent.message == "all"
+
+
+def _pending_recap_action_disambiguation(candidates, message="all"):
+    return PendingDisambiguation(
+        "recap_action", candidates, Intent(kind="recap_action", message=message)
+    )
+
+
+def _pending_recap_relay_disambiguation(candidates, item_reference, message):
+    return PendingDisambiguation(
+        "recap_relay",
+        candidates,
+        Intent(kind="recap_relay", item_reference=item_reference, message=message),
+    )
+
+
+def _setup_recap_action_disambiguation(monkeypatch):
+    """Shared setup for tests exercising an already-open recap_action
+    disambiguation over F4_ITEM/F5_ITEM, differing only in the reply event
+    and/or router response that follows."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
+    pending = _pending_recap_action_disambiguation((F4_ITEM, F5_ITEM))
+    disambiguation = DisambiguationStore()
+    disambiguation.set("dm-chan", pending)
+    return sent, recap_store, disambiguation, pending
+
+
+def test_disambiguation_reply_by_number_resumes_recap_action(tmp_path, monkeypatch):
+    sent, recap_store, disambiguation, _ = _setup_recap_action_disambiguation(
+        monkeypatch
+    )
+    llm = FakeLLM(text_response="Fix the deterministic directive trip-check.")
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        event=_event(content="1"),
+        recap_store=recap_store,
+        disambiguation=disambiguation,
+    )
+
+    assert args == (
+        "dm-chan",
+        (
+            "About to relay to backend (for Codex): "
+            "'Fix the deterministic directive trip-check.'. "
+            "Confirm to send, or cancel."
+        ),
+    )
+    # The router's own classification is never consulted -- resolving the
+    # disambiguation answer short-circuits it (see daemon._process).
+    assert len(llm.calls) == 1
+    assert disambiguation.get("dm-chan") is None
+
+
+def test_disambiguation_reply_by_label_resumes_recap_relay(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
+    disambiguation = DisambiguationStore()
+    disambiguation.set(
+        "dm-chan",
+        _pending_recap_relay_disambiguation(
+            (F4_ITEM, F5_ITEM),
+            "the open item",
+            "couldn't we just pre-compile it?",
+        ),
+    )
+    llm = FakeLLM(text_response="couldn't we just pre-compile it?")
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        event=_event(content="backend/F4"),
+        recap_store=recap_store,
+        disambiguation=disambiguation,
+    )
+
+    assert args == (
+        "dm-chan",
+        (
+            "About to relay to backend (for Codex): "
+            '"couldn\'t we just pre-compile it?". Confirm to send, or cancel.'
+        ),
+    )
+    assert disambiguation.get("dm-chan") is None
+
+
+def test_disambiguation_unrecognized_reply_falls_through_to_routing(
+    tmp_path, monkeypatch
+):
+    sent, recap_store, disambiguation, pending = _setup_recap_action_disambiguation(
+        monkeypatch
+    )
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        event=_event(content="what's the weather like"),
+        recap_store=recap_store,
+        disambiguation=disambiguation,
+    )
+
+    assert args == ("dm-chan", daemon._CHIT_CHAT_REPLY)
+    # An unrelated message doesn't answer the open question -- it stays
+    # pending for a later reply, rather than being silently dropped.
+    assert disambiguation.get("dm-chan") is pending
+
+
+def test_cancel_clears_a_pending_disambiguation(tmp_path, monkeypatch):
+    sent, _, disambiguation, _ = _setup_recap_action_disambiguation(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "cancel"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        event=_event(content="cancel"),
+        disambiguation=disambiguation,
+    )
+
+    assert args == ("dm-chan", "Cancelled -- nothing was sent.")
+    assert disambiguation.get("dm-chan") is None
+
+
+def test_fresh_recap_clears_a_stale_pending_disambiguation(tmp_path, monkeypatch):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    sent, recap_store, disambiguation, _ = _setup_recap_action_disambiguation(
+        monkeypatch
+    )
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap"},
+            {"text": "here's the recap", "items": []},
+        ]
+    )
+
+    _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        recap_store=recap_store,
+        disambiguation=disambiguation,
+    )
+
+    assert disambiguation.get("dm-chan") is None
 
 
 def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):

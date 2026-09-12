@@ -91,6 +91,13 @@ from swingbird.recap_actions import (
     resolve_reference,
 )
 from swingbird.recap_detail import elaborate
+from swingbird.recap_disambiguation import (
+    AmbiguousRecapReference,
+    DisambiguationStore,
+    PendingDisambiguation,
+    format_choices,
+    resolve_choice,
+)
 from swingbird.recap_relay import relay_with_context
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
@@ -134,6 +141,7 @@ class Daemon:
         audit: AuditLog,
         dm_id: str | None = None,
         recap_store: RecapActionStore | None = None,
+        disambiguation: DisambiguationStore | None = None,
         own_pubkey: str | None = None,
     ) -> None:
         self._config = config
@@ -147,6 +155,12 @@ class Daemon:
         # instruction -- see recap_actions.py.
         self._recap_store = (
             recap_store if recap_store is not None else RecapActionStore()
+        )
+        # An open "which did you mean" question per thread, so the next DM
+        # can answer it instead of being misrouted as a new command -- see
+        # recap_disambiguation.py.
+        self._disambiguation = (
+            disambiguation if disambiguation is not None else DisambiguationStore()
         )
         # Resolved fresh in run() via outbound.open_dm(); only events posted
         # in this channel are ever routed as a command (see module
@@ -372,6 +386,13 @@ class Daemon:
 
     def _process(self, event: dict, thread_id: str) -> str:
         try:
+            pending = self._disambiguation.get(thread_id)
+            if pending is not None:
+                resumed = self._resume_disambiguation(
+                    pending, event["content"], thread_id
+                )
+                if resumed is not None:
+                    return resumed
             has_open_recap = self._recap_store.get(thread_id) is not None
             intent = self._router.route(
                 event["content"], thread_id=thread_id, has_open_recap=has_open_recap
@@ -379,6 +400,21 @@ class Daemon:
             return self._act(intent, thread_id, event["id"])
         except _ACTIONABLE_ERRORS as exc:
             return f"Couldn't do that: {exc}"
+
+    def _resume_disambiguation(
+        self, pending: PendingDisambiguation, text: str, thread_id: str
+    ) -> str | None:
+        """Answer an open "which did you mean" question (see
+        `recap_disambiguation.py`) if `text` resolves to one of its
+        candidates; `None` otherwise, so `_process` falls through to
+        normal intent routing for anything that isn't answering it."""
+        item = resolve_choice(pending.candidates, text)
+        if item is None:
+            return None
+        self._disambiguation.clear(thread_id)
+        if pending.kind == "recap_action":
+            return self._apply_recap_action(item, pending.intent, thread_id)
+        return self._apply_recap_relay(item, pending.intent, thread_id)
 
     def _act(self, intent: Intent, thread_id: str, event_id: str) -> str:
         if intent.kind == "recap":
@@ -390,12 +426,20 @@ class Daemon:
                 detail=intent.detail,
             )
             self._recap_store.set(thread_id, built_recap.items)
+            # A fresh recap replaces this thread's items outright (see
+            # RecapActionStore.set) -- any open disambiguation referred to
+            # the old ones, so resuming it now would resolve against
+            # stale candidates.
+            self._disambiguation.clear(thread_id)
             return built_recap.text
         if intent.kind in ("dispatch", "clarify_response"):
             return self._dispatch_or_ask(intent, thread_id)
         if intent.kind == "confirm":
             return self._confirm(thread_id, event_id)
         if intent.kind == "cancel":
+            if self._disambiguation.get(thread_id) is not None:
+                self._disambiguation.clear(thread_id)
+                return "Cancelled -- nothing was sent."
             cancel_dispatch(self._store, thread_id, audit=self._audit)
             return "Cancelled -- nothing was sent."
         if intent.kind == "recap_action":
@@ -407,9 +451,14 @@ class Daemon:
         return _CHIT_CHAT_REPLY
 
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
-        item = self._resolve_single_recap_item(
-            thread_id, intent.message, intent.channel
+        item = self._resolve_or_store_single_recap_item(
+            thread_id, intent, "recap_action", intent.message
         )
+        return self._apply_recap_action(item, intent, thread_id)
+
+    def _apply_recap_action(
+        self, item: RecapItem, intent: Intent, thread_id: str
+    ) -> str:
         self._audit.log_recap_reference(thread_id, "recap_action", intent.message, item)
         instruction = rephrase_for_dispatch(self._llm, item, intent.message)
         dispatch_intent = Intent(
@@ -429,16 +478,21 @@ class Daemon:
         content from the user that didn't come from the recap at all --
         `relay_with_context` forwards it close to verbatim rather than
         rewriting it. Reuses the exact same item-resolution
-        (`_resolve_single_recap_item`) and dispatch/confirm/reply-wait path
-        `_recap_action` does, so this gets "threaded to the item's source
-        message" and "wait-and-summarize back into the same DM thread" for
-        free -- see `AGENTS.md`'s safety invariants.
+        (`_resolve_or_store_single_recap_item`) and dispatch/confirm/
+        reply-wait path `_recap_action` does, so this gets "threaded to the
+        item's source message" and "wait-and-summarize back into the same
+        DM thread" for free -- see `AGENTS.md`'s safety invariants.
         """
         if intent.message is None:
             return "I didn't catch what to relay -- what should I tell the agent?"
-        item = self._resolve_single_recap_item(
-            thread_id, intent.item_reference, intent.channel
+        item = self._resolve_or_store_single_recap_item(
+            thread_id, intent, "recap_relay", intent.item_reference
         )
+        return self._apply_recap_relay(item, intent, thread_id)
+
+    def _apply_recap_relay(
+        self, item: RecapItem, intent: Intent, thread_id: str
+    ) -> str:
         self._audit.log_recap_reference(
             thread_id, "recap_relay", intent.item_reference, item
         )
@@ -533,21 +587,49 @@ class Daemon:
         reference: str | None,
         channel: str | None = None,
     ) -> RecapItem:
-        """Like `_resolve_recap_items`, but raises `RecapActionError` (caught
-        centrally, see `_ACTIONABLE_ERRORS`) for anything that isn't exactly
-        one match -- v1 scope for `recap_action`: a reference matching more
-        than one item (including an explicit "all") is treated the same as
-        an ambiguous single-item reference, since it's about to become a
-        dispatch and can't act on a batch.
+        """Like `_resolve_recap_items`, but raises `AmbiguousRecapReference`
+        (a `RecapActionError`, caught centrally, see `_ACTIONABLE_ERRORS`)
+        for anything that isn't exactly one match -- v1 scope for
+        `recap_action`/`recap_relay`: a reference matching more than one
+        item (including an explicit "all") is treated the same as an
+        ambiguous single-item reference, since it's about to become a
+        dispatch and can't act on a batch. Carrying the candidates on the
+        exception (rather than just the formatted message) is what lets
+        `_resolve_or_store_single_recap_item` remember them for a
+        disambiguation follow-up.
         """
-        matched = self._resolve_recap_items(thread_id, reference, channel).items
+        matched = tuple(self._resolve_recap_items(thread_id, reference, channel).items)
         if len(matched) > 1:
-            labels = ", ".join(f"{item.channel}/{item.label}" for item in matched)
-            raise RecapActionError(
-                "That matches more than one item, and I can only act on one "
-                f"at a time for now -- which did you mean: {labels}?"
+            raise AmbiguousRecapReference(
+                "That matches more than one item, and I can only act on "
+                "one at a time for now -- which did you mean: "
+                f"{format_choices(matched)}? Reply with the number.",
+                matched,
             )
         return matched[0]
+
+    def _resolve_or_store_single_recap_item(
+        self,
+        thread_id: str,
+        intent: Intent,
+        kind: str,
+        reference: str | None,
+    ) -> RecapItem:
+        """Like `_resolve_single_recap_item`, but on an ambiguous reference
+        also remembers `intent` and the candidates as a
+        `PendingDisambiguation` for this thread (see
+        `recap_disambiguation.py`), so the user's next reply can answer
+        the "which did you mean" question instead of being misrouted as a
+        new command -- then re-raises, so the question still reaches the
+        user exactly like it did before this existed.
+        """
+        try:
+            return self._resolve_single_recap_item(thread_id, reference, intent.channel)
+        except AmbiguousRecapReference as exc:
+            self._disambiguation.set(
+                thread_id, PendingDisambiguation(kind, exc.candidates, intent)
+            )
+            raise
 
     def _dispatch_or_ask(self, intent: Intent, thread_id: str) -> str:
         if intent.channel is None or intent.message is None:
