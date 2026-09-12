@@ -190,6 +190,41 @@ def test_resolve_reference_word_fallback_ignores_generic_words():
     assert resolved.degraded is False
 
 
+def test_resolve_reference_plural_intent_word_in_a_labels_own_text_does_not_hijack_it():
+    # Live bug: a recap said "(5 additional open items)" for swingbird, but
+    # every phrasing of "tell me about the other/additional/open items"
+    # returned just one item -- the one literally labeled
+    # "recap-additional-items-followup". Its own label contains "items"
+    # (a _GENERIC_WORDS entry) and, in other phrasings, "additional"/"open"
+    # (both _PLURAL_INTENT_WORDS), so the word-level fallback matched it
+    # directly and never reached the "give me every non-primary item"
+    # fallback below. Excluding plural-intent words from that fallback too
+    # (like generic words) should let a genuine "other items" request reach
+    # every non-primary item instead of being hijacked by this one.
+    primary = RecapItem(channel="swingbird", label="F1", summary="s", instruction="i")
+    about_items_feature = RecapItem(
+        channel="swingbird",
+        label="recap-additional-items-followup",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+    another = RecapItem(
+        channel="swingbird", label="F3", summary="s", instruction="i", is_primary=False
+    )
+
+    for reference in (
+        "tell me about the other swingbird items",
+        "tell me more about the additional swingbird open items",
+        "tell me about the open swingbird items",
+    ):
+        resolved = resolve_reference(
+            (primary, about_items_feature, another), reference, channel="swingbird"
+        )
+        assert resolved.items == [about_items_feature, another]
+        assert resolved.degraded is False
+
+
 def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
     # An empty label must never reverse-match as a substring of everything
     # -- otherwise every reference would spuriously match an unlabeled item.

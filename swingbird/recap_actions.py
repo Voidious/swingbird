@@ -55,6 +55,7 @@ _GENERIC_WORDS = {
     "bug",
     "issue",
     "item",
+    "items",
     "task",
     "feature",
     "problem",
@@ -67,7 +68,16 @@ _GENERIC_WORDS = {
 # (see recap.py's _CONCISE_SYSTEM_PROMPT/_DETAILED_SYSTEM_PROMPT) plus the
 # router's recap_detail enumeration examples (see router.py). Checked as
 # whole reference words (post-stopword-strip), not a substring, so it can't
-# accidentally fire just because a label happens to contain one of these.
+# accidentally fire just because a label happens to contain one of these --
+# but a plural-intent word is also excluded from the separate identifying-
+# word fallback below (like _GENERIC_WORDS), for the mirror-image reason:
+# an item literally *about* the recap system (e.g. a work item labeled
+# "recap-additional-items-followup") can contain one of these words in its
+# own label, and matching on it there would wrongly resolve a genuine "the
+# other items" request to that one coincidentally-worded item instead of
+# ever reaching the "give me every non-primary item" fallback (observed
+# live: exactly this item swallowed every "tell me about the other/
+# additional/open swingbird items" phrasing tried).
 _PLURAL_INTENT_WORDS = {
     "additional",
     "other",
@@ -170,14 +180,21 @@ def resolve_reference(
     (e.g. one item's label covering a "F4 or F5 or F6" decision) isn't a
     substring of "F4 for dripbird", and "F4 for dripbird" isn't a substring
     of it either -- only the "F4" fragment actually identifies the item. So
-    matching also falls back to individual (non-stopword, non-generic) words
-    of `reference`: if any single word is itself a substring of the label,
-    that's enough. Words in `_GENERIC_WORDS` ("fix", "bug", "issue", ...) are
-    excluded from this fallback the same way stopwords are -- they're common
-    enough as a label's own last word that matching on one alone produces
-    false positives across unrelated items (e.g. "the swingbird fix" against
-    two items whose labels both end in "...fix"). This can't spuriously
-    match an empty label (no word is a substring of "").
+    matching also falls back to individual words of `reference`: if any
+    single word is itself a substring of the label, that's enough. This
+    fallback uses a narrower word list (`match_words`) than the plural-intent
+    check below (`words`): both drop stopwords, but `match_words` also drops
+    `_GENERIC_WORDS` ("fix", "bug", "issue", ...) and `_PLURAL_INTENT_WORDS`
+    ("other", "additional", ...). Generic words are common enough as a
+    label's own last word that matching on one alone produces false
+    positives across unrelated items (e.g. "the swingbird fix" against two
+    items whose labels both end in "...fix"). Plural-intent words are
+    excluded for the mirror-image reason: an item that happens to be *about*
+    the recap system itself (e.g. labeled "recap-additional-items-followup")
+    can contain one in its own label, and matching on it there would resolve
+    a genuine "the other items" request to that one item instead of ever
+    reaching the "give me every non-primary item" fallback below. This can't
+    spuriously match an empty label (no word is a substring of "").
 
     Each of an item's `keywords` (see `recap.py`'s `_ITEMS_INSTRUCTIONS`) is
     checked with this exact same three-way test, independently of `label` --
@@ -239,17 +256,18 @@ def resolve_reference(
         if len(channels_named) == 1
         else items
     )
-    words = [
-        w
-        for w in normalized.split()
-        if len(w) > 1 and w not in _STOPWORDS and w not in _GENERIC_WORDS
+    words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
+    match_words = [
+        w for w in words if w not in _GENERIC_WORDS and w not in _PLURAL_INTENT_WORDS
     ]
     matches = [
         item
         for item in candidates
-        if _matches_text(item.label, normalized, words)
+        if _matches_text(item.label, normalized, match_words)
         or normalized in item.channel.lower()
-        or any(_matches_text(keyword, normalized, words) for keyword in item.keywords)
+        or any(
+            _matches_text(keyword, normalized, match_words) for keyword in item.keywords
+        )
     ]
     plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if not matches and len(channels_named) == 1:
