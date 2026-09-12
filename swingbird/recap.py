@@ -56,9 +56,17 @@ _RESOLUTION_GUARD = (
     'ahead", "that\'s fine", "you can ignore X", or otherwise dismisses or '
     "answers an earlier question or concern, treat that concern as closed "
     "-- don't lead with it or describe it as still needing attention just "
-    "because it generated the most discussion. If the transcript's last "
-    "message is an interruption rather than a substantive reply (e.g. a "
-    "session-limit, retry, or error notice), the open item is whatever "
+    "because it generated the most discussion. This isn't only about the "
+    "user dismissing something -- the same rule applies whenever a later "
+    "message reports something as committed, merged, done, or fixed: that "
+    "supersedes an earlier message describing the same thing as blocked, "
+    "staged, or in-progress, even if the earlier message is longer or more "
+    "detailed, and regardless of whether the user or the agent sent the "
+    'later message. Never reconstruct a "still blocked, next step X" '
+    "status from an earlier message once a later message in the same "
+    "thread says that exact thing is already done. If the transcript's "
+    "last message is an interruption rather than a substantive reply (e.g. "
+    "a session-limit, retry, or error notice), the open item is whatever "
     "the user's last instruction before that was, not any earlier "
     'resolved concern -- phrase status like "told to do X, interrupted '
     'before doing it," not the concern that preceded that instruction.'
