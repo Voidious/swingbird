@@ -23,6 +23,7 @@ import re
 import time
 from dataclasses import dataclass
 
+from swingbird import outbound
 from swingbird.config import ChannelConfig, Config
 from swingbird.history import fetch_messages_since
 from swingbird.llm import LLMClient
@@ -226,6 +227,9 @@ def build_recap(
         recap = Recap(
             text=_append_item_counts(recap.text, recap.items), items=recap.items
         )
+    recap = Recap(
+        text=_append_source_links(recap.text, recap.items, config), items=recap.items
+    )
     return recap
 
 
@@ -340,6 +344,37 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
     if not changed:
         return text
     return "\n\n".join(paragraphs)
+
+
+def _append_source_links(
+    text: str, items: tuple[RecapItem, ...], config: Config
+) -> str:
+    """Append a Buzz message link to each channel's paragraph in `text`,
+    pointing at the primary item's `source_event_id` when the LLM grounded
+    it in one specific transcript message (see `RecapItem.source_event_id`).
+
+    Only ever the primary item -- it's the only one `text` actually
+    narrates (see `_ITEMS_INSTRUCTIONS`); a non-primary item is just
+    counted by `_append_item_counts`, never described, so there's no
+    paragraph of its own for a link to attach to. Relies on the same
+    `**channel**:`-prefixed paragraph `_append_item_counts` does (see
+    `_FORMAT_GUARD`).
+
+    `config.channel_by_name(item.channel)` is guaranteed to succeed
+    whenever `source_event_id` is set: `_resolve_tag` only ever resolves
+    one from `id_map`, whose keys are exactly the names of this same
+    `config`'s own channels (see `_build_transcript`) -- so there's no
+    `None`-channel case to guard here, unlike a `RecapItem` that might have
+    come from anywhere else (see `recap_detail._append_source_links`,
+    which does need that guard).
+    """
+    for item in items:
+        if not item.is_primary or item.source_event_id is None:
+            continue
+        channel = config.channel_by_name(item.channel)
+        link = outbound.message_link(channel.id, item.source_event_id)
+        text = outbound.append_paragraph_link(text, f"**{item.channel}**:", link)
+    return text
 
 
 def _resolve_tag(

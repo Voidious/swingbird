@@ -5,8 +5,10 @@ import pytest
 from swingbird import outbound
 from swingbird.outbound import (
     RelayError,
+    append_paragraph_link,
     get_own_display_name,
     join_channel,
+    message_link,
     open_dm,
     relay_dispatch,
     send_message,
@@ -251,6 +253,29 @@ def test_relay_dispatch_omits_reply_to_by_default(monkeypatch):
     relay_dispatch("chan-1", "fix the login timeout bug", "Voidious", "owner-pubkey")
 
     assert "--reply-to" not in fake.calls[0]["args"]
+
+
+def test_message_link_builds_a_buzz_deep_link():
+    assert message_link("chan-1", "evt-1") == ("buzz://message?channel=chan-1&id=evt-1")
+
+
+def test_append_paragraph_link_appends_to_the_matching_paragraph():
+    text = "**backend**: primary item text.\n\n**frontend**: nothing new."
+
+    result = append_paragraph_link(text, "**backend**:", "buzz://message?x")
+
+    assert result == (
+        "**backend**: primary item text.\nbuzz://message?x\n\n"
+        "**frontend**: nothing new."
+    )
+
+
+def test_append_paragraph_link_leaves_text_unchanged_without_a_match():
+    text = "**backend**: primary item text."
+
+    result = append_paragraph_link(text, "**frontend**:", "buzz://message?x")
+
+    assert result == text
 
 
 def test_buzz_cli_not_found(monkeypatch):

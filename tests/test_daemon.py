@@ -512,7 +512,12 @@ def test_recap_action_confirm_threads_to_the_items_source_event(tmp_path, monkey
     ]
 
 
-def _assert_last_sent(sent, channel="dm-chan", content="Fixed it.", reply_to="evt-2"):
+def _assert_last_sent(
+    sent,
+    channel="dm-chan",
+    content="Fixed it.\n\nbuzz://message?channel=chan-1&id=reply-1",
+    reply_to="evt-2",
+):
     (args, kwargs) = sent[-1]
     assert args == (channel, content)
     assert kwargs == {"reply_to": reply_to}
@@ -1442,7 +1447,10 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
 
     assert relayed == [("chan-1", "fix it", "Voidious", OWNER_PUBKEY, "Codex", None)]
     (args, _) = sent[-1]
-    assert args == ("dm-chan", "Confirmed and relayed (event posted-evt).")
+    assert args == (
+        "dm-chan",
+        "Confirmed and relayed: buzz://message?channel=chan-1&id=posted-evt",
+    )
     assert store.get("dm-chan") is None
 
 
@@ -1514,7 +1522,13 @@ def test_confirm_summarizes_the_working_agents_reply(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
     (args, kwargs) = sent[-1]
-    assert args == ("dm-chan", "Fixed the bug and added a regression test.")
+    assert args == (
+        "dm-chan",
+        (
+            "Fixed the bug and added a regression test.\n\n"
+            "buzz://message?channel=chan-1&id=reply-1"
+        ),
+    )
     assert kwargs == {"reply_to": "evt-2"}
     assert bot._reply_watches == {}
 

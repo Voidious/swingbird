@@ -562,6 +562,127 @@ def test_build_recap_leaves_unrelated_trailing_parenthetical_alone(monkeypatch):
     assert result.text == "**backend**: primary item text. (recommended)"
 
 
+def test_build_recap_appends_source_link_to_primary_items_paragraph(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "**backend**: primary item text.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+                "source_id": "m1",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**backend**: primary item text.\nbuzz://message?channel=chan-1&id=evt-a"
+    )
+
+
+def test_build_recap_omits_source_link_when_item_not_grounded(monkeypatch):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: primary item text.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**backend**: primary item text."
+
+
+def test_build_recap_omits_source_link_for_a_non_primary_item(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [
+                {"created_at": FRESH, "content": "first", "id": "evt-a"},
+                {"created_at": FRESH, "content": "second", "id": "evt-b"},
+            ]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "**backend**: primary item text.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+                "source_id": "m1",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+                "source_id": "m2",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**backend**: primary item text. (1 additional open item.)\n"
+        "buzz://message?channel=chan-1&id=evt-a"
+    )
+
+
+def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: (
+            [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
+            if channel_id == "chan-1"
+            else []
+        ),
+    )
+    llm, _ = _llm(
+        "**backend**: prose covering multiple items already.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+                "source_id": "m1",
+            }
+        ],
+    )
+
+    result = build_recap(llm, CONFIG, detail="detailed")
+
+    assert result.text == (
+        "**backend**: prose covering multiple items already.\n"
+        "buzz://message?channel=chan-1&id=evt-a"
+    )
+
+
 def test_build_recap_detailed_mode_does_not_append_item_counts(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(

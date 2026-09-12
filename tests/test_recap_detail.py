@@ -1,5 +1,17 @@
+import dataclasses
+
+from swingbird.config import ChannelConfig, Config, LLMConfig, OwnerConfig, RelayConfig
 from swingbird.recap import RecapItem
 from swingbird.recap_detail import elaborate
+
+CONFIG = Config(
+    llm=LLMConfig(base_url="https://x", model="m", api_key_env="X_KEY"),
+    relay=RelayConfig(url="wss://relay.example", private_key_env="SWINGBIRD_KEY"),
+    channels=(
+        ChannelConfig(id="chan-1", name="dripbird", write=True, agents=("Codex",)),
+    ),
+    owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+)
 
 ITEM = RecapItem(
     channel="dripbird",
@@ -29,7 +41,7 @@ class FakeLLM:
 def test_elaborate_returns_the_llm_completion():
     llm = FakeLLM(text_response="Here's more on F4: it's blocked on a design call.")
 
-    result = elaborate(llm, [ITEM], [[]], [], "F4")
+    result = elaborate(llm, [ITEM], [[]], [], "F4", CONFIG)
 
     assert result == "Here's more on F4: it's blocked on a design call."
 
@@ -44,6 +56,7 @@ def _user_content(
         threads if threads is not None else [[] for _ in items],
         list(dm_messages),
         reference,
+        CONFIG,
         no_other_items,
     )
     return llm.calls[0][1]["content"]
@@ -85,7 +98,7 @@ def test_elaborate_omits_dm_section_when_absent():
 def test_elaborate_defaults_reference_to_all():
     llm = FakeLLM()
 
-    elaborate(llm, [ITEM], [[]], [], None)
+    elaborate(llm, [ITEM], [[]], [], None, CONFIG)
 
     content = llm.calls[0][1]["content"]
     assert "User's reference: all" in content
@@ -115,3 +128,34 @@ def test_elaborate_omits_no_other_items_note_by_default():
     content = _user_content()
 
     assert "no items beyond" not in content
+
+
+def test_elaborate_appends_source_link_to_the_grounded_items_paragraph():
+    grounded = dataclasses.replace(ITEM, source_event_id="evt-a")
+    llm = FakeLLM(text_response="**dripbird -- F4:** it's blocked on a design call.")
+
+    result = elaborate(llm, [grounded], [[]], [], "F4", CONFIG)
+
+    assert result == (
+        "**dripbird -- F4:** it's blocked on a design call.\n"
+        "buzz://message?channel=chan-1&id=evt-a"
+    )
+
+
+def test_elaborate_omits_source_link_when_item_not_grounded():
+    llm = FakeLLM(text_response="**dripbird -- F4:** it's blocked on a design call.")
+
+    result = elaborate(llm, [ITEM], [[]], [], "F4", CONFIG)
+
+    assert result == "**dripbird -- F4:** it's blocked on a design call."
+
+
+def test_elaborate_omits_source_link_for_an_unmapped_channel():
+    grounded = dataclasses.replace(
+        ITEM, channel="ghost-channel", source_event_id="evt-a"
+    )
+    llm = FakeLLM(text_response="**ghost-channel -- F4:** it's blocked.")
+
+    result = elaborate(llm, [grounded], [[]], [], "F4", CONFIG)
+
+    assert result == "**ghost-channel -- F4:** it's blocked."

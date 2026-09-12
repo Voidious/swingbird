@@ -14,10 +14,16 @@ surfaced the item(s), and this follow-up question).
 additional items" resolves (via `recap_actions.resolve_reference`) to every
 non-primary item for a channel, not just one, so this elaborates on all of
 them in a single call rather than needing one call per item.
+
+Each item's own paragraph in the LLM's answer also gets a Buzz message
+link appended, when `item.source_event_id` is set -- see
+`_append_source_links`.
 """
 
 from __future__ import annotations
 
+from swingbird import outbound
+from swingbird.config import Config
 from swingbird.llm import LLMClient
 from swingbird.recap import RecapItem
 
@@ -61,6 +67,7 @@ def elaborate(
     threads: list[list[dict]],
     dm_messages: list[dict],
     reference: str | None,
+    config: Config,
     no_other_items: bool = False,
 ) -> str:
     """Return an elaborated answer for a "tell me more about X" follow-up.
@@ -107,4 +114,26 @@ def elaborate(
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
-    return llm.complete(messages)
+    return _append_source_links(llm.complete(messages), items, config)
+
+
+def _append_source_links(text: str, items: list[RecapItem], config: Config) -> str:
+    """Append a Buzz message link to each item's own paragraph in `text`,
+    pointing at `item.source_event_id` when the recap grounded it in one
+    specific transcript message (see `RecapItem.source_event_id`) --
+    mirrors `recap.py`'s own `_append_source_links`, keyed on `_FORMAT_
+    GUARD`'s "**channel -- label:**" paragraph prefix instead of recap.py's
+    plain "**channel**:", since that's the format this module's own prompt
+    asks for. A channel name `config` doesn't recognize is silently
+    skipped, same rationale as recap.py's version.
+    """
+    for item in items:
+        if item.source_event_id is None:
+            continue
+        channel = config.channel_by_name(item.channel)
+        if channel is None:
+            continue
+        link = outbound.message_link(channel.id, item.source_event_id)
+        prefix = f"**{item.channel} -- {item.label}:**"
+        text = outbound.append_paragraph_link(text, prefix, link)
+    return text

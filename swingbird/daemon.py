@@ -380,8 +380,14 @@ class Daemon:
         summary = await asyncio.to_thread(
             summarize_reply, self._llm, reply_event["content"]
         )
+        # Appended so the owner can jump straight to the working agent's own
+        # reply in the project channel, not just read a paraphrase of it.
+        link = outbound.message_link(_channel_of(reply_event), reply_event["id"])
         await asyncio.to_thread(
-            outbound.send_message, dm_channel_id, summary, reply_to=dm_reply_to
+            outbound.send_message,
+            dm_channel_id,
+            f"{summary}\n\n{link}",
+            reply_to=dm_reply_to,
         )
 
     def _process(self, event: dict, thread_id: str) -> str:
@@ -524,6 +530,7 @@ class Daemon:
             threads,
             dm_messages,
             intent.message,
+            self._config,
             no_other_items=resolved.degraded,
         )
 
@@ -672,7 +679,8 @@ class Daemon:
             thread_id,
             dm_reply_to,
         )
-        return f"Confirmed and relayed (event {event_id})."
+        link = outbound.message_link(proposal.channel_id, event_id)
+        return f"Confirmed and relayed: {link}"
 
     def _reply_watch_id(self, event_id: str, proposal: DispatchProposal) -> str:
         """Return the id to register a reply-wait against for this dispatch.

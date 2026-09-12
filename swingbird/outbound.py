@@ -140,6 +140,32 @@ def send_message(
     return run_buzz_cli(args, stdin=content)["event_id"]
 
 
+def message_link(channel_id: str, event_id: str) -> str:
+    """Return a `buzz://` deep link to one specific message.
+
+    Matches what Buzz Desktop puts on the clipboard for "copy link to
+    message" -- pasting one back into Buzz renders a rich preview that
+    jumps straight to it. Any DM that references or creates a specific
+    Buzz message (a recap item's source, a just-relayed dispatch, a
+    working agent's reply) carries one of these rather than just naming
+    the message in prose, so the user can always jump to it.
+    """
+    return f"buzz://message?channel={channel_id}&id={event_id}"
+
+
+def append_paragraph_link(text: str, prefix: str, link: str) -> str:
+    """Append `link` on its own line to the one paragraph in `text` (split
+    on blank lines, matching `recap.py`/`recap_detail.py`'s own per-item
+    paragraph format) that starts with `prefix`; return `text` unchanged if
+    no paragraph matches -- never guessed onto the wrong one."""
+    paragraphs = text.split("\n\n")
+    for i, paragraph in enumerate(paragraphs):
+        if paragraph.startswith(prefix):
+            paragraphs[i] = f"{paragraph}\n{link}"
+            return "\n\n".join(paragraphs)
+    return text
+
+
 def relay_dispatch(
     channel_id: str,
     instruction: str,
