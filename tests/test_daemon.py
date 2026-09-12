@@ -180,6 +180,54 @@ def test_ignores_events_before_the_dm_channel_is_resolved(tmp_path, monkeypatch)
     assert llm.calls == []
 
 
+def test_handle_event_does_not_block_the_event_loop_during_a_slow_llm_call(
+    tmp_path, monkeypatch
+):
+    """A slow `_process` call (e.g. a real recap's LLM/buzz-cli round trips)
+    must run off the main thread -- otherwise it freezes the event loop for
+    its whole duration, starving the inbound WebSocket's read/keepalive
+    traffic long enough that the relay (or the `websockets` client's own
+    ping timeout) drops the connection as idle. That drop ends `events()`'s
+    `async for` silently (a clean close raises nothing), which looks
+    exactly like the daemon exiting for no reason right after a recap --
+    the bug this test guards against."""
+    sent = _sent(monkeypatch)
+    # "cancel" (rather than "chit_chat") so the router's retry-on-chit_chat
+    # (see router.py) doesn't call complete_json a second time and throw
+    # off the timing assertion below.
+    llm = FakeLLM(json_response={"intent": "cancel"})
+    real_complete_json = llm.complete_json
+
+    def _slow_complete_json(messages):
+        time.sleep(0.2)
+        return real_complete_json(messages)
+
+    llm.complete_json = _slow_complete_json
+    bot = _daemon(tmp_path, llm)
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(15):
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    async def scenario():
+        start = time.monotonic()
+        await asyncio.gather(bot._handle_event(_event()), ticker())
+        return time.monotonic() - start
+
+    elapsed = asyncio.run(scenario())
+
+    # If _process ran on the main thread, the ticker couldn't advance until
+    # after it finished, so the whole scenario would take at least
+    # 0.2 + 15 * 0.01 seconds; running concurrently, it takes about
+    # max(0.2, 0.15) seconds instead.
+    assert elapsed < 0.3
+    assert ticks == 15
+    assert sent
+
+
 def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch):
     from swingbird import recap
 

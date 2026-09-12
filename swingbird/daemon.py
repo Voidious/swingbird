@@ -157,6 +157,15 @@ class Daemon:
         # event replies to it, so a confirm's background wait-and-summarize
         # task (see _watch_for_reply) can be woken from _handle_event.
         self._reply_watches: dict[str, asyncio.Future] = {}
+        # Set by _confirm (which runs off-thread inside _process, see
+        # _handle_event) to hand a reply-wait registration back to the main
+        # thread rather than calling _watch_for_reply directly -- that
+        # creates an asyncio Future and Task, neither of which is safe to
+        # touch from a thread other than the one running their loop. Always
+        # consumed (and cleared) by _handle_event in the same event's
+        # handling before the next event can start one, so there's no
+        # cross-event clobbering.
+        self._pending_watch: tuple[str, str, str] | None = None
 
     async def run(self) -> None:
         # Captured before open_dm()/connect() so the backlog cutoff covers
@@ -247,9 +256,24 @@ class Daemon:
                 f"swingbird: ignoring -- not the owner's DM channel ({self._dm_id!r})"
             )
             return
-        reply = self._process(event, channel_id)
+        # `_process` (an LLM call, and for a recap several buzz-cli
+        # subprocess calls too) and `send_message` are both synchronous,
+        # blocking calls -- run off-thread so they can't starve this
+        # coroutine's event loop of cycles to service the inbound
+        # WebSocket's read/keepalive traffic while they're in flight. A
+        # recap in particular can block long enough that the relay (or the
+        # `websockets` client's own ping timeout) drops the connection as
+        # idle; since a clean server-initiated close ends `events()`'s
+        # `async for` silently (no exception), that stalled event loop was
+        # otherwise indistinguishable from the daemon just exiting.
+        reply = await asyncio.to_thread(self._process, event, channel_id)
+        if self._pending_watch is not None:
+            watch, self._pending_watch = self._pending_watch, None
+            self._watch_for_reply(*watch)
         try:
-            outbound.send_message(channel_id, reply, reply_to=event["id"])
+            await asyncio.to_thread(
+                outbound.send_message, channel_id, reply, reply_to=event["id"]
+            )
         except outbound.RelayError as exc:
             print(f"swingbird: failed to send reply to {event['id']}: {exc}")
 
@@ -316,8 +340,15 @@ class Daemon:
         except TimeoutError:
             self._reply_watches.pop(relayed_event_id, None)
             return
-        summary = summarize_reply(self._llm, reply_event["content"])
-        outbound.send_message(dm_channel_id, summary, reply_to=dm_reply_to)
+        # Same reasoning as _handle_event's to_thread calls -- this runs
+        # concurrently with the main loop, so blocking here starves the
+        # inbound WebSocket just as much as blocking on the main path would.
+        summary = await asyncio.to_thread(
+            summarize_reply, self._llm, reply_event["content"]
+        )
+        await asyncio.to_thread(
+            outbound.send_message, dm_channel_id, summary, reply_to=dm_reply_to
+        )
 
     def _process(self, event: dict, thread_id: str) -> str:
         try:
@@ -517,13 +548,16 @@ class Daemon:
         )
 
     def _confirm(self, thread_id: str, dm_reply_to: str) -> str:
+        # Runs off-thread (see _handle_event) -- stash the watch request for
+        # _handle_event to register via _watch_for_reply once it's back on
+        # the main thread, rather than creating the asyncio Future/Task here.
         event_id, proposal = confirm_dispatch(
             self._store, thread_id, self._config.owner, audit=self._audit
         )
-        self._watch_for_reply(
+        self._pending_watch = (
             self._reply_watch_id(event_id, proposal),
-            dm_channel_id=thread_id,
-            dm_reply_to=dm_reply_to,
+            thread_id,
+            dm_reply_to,
         )
         return f"Confirmed and relayed (event {event_id})."
 
