@@ -6,7 +6,7 @@ import pytest
 
 from swingbird import inbound
 from swingbird.inbound import InboundClient, InboundError
-from swingbird.nostr_crypto import sign_event
+from swingbird.nostr_crypto import pubkey_hex, sign_event
 
 PRIVATE_KEY_HEX = "2" * 64
 RELAY_URL = "wss://relay.example"
@@ -84,6 +84,11 @@ def _connected_client(monkeypatch, challenge="challenge-123"):
 def test_init_rejects_bad_private_key():
     with pytest.raises(InboundError, match="not valid hex or nsec"):
         InboundClient(RELAY_URL, "not-a-key")
+
+
+def test_pubkey_is_derived_from_the_private_key():
+    client = InboundClient(RELAY_URL, PRIVATE_KEY_HEX)
+    assert client.pubkey == pubkey_hex(bytes.fromhex(PRIVATE_KEY_HEX))
 
 
 def test_connect_authenticates(monkeypatch):

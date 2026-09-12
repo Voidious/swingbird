@@ -77,11 +77,12 @@ class FakeLLM:
 class FakeInbound:
     """Duck-types `InboundClient`: replays a canned list of events."""
 
-    def __init__(self, events):
+    def __init__(self, events, pubkey="bot-pubkey"):
         self._events = events
         self.connected = False
         self.subscribed = None
         self.since = None
+        self.pubkey = pubkey
 
     async def connect(self):
         self.connected = True
@@ -107,7 +108,15 @@ def _event(pubkey=OWNER_PUBKEY, content="hi", tags=None, event_id="evt-1"):
     }
 
 
-def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan", recap_store=None):
+def _daemon(
+    tmp_path,
+    llm,
+    inbound=None,
+    store=None,
+    dm_id="dm-chan",
+    recap_store=None,
+    own_pubkey=None,
+):
     audit = AuditLog(tmp_path / "audit.jsonl")
     router = IntentRouter(llm, CONFIG, audit=audit)
     return Daemon(
@@ -119,6 +128,7 @@ def _daemon(tmp_path, llm, inbound=None, store=None, dm_id="dm-chan", recap_stor
         audit,
         dm_id=dm_id,
         recap_store=recap_store,
+        own_pubkey=own_pubkey,
     )
 
 
@@ -456,6 +466,15 @@ def _setup_grounded_recap_bot(tmp_path, store):
     return bot, recap_store
 
 
+def _setup_grounded_dispatch_test(monkeypatch, tmp_path):
+    sent, store = _setup_dispatch_test(monkeypatch)
+    monkeypatch.setattr(
+        daemon, "fetch_thread_root", lambda channel_id, event_id: "thread-root-evt"
+    )
+    (bot, _) = _setup_grounded_recap_bot(tmp_path, store)
+    return sent, store, bot
+
+
 def test_grounded_dispatch_reply_watch_matches_the_threads_true_root(
     tmp_path, monkeypatch
 ):
@@ -466,11 +485,7 @@ def test_grounded_dispatch_reply_watch_matches_the_threads_true_root(
     module docstring -- so the wait-and-summarize must match a reply
     e-tagged only to the resolved root, not to `proposal.reply_to` or the
     relayed event's own id."""
-    sent, store = _setup_dispatch_test(monkeypatch)
-    monkeypatch.setattr(
-        daemon, "fetch_thread_root", lambda channel_id, event_id: "thread-root-evt"
-    )
-    (bot, _) = _setup_grounded_recap_bot(tmp_path, store)
+    (sent, _, bot) = _setup_grounded_dispatch_test(monkeypatch, tmp_path)
 
     async def scenario():
         await bot._handle_event(_event(event_id="evt-1"))
@@ -489,6 +504,53 @@ def test_grounded_dispatch_reply_watch_matches_the_threads_true_root(
 
     asyncio.run(scenario())
 
+    _assert_last_sent(sent)
+    assert bot._reply_watches == {}
+
+
+def test_self_echo_of_the_relayed_dispatch_does_not_satisfy_its_own_reply_wait(
+    tmp_path, monkeypatch
+):
+    """A grounded dispatch e-tags the thread root it was threaded into --
+    exactly the id `_reply_watch_id` just resolved and registered a watch
+    against (see the test above). Since the daemon is also subscribed to
+    the project channel it just relayed into, its own subscription echoes
+    that just-sent message straight back with matching tags, arriving
+    before any real reply could exist. Without filtering out the daemon's
+    own identity, that self-echo would satisfy the watch instantly and
+    `summarize_reply` would "summarize" the relayed instruction itself --
+    fabricating a plausible-looking reply from a message that was never a
+    reply. Only the later, genuinely different-author reply should resolve
+    the wait."""
+    (sent, _, bot) = _setup_grounded_dispatch_test(monkeypatch, tmp_path)
+    bot._own_pubkey = "bot-pubkey"
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        self_echo = _event(
+            pubkey="bot-pubkey",
+            content="@Codex Relaying instruction from Voidious: F4",
+            tags=[["h", "chan-1"], ["e", "thread-root-evt", "", "root"]],
+            event_id="posted-evt",
+        )
+        await bot._handle_event(self_echo)
+        real_reply = _event(
+            pubkey="codex-pubkey",
+            content="Fixed it.",
+            tags=[["h", "chan-1"], ["e", "thread-root-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(real_reply)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+
+    # The summarizer must only ever have been asked to summarize the real
+    # reply's content -- never the self-echoed instruction.
+    summarize_call = bot._llm.calls[-1]
+    assert summarize_call[-1]["content"] == "Fixed it."
     _assert_last_sent(sent)
     assert bot._reply_watches == {}
 

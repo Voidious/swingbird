@@ -134,6 +134,7 @@ class Daemon:
         audit: AuditLog,
         dm_id: str | None = None,
         recap_store: RecapActionStore | None = None,
+        own_pubkey: str | None = None,
     ) -> None:
         self._config = config
         self._inbound = inbound
@@ -153,6 +154,11 @@ class Daemon:
         # match and every event is ignored -- the safe default for a daemon
         # that hasn't finished starting up.
         self._dm_id = dm_id
+        # The daemon's own identity, so a reply-wait never mistakes one of
+        # its own outbound events (see `_resolve_reply_watch`) for a
+        # working agent's reply. None until run() sets it via
+        # `inbound.pubkey`, same lazy-init rationale as `_dm_id`.
+        self._own_pubkey = own_pubkey
         # Relayed-instruction event id -> a Future resolved with whatever
         # event replies to it, so a confirm's background wait-and-summarize
         # task (see _watch_for_reply) can be woken from _handle_event.
@@ -175,6 +181,7 @@ class Daemon:
         # silently drop any message the owner sends while the daemon is
         # still coming up.
         since = int(time.time())
+        self._own_pubkey = self._inbound.pubkey
         self._sync_display_name()
         self._join_project_channels()
         # Resolved here rather than in build_daemon() so construction stays
@@ -287,7 +294,20 @@ class Daemon:
         actually watched while still belonging to the same watched thread.
         Matched by tag id alone, not by who posted it -- a reply is never
         itself treated as an owner command (§5), regardless of its author.
+
+        The one author this must never match on is the daemon's own
+        identity: a grounded dispatch (`relay_dispatch(reply_to=...)`)
+        naturally e-tags the very thread root `_reply_watch_id` just
+        resolved and registered a watch against, so the daemon's own
+        subscription echoes that just-sent message straight back with
+        matching tags. Without this check, that self-echo satisfies its own
+        reply-wait instantly, and `summarize_reply` ends up "summarizing"
+        the relayed instruction itself rather than any real reply --
+        producing a fabricated-looking response before the actual working
+        agent has said anything.
         """
+        if event["pubkey"] == self._own_pubkey:
+            return False
         for target_id in _reply_target_ids(event):
             future = self._reply_watches.pop(target_id, None)
             if future is None:

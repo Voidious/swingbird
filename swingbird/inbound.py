@@ -20,6 +20,7 @@ import websockets
 from swingbird.nostr_crypto import (
     NostrCryptoError,
     parse_private_key,
+    pubkey_hex,
     sign_event,
     verify_event,
 )
@@ -44,6 +45,16 @@ class InboundClient:
             raise InboundError(str(exc)) from exc
         self._ws = None
         self._seen_ids: set[str] = set()
+
+    @property
+    def pubkey(self) -> str:
+        """The identity's own hex pubkey, derived from its private key.
+
+        Lets `daemon.py` recognize an event as self-authored -- notably a
+        just-relayed dispatch echoed straight back on this same
+        subscription, which a genuine coding-agent reply can never be.
+        """
+        return pubkey_hex(self._private_key)
 
     async def connect(self) -> None:
         """Open the WebSocket connection and complete NIP-42 auth."""
