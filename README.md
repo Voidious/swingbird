@@ -134,12 +134,12 @@ agents = ["Sonnet"]
   out of nowhere, would be a jarring surprise.
 - **`[recap]`** -- optional. `stale_after_days` (default `30`) is how long a project channel can
   go quiet before a "recap everything" request drops it rather than reporting it as inactive.
-  Naming a channel explicitly ("recap backend") always includes it regardless of age.
-  `max_messages_per_channel` (default `1000`) caps how many messages an all-channels recap will
-  page through per channel to fill that window -- a single `buzz messages get` call maxes out at
-  200 messages regardless of the `--limit` requested, so swingbird pages backwards with
-  `--before` as needed, and this is the safety valve stopping that from running away on an
-  unusually chatty channel.
+  Naming a channel explicitly ("recap backend") uses this same time window, but is never dropped
+  from the reply -- it's reported as having no recent activity instead of being omitted.
+  `max_messages_per_channel` (default `1000`) caps how many messages a recap will page through
+  per channel to fill that window -- a single `buzz messages get` call maxes out at 200 messages
+  regardless of the `--limit` requested, so swingbird pages backwards with `--before` as needed,
+  and this is the safety valve stopping that from running away on an unusually chatty channel.
 - **`[[channels]]`** -- one entry per project. `id` is the Buzz channel UUID; `name` is what
   you'll say in conversation ("recap backend", "tell backend to...") and is independent of the
   channel's own Buzz display name; `write` controls whether swingbird may dispatch instructions

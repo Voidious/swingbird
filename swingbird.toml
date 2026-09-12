@@ -26,9 +26,10 @@ name = "swingbird"
 # reply_wait_seconds = 90
 
 # Optional. A project channel is dropped from a "recap everything" request
-# once its most recent message is older than this many days -- naming a
-# channel explicitly ("recap swingbird") always includes it regardless of
-# age. Defaults to 30 if omitted. max_messages_per_channel caps how many
+# once it has no messages within this many days -- naming a channel
+# explicitly ("recap swingbird") uses the same time window but is never
+# dropped from the reply, just shown as having no recent activity.
+# Defaults to 30 if omitted. max_messages_per_channel caps how many
 # messages a single channel's recap will page through to fill that window
 # (a single `buzz messages get` call maxes out at 200 regardless of
 # --limit, so a chatty channel needs multiple paged calls); defaults to

@@ -595,19 +595,69 @@ def test_build_recap_rejects_response_missing_text(monkeypatch):
         build_recap(llm, CONFIG)
 
 
+def _build_recap_with_fake_fetch(
+    monkeypatch, fake_fetch, config, channel_names=("backend",)
+):
+    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    llm, _ = _llm()
+    build_recap(llm, config, channel_names=channel_names)
+    return llm
+
+
 def test_build_recap_restricts_to_named_channels(monkeypatch):
     calls = []
 
-    def fake_fetch(channel_id, limit=None):
-        calls.append((channel_id, limit))
+    def fake_fetch(channel_id, since_ts, max_messages=None):
+        calls.append(channel_id)
         return []
 
-    monkeypatch.setattr(recap, "fetch_recent_messages", fake_fetch)
-    llm, _ = _llm()
+    _build_recap_with_fake_fetch(monkeypatch, fake_fetch, CONFIG)
 
+    assert calls == ["chan-1"]
+
+
+def test_build_recap_named_channel_uses_same_window_as_all_channels(monkeypatch):
+    """A named channel is no longer special-cased to "most recent N
+    regardless of age" -- it goes through the exact same
+    `fetch_messages_since(cutoff, max_messages)` call as an all-channels
+    recap, just restricted to that one channel."""
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_messages_per_channel=42),
+    )
+    seen = []
+
+    def fake_fetch(channel_id, since_ts, max_messages=None):
+        seen.append((since_ts, max_messages))
+        return []
+
+    llm = _build_recap_with_fake_fetch(monkeypatch, fake_fetch, config)
+    build_recap(llm, config)
+
+    assert seen[0] == seen[1]
+
+
+def _build_backend_recap_transcript() -> str:
+    llm, fake = _llm()
     build_recap(llm, CONFIG, channel_names=["backend"])
+    transcript = _transcript(fake)
+    assert "## backend" in transcript
+    return transcript
 
-    assert calls == [("chan-1", recap.EXPLICIT_CHANNEL_MESSAGE_LIMIT)]
+
+def test_build_recap_includes_fresh_content_for_named_channel(monkeypatch):
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [
+            {"created_at": FRESH, "content": "fresh backend msg"}
+        ],
+    )
+    transcript = _build_backend_recap_transcript()
+    assert "fresh backend msg" in transcript
 
 
 def test_build_recap_rejects_unknown_channel_name(monkeypatch):
@@ -621,7 +671,9 @@ def _setup_empty_channel_recap(monkeypatch, channel_names=None):
     if channel_names is None:
         channel_names = ["backend"]
     monkeypatch.setattr(
-        recap, "fetch_recent_messages", lambda channel_id, limit=None: []
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [],
     )
     llm, fake = _llm()
 
@@ -681,19 +733,23 @@ def test_build_recap_omits_empty_channel_from_all_channels_recap(monkeypatch):
     assert "fresh frontend msg" in transcript
 
 
-def test_build_recap_includes_stale_channel_when_named_explicitly(monkeypatch):
+def test_build_recap_shows_placeholder_for_named_channel_outside_the_window(
+    monkeypatch,
+):
+    """Unlike the old "explicit channels bypass staleness" behavior, a
+    named channel now uses the same time-windowed fetch as an all-channels
+    recap -- so a message older than the window doesn't show up here
+    either. What's still different from the all-channels case is that the
+    channel isn't dropped outright: it gets a "(no recent activity)"
+    paragraph instead of being omitted (see the omitted-channel test
+    below)."""
     monkeypatch.setattr(
         recap,
-        "fetch_recent_messages",
-        lambda channel_id, limit=None: [{"created_at": STALE, "content": "old msg"}],
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [],
     )
-    llm, fake = _llm()
-
-    build_recap(llm, CONFIG, channel_names=["backend"])
-
-    transcript = _transcript(fake)
-    assert "## backend" in transcript
-    assert "old msg" in transcript
+    transcript = _build_backend_recap_transcript()
+    assert "(no recent activity)" in transcript
 
 
 def test_build_recap_all_channels_stale_yields_placeholder_transcript(monkeypatch):
@@ -768,7 +824,9 @@ def test_build_recap_defaults_to_concise_prompt(monkeypatch):
 
 def test_build_recap_uses_detailed_prompt_when_requested(monkeypatch):
     monkeypatch.setattr(
-        recap, "fetch_recent_messages", lambda channel_id, limit=None: []
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [],
     )
     llm, fake = _llm()
 
@@ -779,7 +837,9 @@ def test_build_recap_uses_detailed_prompt_when_requested(monkeypatch):
 
 def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
     monkeypatch.setattr(
-        recap, "fetch_recent_messages", lambda channel_id, limit=None: []
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [],
     )
     llm, fake = _llm()
 

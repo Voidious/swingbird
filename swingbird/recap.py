@@ -24,12 +24,8 @@ import time
 from dataclasses import dataclass
 
 from swingbird.config import ChannelConfig, Config
-from swingbird.history import fetch_messages_since, fetch_recent_messages
+from swingbird.history import fetch_messages_since
 from swingbird.llm import LLMClient
-
-# Only used for an explicitly-named channel, where staleness never applies
-# and we just want "whatever's most recent" rather than a time window.
-EXPLICIT_CHANNEL_MESSAGE_LIMIT = 50
 
 _LAUNDERING_GUARD = (
     "Never describe work that is drafted, proposed, or awaiting the user's "
@@ -202,12 +198,14 @@ def build_recap(
     """Return a short, prioritized recap of recent channel activity.
 
     `channel_names` restricts the recap to those configured channels;
-    omit it to recap every channel in the config (channels stale per
-    `config.recap.stale_after_days` are silently dropped from that
-    all-channels case only -- naming a channel explicitly always
-    includes it, ignoring staleness). `detail` selects "concise"
-    (default, one actionable item per project) or "detailed" (today's
-    three-bucket summary).
+    omit it to recap every channel in the config. Message selection uses
+    the same `config.recap.stale_after_days` time window either way -- the
+    only difference is that a channel with nothing in that window is
+    silently dropped from an all-channels recap, but still gets a "(no
+    recent activity)" paragraph when named explicitly, since the user
+    asked about it by name and should get an answer, not silence.
+    `detail` selects "concise" (default, one actionable item per project)
+    or "detailed" (today's three-bucket summary).
     """
     channels = _select_channels(config, channel_names)
     transcript, id_map, content_map = _build_transcript(
@@ -396,21 +394,19 @@ def _build_transcript(
     id_map: dict[str, dict[str, str]] = {}
     content_map: dict[str, dict[str, str]] = {}
     for channel in channels:
-        if explicit:
-            # Staleness never applies to a channel the user named on
-            # purpose -- just show whatever's most recent, however old.
-            events = fetch_recent_messages(
-                channel.id, limit=EXPLICIT_CHANNEL_MESSAGE_LIMIT
-            )
-        else:
-            # Time-windowed, paging past the relay's 200-per-call cap as
-            # needed (see history.fetch_messages_since) so a chatty
-            # channel can't push a still-relevant item out of the window.
-            events = fetch_messages_since(
-                channel.id, cutoff, max_messages=max_messages_per_channel
-            )
-            if not events:
-                continue
+        # Same time-windowed fetch either way, paging past the relay's
+        # 200-per-call cap as needed (see history.fetch_messages_since) so
+        # a chatty channel can't push a still-relevant item out of the
+        # window. Only whether an empty result is skipped differs: a
+        # channel the user didn't name is silently dropped from an
+        # all-channels recap, but one named explicitly still gets a
+        # paragraph below ("(no recent activity)") since silence isn't a
+        # useful answer to a question about a specific project.
+        events = fetch_messages_since(
+            channel.id, cutoff, max_messages=max_messages_per_channel
+        )
+        if not events and not explicit:
+            continue
         header = f"## {channel.name}"
         if channel.goal:
             header += f" (goal: {channel.goal})"
