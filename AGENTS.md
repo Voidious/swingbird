@@ -77,6 +77,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `daemon.py` | Wires inbound events to the router, pending-action store, and audit log; owns the safety invariants above. |
 | `inbound.py` | Persistent WebSocket client to the relay (NIP-42 auth + subscription). |
 | `outbound.py` | All writes, via the `buzz` CLI subprocess. |
+| `avatar.py` | Builds the `data:image/svg+xml,...` URI for an "Emoji" style Buzz avatar, matching Buzz Desktop's own encoding. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
 | `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_relay / chit-chat). |

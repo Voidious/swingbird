@@ -6,14 +6,14 @@ from swingbird import outbound
 from swingbird.outbound import (
     RelayError,
     append_paragraph_link,
-    get_own_display_name,
+    get_own_profile,
     join_channel,
     message_link,
     open_dm,
     relay_dispatch,
     send_message,
-    set_display_name,
     set_presence,
+    update_profile,
 )
 
 
@@ -156,28 +156,32 @@ def test_set_presence_posts_status(monkeypatch):
     ]
 
 
-def test_get_own_display_name_returns_the_callers_profile(monkeypatch):
+def test_get_own_profile_returns_the_callers_profile(monkeypatch):
     fake = FakeRun(
-        stdout='[{"display_name": "swingbird", "pubkey": "abc"}]',
+        stdout='[{"display_name": "swingbird", "about": "hi", "pubkey": "abc"}]',
     )
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
-    assert get_own_display_name() == "swingbird"
+    assert get_own_profile() == {
+        "display_name": "swingbird",
+        "about": "hi",
+        "pubkey": "abc",
+    }
     assert fake.calls[0]["args"] == ["buzz", "users", "get"]
 
 
-def test_get_own_display_name_returns_none_when_no_profile(monkeypatch):
+def test_get_own_profile_returns_empty_dict_when_no_profile(monkeypatch):
     fake = FakeRun(stdout="[]")
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
-    assert get_own_display_name() is None
+    assert get_own_profile() == {}
 
 
-def test_set_display_name_posts_name(monkeypatch):
+def test_update_profile_posts_only_the_given_fields(monkeypatch):
     fake = FakeRun(stdout='{"event_id": "evt-6", "accepted": true, "message": ""}')
     monkeypatch.setattr(outbound.subprocess, "run", fake)
 
-    set_display_name("swingbird")
+    update_profile(name="swingbird")
 
     assert fake.calls[0]["args"] == [
         "buzz",
@@ -185,6 +189,23 @@ def test_set_display_name_posts_name(monkeypatch):
         "set-profile",
         "--name",
         "swingbird",
+    ]
+
+
+def test_update_profile_posts_about_and_avatar(monkeypatch):
+    fake = FakeRun(stdout='{"event_id": "evt-6b", "accepted": true, "message": ""}')
+    monkeypatch.setattr(outbound.subprocess, "run", fake)
+
+    update_profile(about="TPM bot", avatar="data:image/svg+xml,...")
+
+    assert fake.calls[0]["args"] == [
+        "buzz",
+        "users",
+        "set-profile",
+        "--about",
+        "TPM bot",
+        "--avatar",
+        "data:image/svg+xml,...",
     ]
 
 

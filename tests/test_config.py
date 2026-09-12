@@ -26,7 +26,7 @@ agents = ["Sonnet"]
 
 def write(tmp_path, text):
     path = tmp_path / "swingbird.toml"
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -334,6 +334,85 @@ def test_identity_name_rejects_invalid_values(tmp_path, value):
     text = VALID + f"\n[identity]\nname = {value}\n"
     with pytest.raises(
         ConfigError, match=r"\[identity\].name must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_identity_description_defaults_to_none(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.identity.description is None
+
+
+def test_identity_description_is_configurable(tmp_path):
+    text = VALID + '\n[identity]\nname = "swingbird"\ndescription = "TPM bot"\n'
+    config = load_config(write(tmp_path, text))
+
+    assert config.identity.description == "TPM bot"
+
+
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_identity_description_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[identity]\ndescription = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[identity\].description must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_identity_avatar_defaults_to_none(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.identity.avatar is None
+
+
+def test_identity_avatar_emoji_style_is_configurable(tmp_path):
+    text = (
+        VALID
+        + '\n[identity.avatar]\nstyle = "emoji"\nemoji = "🐦"\ncolor = "#3399FF"\n'
+    )
+    config = load_config(write(tmp_path, text))
+
+    assert config.identity.avatar.style == "emoji"
+    assert config.identity.avatar.emoji == "🐦"
+    assert config.identity.avatar.color == "#3399FF"
+
+
+def test_identity_avatar_not_a_table(tmp_path):
+    text = VALID + "\n[identity]\navatar = 5\n"
+    with pytest.raises(ConfigError, match=r"\[identity.avatar\] must be a table"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("style", ['"image"', '"animated"', '"bogus"'])
+def test_identity_avatar_rejects_unsupported_styles(tmp_path, style):
+    text = (
+        VALID
+        + f'\n[identity.avatar]\nstyle = {style}\nemoji = "🐦"\ncolor = "#3399FF"\n'
+    )
+    with pytest.raises(ConfigError, match=r"\[identity.avatar\].style must be one of"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_identity_avatar_rejects_invalid_emoji(tmp_path, value):
+    text = (
+        VALID
+        + f'\n[identity.avatar]\nstyle = "emoji"\nemoji = {value}\ncolor = "#3399FF"\n'
+    )
+    with pytest.raises(
+        ConfigError, match=r"\[identity.avatar\].emoji must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("value", ['""', '"3399FF"', '"#39F"', "5", "true"])
+def test_identity_avatar_rejects_invalid_color(tmp_path, value):
+    text = (
+        VALID + f'\n[identity.avatar]\nstyle = "emoji"\nemoji = "🐦"\ncolor = {value}\n'
+    )
+    with pytest.raises(
+        ConfigError, match=r"\[identity.avatar\].color must be a hex color"
     ):
         load_config(write(tmp_path, text))
 

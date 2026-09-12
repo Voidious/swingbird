@@ -12,6 +12,7 @@ pyproject.toml + `.crispen.toml`.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,16 +58,35 @@ class OwnerConfig:
 
 DEFAULT_IDENTITY_NAME = "swingbird"
 
+_SUPPORTED_AVATAR_STYLES = ("emoji",)
+_HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+@dataclass(frozen=True)
+class AvatarConfig:
+    """A `style`-discriminated avatar descriptor, mirroring Buzz Desktop's
+    own `AvatarMode` ("emoji" | "image" | "animated") so adding a second
+    style later is an additive change, not a reshape. Only "emoji" is
+    supported so far -- `emoji` + `color` is exactly the pair Buzz's own
+    emoji-avatar editor round-trips, see `avatar.emoji_avatar_data_url`.
+    """
+
+    style: str
+    emoji: str
+    color: str
+
 
 @dataclass(frozen=True)
 class IdentityConfig:
-    """The daemon's own Buzz display name, kept in sync on startup so a
-    fresh identity (or a renamed deployment) shows up under a name someone
-    would actually recognize, rather than whatever the identity's profile
-    happened to have before.
+    """The daemon's own Buzz profile (display name, bio, avatar), kept in
+    sync on startup so a fresh identity (or a renamed deployment) shows up
+    looking like someone would actually recognize, rather than whatever the
+    identity's profile happened to have before.
     """
 
     name: str = DEFAULT_IDENTITY_NAME
+    description: str | None = None
+    avatar: AvatarConfig | None = None
 
 
 DEFAULT_REPLY_WAIT_SECONDS = 90
@@ -148,7 +168,7 @@ def load_config(path: str | Path) -> Config:
     """
     path = Path(path)
     try:
-        raw = tomllib.loads(path.read_text())
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ConfigError(f"config file not found: {path}") from exc
     except tomllib.TOMLDecodeError as exc:
@@ -157,7 +177,7 @@ def load_config(path: str | Path) -> Config:
     override_path = path.parent / ".swingbird.toml"
     if override_path != path and override_path.is_file():
         try:
-            raw = _merge(raw, tomllib.loads(override_path.read_text()))
+            raw = _merge(raw, tomllib.loads(override_path.read_text(encoding="utf-8")))
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"invalid TOML in {override_path}: {exc}") from exc
 
@@ -245,7 +265,34 @@ def _parse_identity(raw: dict) -> IdentityConfig:
     name = section.get("name", DEFAULT_IDENTITY_NAME)
     if not isinstance(name, str) or not name.strip():
         raise ConfigError("[identity].name must be a non-empty string")
-    return IdentityConfig(name=name)
+    description = section.get("description")
+    if description is not None and (
+        not isinstance(description, str) or not description.strip()
+    ):
+        raise ConfigError("[identity].description must be a non-empty string")
+    return IdentityConfig(
+        name=name, description=description, avatar=_parse_avatar(section.get("avatar"))
+    )
+
+
+def _parse_avatar(section: object) -> AvatarConfig | None:
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("[identity.avatar] must be a table")
+    style = section.get("style")
+    if style not in _SUPPORTED_AVATAR_STYLES:
+        raise ConfigError(
+            "[identity.avatar].style must be one of "
+            f"{_SUPPORTED_AVATAR_STYLES!r}, got {style!r}"
+        )
+    emoji = section.get("emoji")
+    if not isinstance(emoji, str) or not emoji.strip():
+        raise ConfigError("[identity.avatar].emoji must be a non-empty string")
+    color = section.get("color")
+    if not isinstance(color, str) or not _HEX_COLOR_RE.match(color):
+        raise ConfigError("[identity.avatar].color must be a hex color like '#3399FF'")
+    return AvatarConfig(style=style, emoji=emoji, color=color)
 
 
 def _parse_channels(raw: dict) -> tuple[ChannelConfig, ...]:

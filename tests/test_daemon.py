@@ -17,10 +17,13 @@ import pytest
 
 from swingbird import daemon, outbound
 from swingbird.audit import AuditLog
+from swingbird.avatar import emoji_avatar_data_url
 from swingbird.config import (
+    AvatarConfig,
     ChannelConfig,
     Config,
     DispatchConfig,
+    IdentityConfig,
     LLMConfig,
     OwnerConfig,
     RelayConfig,
@@ -127,11 +130,13 @@ def _daemon(
     recap_store=None,
     disambiguation=None,
     own_pubkey=None,
+    config=None,
 ):
+    config = config or CONFIG
     audit = AuditLog(tmp_path / "audit.jsonl")
-    router = IntentRouter(llm, CONFIG, audit=audit)
+    router = IntentRouter(llm, config, audit=audit)
     return Daemon(
-        CONFIG,
+        config,
         inbound or FakeInbound([]),
         router,
         store or PendingActionStore(),
@@ -1691,7 +1696,9 @@ def test_reply_send_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
 def _setup_outbound_mocks(monkeypatch):
     sent = _sent(monkeypatch)
     monkeypatch.setattr(outbound, "open_dm", lambda pubkey: "dm-chan")
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    monkeypatch.setattr(
+        outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
+    )
     monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
     return sent
 
@@ -1760,7 +1767,9 @@ def test_join_channel_failure_is_logged_and_does_not_block_startup(
 
 def _stub_outbound_network_calls(monkeypatch):
     monkeypatch.setattr(outbound, "set_presence", lambda status: None)
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
+    monkeypatch.setattr(
+        outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
+    )
     monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
 
 
@@ -1784,12 +1793,12 @@ def test_run_subscribes_to_the_owners_dm_resolved_for_this_run(tmp_path, monkeyp
     assert kwargs == {"reply_to": "dm-evt"}
 
 
-def _run_daemon(tmp_path, llm=None, inbound=None):
+def _run_daemon(tmp_path, llm=None, inbound=None, config=None):
     if llm is None:
         llm = FakeLLM(json_response={"intent": "chit_chat"})
     if inbound is None:
         inbound = FakeInbound([])
-    bot = _daemon(tmp_path, llm, inbound=inbound)
+    bot = _daemon(tmp_path, llm, inbound=inbound, config=config)
 
     asyncio.run(bot.run())
     return bot, inbound
@@ -1838,39 +1847,115 @@ def _stub_common_outbound(monkeypatch, outbound):
     monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
 
 
-def test_sync_display_name_updates_when_different(tmp_path, monkeypatch, capsys):
+def test_sync_identity_profile_updates_name_when_different(
+    tmp_path, monkeypatch, capsys
+):
     _stub_common_outbound(monkeypatch, outbound)
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "old-name")
-    set_calls = []
-    monkeypatch.setattr(outbound, "set_display_name", set_calls.append)
+    monkeypatch.setattr(
+        outbound, "get_own_profile", lambda: {"display_name": "old-name"}
+    )
+    update_calls = []
+    monkeypatch.setattr(
+        outbound, "update_profile", lambda **kwargs: update_calls.append(kwargs)
+    )
 
     _run_daemon(tmp_path)
 
-    assert set_calls == ["swingbird"]
-    assert "updated display name 'old-name' -> 'swingbird'" in capsys.readouterr().out
+    assert update_calls == [{"name": "swingbird"}]
+    assert "updated profile fields: ['name']" in capsys.readouterr().out
 
 
-def test_sync_display_name_skips_when_already_matching(tmp_path, monkeypatch):
+def test_sync_identity_profile_skips_when_already_matching(tmp_path, monkeypatch):
     _stub_common_outbound(monkeypatch, outbound)
-    monkeypatch.setattr(outbound, "get_own_display_name", lambda: "swingbird")
     monkeypatch.setattr(
-        outbound, "set_display_name", lambda name: pytest.fail("should not update")
+        outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
+    )
+    monkeypatch.setattr(
+        outbound,
+        "update_profile",
+        lambda **kwargs: pytest.fail("should not update"),
     )
 
     _run_daemon(tmp_path)
 
 
-def test_sync_display_name_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
+def test_sync_identity_profile_updates_description_when_configured(
+    tmp_path, monkeypatch, capsys
+):
+    _stub_common_outbound(monkeypatch, outbound)
+    monkeypatch.setattr(
+        outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
+    )
+    update_calls = []
+    monkeypatch.setattr(
+        outbound, "update_profile", lambda **kwargs: update_calls.append(kwargs)
+    )
+    config = dataclasses.replace(
+        CONFIG, identity=IdentityConfig(name="swingbird", description="TPM bot")
+    )
+
+    _run_daemon(tmp_path, config=config)
+
+    assert update_calls == [{"about": "TPM bot"}]
+
+
+def test_sync_identity_profile_updates_avatar_when_configured(
+    tmp_path, monkeypatch, capsys
+):
+    _stub_common_outbound(monkeypatch, outbound)
+    monkeypatch.setattr(
+        outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
+    )
+    update_calls = []
+    monkeypatch.setattr(
+        outbound, "update_profile", lambda **kwargs: update_calls.append(kwargs)
+    )
+    avatar = AvatarConfig(style="emoji", emoji="🐦", color="#3399FF")
+    config = dataclasses.replace(
+        CONFIG, identity=IdentityConfig(name="swingbird", avatar=avatar)
+    )
+
+    _run_daemon(tmp_path, config=config)
+
+    assert update_calls == [{"avatar": emoji_avatar_data_url("🐦", "#3399FF")}]
+
+
+def test_sync_identity_profile_skips_avatar_when_already_matching(
+    tmp_path, monkeypatch
+):
+    _stub_common_outbound(monkeypatch, outbound)
+    wanted_avatar = emoji_avatar_data_url("🐦", "#3399FF")
+    monkeypatch.setattr(
+        outbound,
+        "get_own_profile",
+        lambda: {"display_name": "swingbird", "picture": wanted_avatar},
+    )
+    monkeypatch.setattr(
+        outbound,
+        "update_profile",
+        lambda **kwargs: pytest.fail("should not update"),
+    )
+    avatar = AvatarConfig(style="emoji", emoji="🐦", color="#3399FF")
+    config = dataclasses.replace(
+        CONFIG, identity=IdentityConfig(name="swingbird", avatar=avatar)
+    )
+
+    _run_daemon(tmp_path, config=config)
+
+
+def test_sync_identity_profile_failure_is_logged_not_raised(
+    tmp_path, monkeypatch, capsys
+):
     _stub_common_outbound(monkeypatch, outbound)
 
     def _fail():
         raise outbound.RelayError("boom")
 
-    monkeypatch.setattr(outbound, "get_own_display_name", _fail)
+    monkeypatch.setattr(outbound, "get_own_profile", _fail)
 
     _run_daemon(tmp_path)
 
-    assert "failed to sync display name: boom" in capsys.readouterr().out
+    assert "failed to sync identity profile: boom" in capsys.readouterr().out
 
 
 def test_build_daemon_wires_config_llm_and_inbound(tmp_path, monkeypatch):

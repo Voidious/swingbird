@@ -66,6 +66,7 @@ from dataclasses import replace
 
 from swingbird import outbound
 from swingbird.audit import AuditLog
+from swingbird.avatar import emoji_avatar_data_url
 from swingbird.config import Config, load_config
 from swingbird.dispatch_phrasing import rephrase_for_dispatch
 from swingbird.history import (
@@ -196,7 +197,7 @@ class Daemon:
         # still coming up.
         since = int(time.time())
         self._own_pubkey = self._inbound.pubkey
-        self._sync_display_name()
+        self._sync_identity_profile()
         self._join_project_channels()
         # Resolved here rather than in build_daemon() so construction stays
         # side-effect-free; this is the daemon's own DM with the owner,
@@ -242,19 +243,34 @@ class Daemon:
                     f"({channel.id}) -- if it's private, add me to it: {exc}"
                 )
 
-    def _sync_display_name(self) -> None:
+    def _sync_identity_profile(self) -> None:
         # Keeps a fresh identity (or a renamed deployment) from showing up
-        # under a stale/default profile name. Best-effort like presence --
-        # a lookup/update hiccup here is cosmetic and must never block
-        # startup or take the daemon down.
-        wanted = self._config.identity.name
+        # under a stale/default name, bio, or avatar. Best-effort like
+        # presence -- a lookup/update hiccup here is cosmetic and must never
+        # block startup or take the daemon down.
+        identity = self._config.identity
+        wanted_avatar = (
+            emoji_avatar_data_url(identity.avatar.emoji, identity.avatar.color)
+            if identity.avatar is not None
+            else None
+        )
         try:
-            current = outbound.get_own_display_name()
-            if current != wanted:
-                outbound.set_display_name(wanted)
-                print(f"swingbird: updated display name {current!r} -> {wanted!r}")
+            current = outbound.get_own_profile()
+            updates: dict[str, str] = {}
+            if current.get("display_name") != identity.name:
+                updates["name"] = identity.name
+            if (
+                identity.description is not None
+                and current.get("about") != identity.description
+            ):
+                updates["about"] = identity.description
+            if wanted_avatar is not None and current.get("picture") != wanted_avatar:
+                updates["avatar"] = wanted_avatar
+            if updates:
+                outbound.update_profile(**updates)
+                print(f"swingbird: updated profile fields: {sorted(updates)}")
         except outbound.RelayError as exc:
-            print(f"swingbird: failed to sync display name: {exc}")
+            print(f"swingbird: failed to sync identity profile: {exc}")
 
     async def _safe_handle(self, event: dict) -> None:
         try:

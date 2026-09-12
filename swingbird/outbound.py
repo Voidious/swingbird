@@ -92,19 +92,27 @@ def set_presence(status: str) -> None:
     run_buzz_cli(["users", "set-presence", "--status", status])
 
 
-def get_own_display_name() -> str | None:
-    """Return the current identity's Buzz display name, or None if it has
-    never set one (`buzz users get` with no `--pubkey` returns the caller's
-    own profile)."""
+def get_own_profile() -> dict[str, Any]:
+    """Return the current identity's Buzz profile (`display_name`, `about`,
+    `picture`, ...), or `{}` if it has never set one (`buzz users get` with
+    no `--pubkey` returns the caller's own profile)."""
     profiles = run_buzz_cli(["users", "get"])
-    if not profiles:
-        return None
-    return profiles[0].get("display_name")
+    return profiles[0] if profiles else {}
 
 
-def set_display_name(name: str) -> None:
-    """Update the current identity's Buzz display name."""
-    run_buzz_cli(["users", "set-profile", "--name", name])
+def update_profile(
+    *, name: str | None = None, about: str | None = None, avatar: str | None = None
+) -> None:
+    """Update whichever of the current identity's profile fields are given,
+    in one `buzz users set-profile` call."""
+    args = ["users", "set-profile"]
+    if name is not None:
+        args += ["--name", name]
+    if about is not None:
+        args += ["--about", about]
+    if avatar is not None:
+        args += ["--avatar", avatar]
+    run_buzz_cli(args)
 
 
 def send_message(
