@@ -348,7 +348,10 @@ def test_resolve_reference_plural_intent_returns_every_non_primary_item():
 def test_resolve_reference_plural_intent_without_a_channel_signal_still_raises():
     # "other(s)"/"additional"/etc only resolves once the channel is
     # unambiguous -- same "no guessing across channels" rule as the generic
-    # single-item fallback.
+    # single-item fallback. Unlike the single-channel cases above, `items`
+    # here genuinely spans two channels (dripbird and backend), so there's
+    # real ambiguity left even with no explicit channel signal -- this must
+    # still raise rather than guess.
     non_primary_f5 = RecapItem(
         channel="dripbird",
         label="F5",
@@ -400,6 +403,53 @@ def test_resolve_reference_does_not_crash_on_an_item_with_no_keywords():
     resolved = resolve_reference((ITEM_F4, ITEM_BACKEND), "F4")
 
     assert resolved.items == [ITEM_F4]
+
+
+def test_resolve_reference_plural_intent_infers_channel_from_single_channel_items():
+    # Live bug (2026-09-12): after a project-scoped recap ("recap dripbird"),
+    # every stored item already belongs to dripbird -- but "tell me about
+    # the additional items" names no channel, and the router's classifier
+    # only sees this one message, so it has no way to report `channel`
+    # either. Requiring an explicit channel signal before the plural-intent
+    # fallback could run meant this raised "no recap item matches" even
+    # though there was nothing actually ambiguous: everything on the table
+    # was already dripbird's.
+    non_primary_f5 = RecapItem(
+        channel="dripbird",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference((ITEM_F4, non_primary_f5), "the additional items")
+
+    assert resolved.items == [non_primary_f5]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_plural_intent_single_channel_degrades_without_non_primary():
+    # Same single-channel-items inference, but the channel's only item is
+    # the primary one -- "the rest" still resolves (to that one item) rather
+    # than raising, same as the explicit-channel case already covered by
+    # test_resolve_reference_plural_intent_with_no_non_primary_items_falls_back,
+    # just without needing an explicit channel signal to get there.
+    resolved = resolve_reference((ITEM_F4,), "what are the other items")
+
+    assert resolved.items == [ITEM_F4]
+    assert resolved.degraded is True
+
+
+def test_resolve_reference_unmatched_label_still_raises_with_single_channel_items():
+    # Deliberately narrower than the plural-intent case above: a reference
+    # that looks like it's naming a specific item (no plural-intent wording)
+    # but doesn't match anything must still raise, even when the store's
+    # items happen to span only one channel -- inferring the channel from a
+    # single-channel item set is only safe for an explicit "give me the
+    # rest," not for guessing that an unmatched label-like reference must
+    # have meant the store's one channel.
+    with pytest.raises(RecapActionError, match="no recap item matches"):
+        resolve_reference((ITEM_F4,), "tell me about F9")
 
 
 def test_resolve_reference_plural_intent_with_no_non_primary_items_falls_back():

@@ -171,9 +171,19 @@ def resolve_reference(
     router's own classification of the message (`Intent.channel`), which can
     identify the channel even when the leftover reference text doesn't name
     it at all (e.g. "tell me more about the open items" once the router has
-    already resolved which channel "the open items" belongs to). Only when
-    `channel` is `None` does this fall back to searching for a channel name
-    as a substring of `reference` itself.
+    already resolved which channel "the open items" belongs to). When
+    `channel` is `None`, this instead searches for a channel name as a
+    substring of `reference` -- and if that comes up empty too but the
+    reference has plural-intent wording ("the additional items") and every
+    item being matched against already belongs to one channel (true after
+    any project-scoped recap), that one channel is used anyway: the
+    classifier only ever sees the current message, never the fact that the
+    last recap was scoped to one project, so it has no channel to report,
+    but "the rest" of a single-project recap can't mean anything else. This
+    is deliberately narrower than the bare-label case -- a reference that
+    looks like it's naming a specific item (e.g. "F9") but doesn't match
+    still raises below rather than guessing it meant the store's one
+    channel, since only an explicit "give me the rest" implies that.
 
     A channel-qualified reference can still fail the whole-string
     bidirectional test even after narrowing: a bundled multi-option item
@@ -243,6 +253,8 @@ def resolve_reference(
         if not items:
             raise RecapActionError("no items in the last recap")
         return ResolvedReference(list(items), degraded=False)
+    words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
+    plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if channel is not None:
         channels_named = {
             item.channel for item in items if item.channel.lower() == channel.lower()
@@ -251,12 +263,27 @@ def resolve_reference(
         channels_named = {
             item.channel for item in items if item.channel.lower() in normalized
         }
+        if not channels_named and plural_intent:
+            # Neither the reference text nor the router's own classification
+            # names a channel -- but the reference is specifically asking
+            # for "the rest," and if every item being matched against
+            # already belongs to the same one channel (e.g. the last recap
+            # was scoped to one project), there's nothing left to guess:
+            # "the rest" of a single-project recap can only mean that
+            # project. This is deliberately narrower than a bare label
+            # reference (e.g. "F9") with no channel signal, which still
+            # raises below rather than assuming the store's one channel is
+            # what was meant -- an unresolved specific-looking reference
+            # shouldn't silently resolve to a same-channel item it never
+            # named, only an explicit "give me the rest" should.
+            all_channels = {item.channel for item in items}
+            if len(all_channels) == 1:
+                channels_named = all_channels
     candidates = (
         [item for item in items if item.channel in channels_named]
         if len(channels_named) == 1
         else items
     )
-    words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
     match_words = [
         w for w in words if w not in _GENERIC_WORDS and w not in _PLURAL_INTENT_WORDS
     ]
@@ -269,7 +296,6 @@ def resolve_reference(
             _matches_text(keyword, normalized, match_words) for keyword in item.keywords
         )
     ]
-    plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if not matches and len(channels_named) == 1:
         if plural_intent:
             non_primary = [item for item in candidates if not item.is_primary]
