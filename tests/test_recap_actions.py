@@ -162,6 +162,34 @@ def test_resolve_reference_word_fallback_ignores_stopwords():
         resolve_reference((decoy,), "F4 for dripbird")
 
 
+def test_resolve_reference_word_fallback_ignores_generic_words():
+    # Live bug: "the swingbird fix" matched both a disambiguation fix and an
+    # async freeze fix, since both labels end in "...fix" and "fix" isn't a
+    # stopword. Excluding generic words from the word-level fallback should
+    # leave no word match at all, falling through to the channel's primary
+    # item instead of returning both.
+    primary_fix = RecapItem(
+        channel="swingbird",
+        label="recap-follow-up disambiguation fix",
+        summary="s",
+        instruction="i",
+    )
+    other_fix = RecapItem(
+        channel="swingbird",
+        label="async event-loop freeze fix",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (primary_fix, other_fix), "the swingbird fix", channel="swingbird"
+    )
+
+    assert resolved.items == [primary_fix]
+    assert resolved.degraded is False
+
+
 def test_resolve_reference_does_not_crash_on_an_item_with_an_empty_label():
     # An empty label must never reverse-match as a substring of everything
     # -- otherwise every reference would spuriously match an unlabeled item.

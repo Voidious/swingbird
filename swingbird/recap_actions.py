@@ -40,6 +40,28 @@ _ALL_MARKERS = {"", "all", "everything"}
 # just invite coincidental false positives.
 _STOPWORDS = {"for", "the", "a", "an", "in", "on", "of", "to", "with", "about"}
 
+# Generic nouns stripped out the same way as _STOPWORDS, for the same reason
+# -- unlike a connector word, these do carry some meaning, but they're
+# common enough as a label's own final word (almost any recap item can be
+# called a "fix", a "bug", an "issue", etc.) that matching on one alone
+# produces false positives across unrelated items in the same channel
+# (observed live: "the swingbird fix" matched both the disambiguation fix
+# and the async freeze fix, since both labels end in "...fix"). Still
+# usable as part of the full bidirectional substring test above -- only
+# excluded from the single-word fallback, where a false positive is
+# cheapest to cause.
+_GENERIC_WORDS = {
+    "fix",
+    "bug",
+    "issue",
+    "item",
+    "task",
+    "feature",
+    "problem",
+    "update",
+    "change",
+}
+
 # Words that signal "give me the rest", not "give me one specific item" --
 # covers every phrasing the recap's own "N additional/open items" prose uses
 # (see recap.py's _CONCISE_SYSTEM_PROMPT/_DETAILED_SYSTEM_PROMPT) plus the
@@ -148,10 +170,14 @@ def resolve_reference(
     (e.g. one item's label covering a "F4 or F5 or F6" decision) isn't a
     substring of "F4 for dripbird", and "F4 for dripbird" isn't a substring
     of it either -- only the "F4" fragment actually identifies the item. So
-    matching also falls back to individual (non-stopword) words of
-    `reference`: if any single word is itself a substring of the label,
-    that's enough. This can't spuriously match an empty label (no word is a
-    substring of "").
+    matching also falls back to individual (non-stopword, non-generic) words
+    of `reference`: if any single word is itself a substring of the label,
+    that's enough. Words in `_GENERIC_WORDS` ("fix", "bug", "issue", ...) are
+    excluded from this fallback the same way stopwords are -- they're common
+    enough as a label's own last word that matching on one alone produces
+    false positives across unrelated items (e.g. "the swingbird fix" against
+    two items whose labels both end in "...fix"). This can't spuriously
+    match an empty label (no word is a substring of "").
 
     Each of an item's `keywords` (see `recap.py`'s `_ITEMS_INSTRUCTIONS`) is
     checked with this exact same three-way test, independently of `label` --
@@ -213,7 +239,11 @@ def resolve_reference(
         if len(channels_named) == 1
         else items
     )
-    words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
+    words = [
+        w
+        for w in normalized.split()
+        if len(w) > 1 and w not in _STOPWORDS and w not in _GENERIC_WORDS
+    ]
     matches = [
         item
         for item in candidates
