@@ -302,6 +302,47 @@ def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
     assert stored[0].label == "F4"
 
 
+def test_recap_logs_every_extracted_item(tmp_path, monkeypatch):
+    from swingbird import recap
+
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap"},
+            {
+                "text": "here's the recap",
+                "items": [
+                    {
+                        "channel": "backend",
+                        "label": "F4",
+                        "summary": "unused-ignore propagation",
+                        "instruction": "Fix the deterministic directive trip-check.",
+                    },
+                    {
+                        "channel": "backend",
+                        "label": "F5",
+                        "summary": "flaky retry test",
+                        "instruction": "Stabilize the retry test.",
+                        "is_primary": False,
+                    },
+                ],
+            },
+        ]
+    )
+    bot = _daemon(tmp_path, llm)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    records = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    (recap_built,) = [r for r in records if r["kind"] == "recap_built"]
+    assert recap_built["thread_id"] == "dm-chan"
+    assert [item["label"] for item in recap_built["items"]] == ["F4", "F5"]
+    assert recap_built["items"][1]["is_primary"] is False
+
+
 def test_process_tells_the_router_no_recap_is_open_when_none_is_stored(
     tmp_path, monkeypatch
 ):

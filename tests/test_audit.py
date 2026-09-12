@@ -90,6 +90,50 @@ def test_log_recap_reference_writes_item_fields(tmp_path):
     assert record["source_event_id"] is None
 
 
+def test_log_recap_built_writes_every_item(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    other_item = RecapItem(
+        channel="dripbird",
+        label="F6",
+        summary="lint residue",
+        instruction="Fix the F6 lint residue.",
+        is_primary=False,
+        source_event_id="evt-9",
+        keywords=("lint", "F6"),
+    )
+
+    AuditLog(path).log_recap_built("thread-1", (RECAP_ITEM, other_item))
+
+    (record,) = _read_records(path)
+    assert record["kind"] == "recap_built"
+    assert record["thread_id"] == "thread-1"
+    assert record["items"] == [
+        {
+            "channel": "dripbird",
+            "label": "F4",
+            "keywords": [],
+            "is_primary": True,
+            "source_event_id": None,
+        },
+        {
+            "channel": "dripbird",
+            "label": "F6",
+            "keywords": ["lint", "F6"],
+            "is_primary": False,
+            "source_event_id": "evt-9",
+        },
+    ]
+
+
+def test_log_recap_built_with_no_items_writes_an_empty_list(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_recap_built("thread-1", ())
+
+    (record,) = _read_records(path)
+    assert record["items"] == []
+
+
 def test_appends_records_across_calls(tmp_path):
     path = tmp_path / "audit.jsonl"
     audit = AuditLog(path)

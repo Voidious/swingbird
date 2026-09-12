@@ -425,6 +425,7 @@ class Daemon:
                 channel_names=channel_names,
                 detail=intent.detail,
             )
+            self._audit.log_recap_built(thread_id, built_recap.items)
             self._recap_store.set(thread_id, built_recap.items)
             # A fresh recap replaces this thread's items outright (see
             # RecapActionStore.set) -- any open disambiguation referred to

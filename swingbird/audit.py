@@ -49,6 +49,27 @@ class AuditLog:
             source_event_id=item.source_event_id,
         )
 
+    def log_recap_built(self, thread_id: str, items: tuple[Any, ...]) -> None:
+        """Records every `RecapItem` a recap extracted, not just the ones a
+        later reference happens to resolve to -- `RecapActionStore` only
+        keeps them in memory, gone once the next recap replaces them, so
+        this is the only record of what a given `resolve_reference` call
+        (see `log_recap_reference`) was actually matching against."""
+        self._write(
+            "recap_built",
+            thread_id,
+            items=[
+                {
+                    "channel": item.channel,
+                    "label": item.label,
+                    "keywords": list(item.keywords),
+                    "is_primary": item.is_primary,
+                    "source_event_id": item.source_event_id,
+                }
+                for item in items
+            ],
+        )
+
     def log_decision(
         self,
         thread_id: str | None,
