@@ -595,6 +595,25 @@ _LLM_COUNT_NOTE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A whole standalone paragraph the LLM sometimes narrates as a full sentence
+# instead of the parenthetical `_LLM_COUNT_NOTE_RE` shape -- observed live
+# right after a detailed recap's own deterministic "**channel -- N
+# additional open items:** ..." paragraph: "There are 7 more open items for
+# swingbird." (with a count that didn't even match our real one) and "There
+# are 8 additional open swingbird items beyond the three described above."
+# Since it's declarative prose, not a trailing parenthetical tacked onto an
+# item's own paragraph, `_LLM_COUNT_NOTE_RE` (anchored on a `(...)` at the
+# end of a paragraph) never matches it -- it needs its own pattern, matched
+# against a whole paragraph rather than stripped from the end of one, and
+# dropped outright the same way a stray bare "**channel**:" prefix is (see
+# `stray_bare_prefixes` below) since there's no other content in the
+# paragraph worth keeping.
+_LLM_COUNT_SENTENCE_RE = re.compile(
+    r"there\s+(?:is|are)\s+(?:(?:\+?\d+|no|zero)\s+)?(?:more|additional|"
+    r"other|remaining)\s+(?:open\s+)?(?:\S+\s+)?items?\b.*",
+    re.IGNORECASE,
+)
+
 
 def _item_paragraph_prefix(channel: str, label: str, detail: str) -> str:
     """Return the bold Markdown prefix that starts an item's own paragraph
@@ -686,6 +705,16 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
     right paragraph; one that doesn't start that way (the LLM ignoring the
     format guard) is silently left without a note rather than guessing
     which paragraph it meant.
+
+    Observed live: the LLM also sometimes narrates the count as a whole
+    extra sentence-paragraph on its own -- "There are 7 more open items for
+    swingbird." right after our own correct fold-note paragraph, with a
+    count that didn't even agree with ours. `_LLM_COUNT_NOTE_RE` only
+    matches a trailing `(...)` on an existing paragraph, not a freestanding
+    sentence, so `_LLM_COUNT_SENTENCE_RE` checks each paragraph as a whole
+    and drops it outright when it's nothing but this narration -- same
+    "stray paragraph, no other content worth keeping" treatment as the bare
+    "**channel**:" case above.
     """
     additional: dict[str, list[str]] = {}
     for item in items:
@@ -701,6 +730,9 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
         if cleaned != paragraph:
             changed = True
         if cleaned.strip() in stray_bare_prefixes:
+            changed = True
+            continue
+        if _LLM_COUNT_SENTENCE_RE.fullmatch(cleaned.strip()):
             changed = True
             continue
         extra_paragraph = None
