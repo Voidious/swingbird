@@ -93,8 +93,8 @@ just the ones that differ from `swingbird.toml`.
 
 ```toml
 [llm]
-provider = "moonshot"
-model = "kimi-k2.6"
+provider = "openai"
+model = "gpt-5.6-luna"
 
 [relay]
 url = "wss://relay.example.com"
@@ -108,7 +108,7 @@ name = "<your Buzz display name>"
 name = "swingbird"
 
 [dispatch]
-reply_wait_seconds = 90
+reply_wait_seconds = 180
 
 [[channels]]
 id = "<Buzz channel UUID>"
@@ -130,7 +130,7 @@ agents = ["Sonnet"]
 - **`[identity]`** -- swingbird's own Buzz display name. Synced on startup whenever the identity's
   current profile name doesn't match, so a fresh identity or a renamed deployment always shows up
   under a name you'll recognize.
-- **`[dispatch]`** -- optional. `reply_wait_seconds` (default `90`) is how long swingbird waits
+- **`[dispatch]`** -- optional. `reply_wait_seconds` (default `180`) is how long swingbird waits
   for a reply to a relayed instruction before giving up on summarizing it back to you. Keep this
   short if you might ever run swingbird as a voice assistant -- a reply arriving minutes later,
   out of nowhere, would be a jarring surprise.
@@ -142,7 +142,7 @@ agents = ["Sonnet"]
   per channel to fill that window -- a single `buzz messages get` call maxes out at 200 messages
   regardless of the `--limit` requested, so swingbird pages backwards with `--before` as needed,
   and this is the safety valve stopping that from running away on an unusually chatty channel.
-  `max_detailed_items` (default `4`) caps how many of a project's open items a detailed recap
+  `max_detailed_items` (default `3`) caps how many of a project's open items a detailed recap
   narrates before folding the rest into a count, the same way a concise recap always folds
   everything past its one leading item.
 - **`[[channels]]`** -- one entry per project. `id` is the Buzz channel UUID; `name` is what
@@ -205,7 +205,7 @@ command.
 
 | You say | swingbird does |
 | --- | --- |
-| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 4) items per project, each with a few sentences of extra detail, plus a count of anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
+| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 3) items per project, each with a few sentences of extra detail, plus a count of anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |

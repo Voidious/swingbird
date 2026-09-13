@@ -100,7 +100,7 @@ class IdentityConfig:
     avatar: AvatarConfig | None = None
 
 
-DEFAULT_REPLY_WAIT_SECONDS = 90
+DEFAULT_REPLY_WAIT_SECONDS = 180
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ class DispatchConfig:
 
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_MAX_MESSAGES_PER_CHANNEL = 1000
-DEFAULT_MAX_DETAILED_ITEMS = 4
+DEFAULT_MAX_DETAILED_ITEMS = 3
 
 
 @dataclass(frozen=True)

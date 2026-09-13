@@ -1,8 +1,8 @@
 [llm]
-provider = "moonshot"
-model = "kimi-k2.6"
-# provider = "openai"
-# model = "gpt-5.6-luna"
+provider = "openai"
+model = "gpt-5.6-luna"
+# provider = "moonshot"
+# model = "kimi-k2.6"
 # Optional overrides, e.g. for a provider not in swingbird's built-in list
 # (moonshot, openai) or a self-hosted OpenAI-compatible endpoint:
 # base_url = "https://api.example.com/v1"
@@ -33,11 +33,11 @@ name = "swingbird"
 # color = "#3399FF"
 
 # Optional. How long (seconds) to wait for a reply to a relayed instruction
-# before giving up on summarizing it back to you. Defaults to 90 if omitted.
+# before giving up on summarizing it back to you. Defaults to 180 if omitted.
 # Keep this short if you might ever run swingbird as a voice assistant --
 # a reply arriving minutes later, out of nowhere, would be startling.
 # [dispatch]
-# reply_wait_seconds = 90
+# reply_wait_seconds = 180
 
 # Optional. A project channel is dropped from a "recap everything" request
 # once it has no messages within this many days -- naming a channel
@@ -49,11 +49,11 @@ name = "swingbird"
 # --limit, so a chatty channel needs multiple paged calls); defaults to
 # 1000 if omitted. max_detailed_items caps how many open items a "detailed
 # recap" narrates per project before folding the rest into a count;
-# defaults to 4 if omitted.
+# defaults to 3 if omitted.
 # [recap]
 # stale_after_days = 30
 # max_messages_per_channel = 1000
-# max_detailed_items = 4
+# max_detailed_items = 3
 
 # Define your own projects below -- each [[channels]] block is one project.
 # `name` is the project name you'll say in conversation ("recap swingbird",

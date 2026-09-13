@@ -46,7 +46,7 @@ def test_load_valid_config(tmp_path):
     assert channel.name == "swingbird-dev"
     assert channel.write is True
     assert channel.agents == ("Sonnet",)
-    assert config.dispatch.reply_wait_seconds == 90
+    assert config.dispatch.reply_wait_seconds == 180
     assert config.identity.name == "swingbird"
     assert config.recap.stale_after_days == 30
     assert channel.goal is None
@@ -638,7 +638,7 @@ def test_recap_max_messages_per_channel_rejects_invalid_values(tmp_path, value):
 def test_recap_max_detailed_items_defaults(tmp_path):
     config = load_config(write(tmp_path, VALID))
 
-    assert config.recap.max_detailed_items == 4
+    assert config.recap.max_detailed_items == 3
 
 
 def test_recap_max_detailed_items_is_configurable(tmp_path):
