@@ -99,47 +99,77 @@ _DETAILED_FORMAT_GUARD = (
     "recap does. Never merge multiple channels' content together either."
 )
 
-_ITEMS_INSTRUCTIONS = """
+# Two-phase in a single call: extraction first, prose second. An earlier
+# version of this prompt asked for "text" and "items" as siblings with
+# "text" listed (and, by the JSON shape's own field order, generated) first
+# -- observed live to make source_id citation unreliable, especially for a
+# channel's second/third item and for a global recap's later channels,
+# since by the time the model reached "items" it had already composed the
+# full narrative from its own read of the transcript and was now writing
+# citations for content it had already settled, rather than the reverse.
+# Reordering only the JSON *shape* to put "source_id" before the
+# descriptive fields within one item (an earlier fix) helped but didn't
+# close the gap, because the deeper problem was the *outer* order: "text"
+# fully formed before "items" ever started. This version asks for "items"
+# -- fully grounded, source_id first within each -- before "text", and
+# tells "text" to narrate what "items" already extracted rather than
+# re-deriving it from the transcript independently. That's the same
+# "ground the citation before describing it" principle _ITEM_EXTRACTION_
+# INSTRUCTIONS already applies per-item, just applied once more to the
+# call as a whole, without a second LLM round trip (see this module's own
+# docstring for why one call does both jobs).
+_ITEM_EXTRACTION_INSTRUCTIONS = """
 
-Each transcript message is tagged with a short id like "m3" (e.g. "[m3]
-[<timestamp>] some message"). For every item you extract, work message-
-first: find the one transcript message that most directly states or
-requests that item's next step, note its tag, and only then write the
-item's other fields to describe what that specific message actually says.
-Never write an item's label/summary/instruction first and go looking for a
-citation afterward -- pick the grounding message before you describe it.
-Apply this same message-first process to every item you list for a
-channel, not just the first (primary) one -- a channel with several open
-items needs its second, third, and later items grounded exactly as
-carefully as its first, not skimmed through faster. Respond with JSON
-only, matching this shape:
-{"text": "<the recap text described above>", "items": [{"channel":
-"<the channel name from a \\"## <name>\\" transcript heading>", "source_id":
-"<the tag (e.g. \\"m3\\") of the single transcript message you identified
-first, that most directly states this item's instruction -- omit or use an
-empty string only if you genuinely cannot find one specific message that
-states it, which should be rare>", "label": "<a short identifier the user
-could refer to later -- reuse an id like \\"F4\\" if the transcript already
-uses one, otherwise a few words naming the item>", "summary": "<one clause
+Before writing "text" (described above), extract every channel's current
+open/actionable item(s) into "items". Each transcript message is tagged
+with a short id like "m3" (e.g. "[m3] [<timestamp>] some message"). For
+every item, work message-first: find the one transcript message that most
+directly states or requests that item's next step, note its tag, and only
+then write the item's other fields to describe what that specific message
+actually says. Never write an item's label/summary/instruction first and
+go looking for a citation afterward -- pick the grounding message before
+you describe it. Apply this same message-first process to every item you
+list for a channel, not just the first (primary) one -- a channel with
+several open items needs its second, third, and later items grounded
+exactly as carefully as its first, not skimmed through faster. Extract
+every item this way, for every channel, before you write any part of
+"text" -- "text" only narrates what you've already grounded here, so
+nothing about it should be decided first.
+
+Give each item in "items" this shape: {"channel": "<the channel name from
+a \\"## <name>\\" transcript heading>", "source_id": "<the tag (e.g.
+\\"m3\\") of the single transcript message you identified first, that most
+directly states this item's instruction -- omit or use an empty string
+only if you genuinely cannot find one specific message that states it,
+which should be rare>", "label": "<a short identifier the user could refer
+to later -- reuse an id like \\"F4\\" if the transcript already uses one,
+otherwise a few words naming the item>", "summary": "<one clause
 describing the item>", "instruction": "<the actual next step or
 recommendation, preserved as closely to the transcript's own wording as
 possible -- extract it, don't paraphrase or invent it>", "keywords":
 ["<2-4 short alternate phrases someone might later use to refer to this
 item -- synonyms, a category, or a plainer description of this same item's
 own label/summary/instruction, not new claims about the work; may be
-empty>"]}]}
+empty>"]}
 
 Include every currently open/actionable item for each channel, not just one
--- list the same leading item "text" already narrates for that channel
-first, then any other open items for that channel afterward, in whatever
-order they matter most. Omit a channel from "items" entirely if it has no
-open/actionable item (e.g. it said "no open item"). Never fabricate an item,
-a label, an instruction, or a "source_id" that isn't grounded in the
-transcript -- every item is grounded independently, exactly like the single
-leading item was before. "keywords" is the one exception: it doesn't need to
-be grounded in the transcript's own wording -- ground it in the item's own
-label/summary/instruction instead, listing other natural ways someone might
-refer to that same item later."""
+-- list the item "text" will narrate first for that channel, then any
+other open items for that channel afterward, in whatever order they matter
+most. Omit a channel from "items" entirely if it has no open/actionable
+item (e.g. it said "no open item"). Never fabricate an item, a label, an
+instruction, or a "source_id" that isn't grounded in the transcript --
+every item is grounded independently. "keywords" is the one exception: it
+doesn't need to be grounded in the transcript's own wording -- ground it in
+the item's own label/summary/instruction instead, listing other natural
+ways someone might refer to that same item later.
+
+Once "items" is fully extracted, write "text" as described above, using
+the item(s) you already grounded there as its source instead of
+re-deriving them from the transcript a second time. Respond with JSON
+only, matching this shape -- "items" before "text", since that's the order
+you should actually produce them in, not just how the response is shaped:
+{"items": [<one object per item, in the shape given above>], "text": "<the
+recap text described above>"}"""
 
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
 each project channel, give at most one most-recent, immediately-\
@@ -153,7 +183,7 @@ item, say so briefly, and if a goal is given for it, add one short \
 sentence naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
-transcript.{_ITEMS_INSTRUCTIONS}"""
+transcript.{_ITEM_EXTRACTION_INSTRUCTIONS}"""
 
 
 def _detailed_system_prompt(max_items: int) -> str:
@@ -188,7 +218,7 @@ briefly, and if a goal is given for it, add one short sentence naming \
 that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_DETAILED_FORMAT_GUARD} \
 Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
-not a transcript.{_ITEMS_INSTRUCTIONS}"""
+not a transcript.{_ITEM_EXTRACTION_INSTRUCTIONS}"""
 
 
 class RecapError(Exception):
@@ -225,7 +255,7 @@ class RecapItem:
     conditions -- nothing single message grounds the item; never guessed.
 
     `keywords` are alternate phrases the LLM thought of at extraction time
-    for referring to this same item later (see `_ITEMS_INSTRUCTIONS`) --
+    for referring to this same item later (see `_ITEM_EXTRACTION_INSTRUCTIONS`) --
     unlike every other field here, they're deliberately *not* required to be
     grounded in the transcript's literal wording, since their whole job is
     covering synonyms/categories the transcript never used. `resolve_
@@ -317,7 +347,7 @@ def _parse_recap(
             continue
         channel = item.get("channel", "")
         # The LLM lists a channel's items in priority order (see
-        # _ITEMS_INSTRUCTIONS) -- the first max_items_per_channel seen for a
+        # _ITEM_EXTRACTION_INSTRUCTIONS) -- the first max_items_per_channel seen for a
         # channel are the ones "text" itself narrates, everything after is
         # one of the "additional" items (see RecapItem.is_primary).
         channel_counts[channel] = channel_counts.get(channel, 0) + 1
@@ -495,7 +525,7 @@ def _append_source_links(
     unconditionally since it only ever elaborates on already-selected items.
 
     Only ever a primary item -- those are the only ones `text` actually
-    narrates (see `_ITEMS_INSTRUCTIONS`); a non-primary item is just
+    narrates (see `_ITEM_EXTRACTION_INSTRUCTIONS`); a non-primary item is just
     counted by `_append_item_counts`, never described, so there's no
     content of its own for a link to attach to.
 
@@ -556,7 +586,7 @@ def _build_transcript(
 
     Each message is tagged with a short per-channel local id ("m1", "m2",
     ...) rather than its real (64-char) event id -- cheap for the LLM to
-    copy back verbatim in `source_id` (see `_ITEMS_INSTRUCTIONS`) without
+    copy back verbatim in `source_id` (see `_ITEM_EXTRACTION_INSTRUCTIONS`) without
     risking a garbled hex string. Both maps only get an entry for messages
     that actually carry an `"id"` -- real `buzz messages get` events always
     do; this just means a message without one can't be cited as a source,
