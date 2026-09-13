@@ -123,6 +123,26 @@ _DETAILED_FORMAT_GUARD = (
 # "ground the citation before describing it" principle applied once more to
 # the call as a whole, without a second LLM round trip (see this module's
 # own docstring for why one call does both jobs).
+#
+# Capless extraction fixed one over-counting bug but exposed another:
+# observed live on this very channel's own recap, a detailed recap named 18
+# distinct "items" for a single project, but several of those names --
+# e.g. "Message-ID reliability" / "Merge recap follow-up fixes" / "Improve
+# source-message citations for recap items" -- were the same underlying
+# branch restated across this channel's own status updates as work on it
+# progressed (proposed, then implemented, then tested, then ready to
+# merge). Each restatement independently satisfied "an open/actionable
+# item," so extraction correctly found many messages but incorrectly
+# treated each message as its own item, rather than recognizing several of
+# them as later updates on the same open thread of work. The dedup
+# paragraph below asks the model to fold those together *before* deciding
+# how many entries a channel gets, using its current status rather than
+# picking one restatement arbitrarily -- the same "don't reconstruct an
+# earlier status once a later message updates it" principle _RESOLUTION_
+# GUARD already applies to a single item's own status, extended here to
+# recognizing *that two messages are about the same item* in the first
+# place, which has to happen before _RESOLUTION_GUARD's rule can even
+# apply.
 _ITEM_EXTRACTION_INSTRUCTIONS = """
 
 Extract every channel's current open/actionable item(s) into "items" --
@@ -154,6 +174,22 @@ possible -- extract it, don't paraphrase or invent it>", "keywords":
 item -- synonyms, a category, or a plainer description of this same item's
 own label/summary/instruction, not new claims about the work; may be
 empty>"]}
+
+Before deciding how many entries a channel gets, check whether two or
+more candidate items are actually the same underlying piece of work --
+the same PR, branch, commit, or feature -- rather than genuinely separate
+open items, even when different messages phrase it differently, name it
+differently, or catch it at a different stage of its own progress (e.g.
+proposed, then committed, then merged, then integrated). A channel's own
+history often restates the same open thread of work several times as
+work on it advances; that is one item, not a new one each time it's
+mentioned again. Fold every restatement of the same underlying work into
+a single entry, grounded (via the message-first rule above) in whichever
+one message states that work's most current status and next step, not
+whichever message happens to be easiest to cite or most recent in the
+transcript. Only give separate entries to genuinely separate pieces of
+open work -- distinct PRs, branches, or features -- never split one
+because it was discussed more than once.
 
 Include every currently open/actionable item for each channel, however
 many that is -- list the item you'll narrate first for that channel (the
