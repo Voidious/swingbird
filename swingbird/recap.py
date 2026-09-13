@@ -99,42 +99,45 @@ _DETAILED_FORMAT_GUARD = (
     "recap does. Never merge multiple channels' content together either."
 )
 
-# Two-phase in a single call: extraction first, prose second. An earlier
-# version of this prompt asked for "text" and "items" as siblings with
-# "text" listed (and, by the JSON shape's own field order, generated) first
-# -- observed live to make source_id citation unreliable, especially for a
-# channel's second/third item and for a global recap's later channels,
-# since by the time the model reached "items" it had already composed the
-# full narrative from its own read of the transcript and was now writing
-# citations for content it had already settled, rather than the reverse.
-# Reordering only the JSON *shape* to put "source_id" before the
-# descriptive fields within one item (an earlier fix) helped but didn't
-# close the gap, because the deeper problem was the *outer* order: "text"
-# fully formed before "items" ever started. This version asks for "items"
-# -- fully grounded, source_id first within each -- before "text", and
-# tells "text" to narrate what "items" already extracted rather than
-# re-deriving it from the transcript independently. That's the same
-# "ground the citation before describing it" principle _ITEM_EXTRACTION_
-# INSTRUCTIONS already applies per-item, just applied once more to the
-# call as a whole, without a second LLM round trip (see this module's own
-# docstring for why one call does both jobs).
+# Two-phase in a single call: extraction first, prose second, and -- as of
+# this version -- extraction is fully described and *capless* before any
+# per-channel display limit is mentioned anywhere in the prompt. An earlier
+# version put "text"'s own "give up to N items" framing in the prompt's
+# opening sentence and only appended _ITEM_EXTRACTION_INSTRUCTIONS (with its
+# own "include every item, not just one") afterward. Observed live
+# (`max_detailed_items` set to 1, a channel with several genuinely open
+# items): the model treated "up to N" as the task's overall scope rather
+# than a "text"-only limit, so "items" itself came back capped at N too,
+# indistinguishable from there being no more open items at all -- silently
+# breaking the "N additional open items" fold (`_append_item_counts`), which
+# depends on "items" listing everything, and `recap_actions.py`'s "what are
+# the other items" lookup, which depends on the same thing. Reordering only
+# the JSON *shape* to put "source_id" before the descriptive fields within
+# one item (a still-earlier fix) helped source citation the same way for the
+# same reason, but didn't close this gap, because the deeper problem was
+# again the *outer* order: whichever instruction the model reads as framing
+# the whole task first is the one whose limit it applies everywhere, not
+# just where that instruction actually says. This version puts capless
+# extraction first, with the per-channel display limit introduced afterward
+# and stated explicitly as bounding only "text", never "items" -- the same
+# "ground the citation before describing it" principle applied once more to
+# the call as a whole, without a second LLM round trip (see this module's
+# own docstring for why one call does both jobs).
 _ITEM_EXTRACTION_INSTRUCTIONS = """
 
-Before writing "text" (described above), extract every channel's current
-open/actionable item(s) into "items". Each transcript message is tagged
-with a short id like "m3" (e.g. "[m3] [<timestamp>] some message"). For
-every item, work message-first: find the one transcript message that most
-directly states or requests that item's next step, note its tag, and only
-then write the item's other fields to describe what that specific message
-actually says. Never write an item's label/summary/instruction first and
-go looking for a citation afterward -- pick the grounding message before
-you describe it. Apply this same message-first process to every item you
-list for a channel, not just the first (primary) one -- a channel with
-several open items needs its second, third, and later items grounded
-exactly as carefully as its first, not skimmed through faster. Extract
-every item this way, for every channel, before you write any part of
-"text" -- "text" only narrates what you've already grounded here, so
-nothing about it should be decided first.
+Extract every channel's current open/actionable item(s) into "items" --
+every one of them, with no cap on how many -- before writing anything
+else. Each transcript message is tagged with a short id like "m3" (e.g.
+"[m3] [<timestamp>] some message"). For every item, work message-first:
+find the one transcript message that most directly states or requests
+that item's next step, note its tag, and only then write the item's other
+fields to describe what that specific message actually says. Never write
+an item's label/summary/instruction first and go looking for a citation
+afterward -- pick the grounding message before you describe it. Apply
+this same message-first process to every item you list for a channel, not
+just the first (primary) one -- a channel with several open items needs
+its second, third, and later items grounded exactly as carefully as its
+first, not skimmed through faster.
 
 Give each item in "items" this shape: {"channel": "<the channel name from
 a \\"## <name>\\" transcript heading>", "source_id": "<the tag (e.g.
@@ -152,38 +155,52 @@ item -- synonyms, a category, or a plainer description of this same item's
 own label/summary/instruction, not new claims about the work; may be
 empty>"]}
 
-Include every currently open/actionable item for each channel, not just one
--- list the item "text" will narrate first for that channel, then any
-other open items for that channel afterward, in whatever order they matter
-most. Omit a channel from "items" entirely if it has no open/actionable
+Include every currently open/actionable item for each channel, however
+many that is -- list the item you'll narrate first for that channel (the
+instructions below explain how many of them "text" actually narrates,
+which is a separate question from how many belong here), then any other
+open items for that channel afterward, in whatever order they matter
+most. Nothing below -- including any limit on how many items "text"
+describes -- ever shrinks this list: a channel with ten open items still
+gets ten entries in "items" even when "text" only narrates its first one
+or two. Omit a channel from "items" entirely if it has no open/actionable
 item (e.g. it said "no open item"). Never fabricate an item, a label, an
 instruction, or a "source_id" that isn't grounded in the transcript --
 every item is grounded independently. "keywords" is the one exception: it
 doesn't need to be grounded in the transcript's own wording -- ground it in
 the item's own label/summary/instruction instead, listing other natural
-ways someone might refer to that same item later.
+ways someone might refer to that same item later."""
 
-Once "items" is fully extracted, write "text" as described above, using
-the item(s) you already grounded there as its source instead of
+# Placed after both "items" and "text" are fully described, so "described
+# above" always means what it says regardless of which recap mode built the
+# rest of the prompt (see _ITEM_EXTRACTION_INSTRUCTIONS's own comment for
+# why that ordering matters).
+_RESPONSE_SHAPE_INSTRUCTIONS = """
+
+Ground "text" in the "items" you already extracted above, instead of
 re-deriving them from the transcript a second time. Respond with JSON
 only, matching this shape -- "items" before "text", since that's the order
 you should actually produce them in, not just how the response is shaped:
 {"items": [<one object per item, in the shape given above>], "text": "<the
 recap text described above>"}"""
 
-_CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant. For \
-each project channel, give at most one most-recent, immediately-\
-actionable item: current status in one clause, then a proposed next \
-step, distilled into a single decision where possible -- 1-2 sentences, \
-phrased as status then next step. Describe only that one leading item -- \
-if the channel has other open items, don't mention them or fold their \
-content into this paragraph; a count of how many more there are is \
+_CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant.\
+{_ITEM_EXTRACTION_INSTRUCTIONS}
+
+For each project channel, narrate in "text" only its one most-recent, \
+immediately-actionable item: current status in one clause, then a \
+proposed next step, distilled into a single decision where possible -- \
+1-2 sentences, phrased as status then next step. This limits only what \
+"text" describes, never how many items belong in "items" above -- \
+describe only that one leading item here -- if the channel has other \
+open items (already captured in "items"), don't mention them or fold \
+their content into this paragraph; a count of how many more there are is \
 appended separately, not narrated by you. If a channel has no open \
 item, say so briefly, and if a goal is given for it, add one short \
 sentence naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
-transcript.{_ITEM_EXTRACTION_INSTRUCTIONS}"""
+transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
 
 def _detailed_system_prompt(max_items: int) -> str:
@@ -201,24 +218,32 @@ def _detailed_system_prompt(max_items: int) -> str:
     needing its own paragraph -- see that constant.
     A function instead of a module-level constant only because `max_items`
     is configurable and has to reach the LLM's own instructions, not just
-    `_parse_recap`'s bookkeeping.
+    `_parse_recap`'s bookkeeping. `max_items` only ever bounds the "text"
+    paragraph below -- see _ITEM_EXTRACTION_INSTRUCTIONS's own comment for
+    why it's never mentioned any earlier in this prompt, where extraction
+    is described.
     """
-    return f"""You are a TPM agent's recap assistant. For each project \
-channel, give up to {max_items} of its most-recent, immediately-\
-actionable items, in priority order: for each, current status in one \
-clause, then a proposed next step -- 2-4 sentences per item, phrased as \
-status then next step, with more concrete detail than a one-line summary \
-(what was tried, why, what's blocking it, relevant numbers or file/\
-function names, when the transcript has them). Describe only those \
-leading items (up to {max_items} per channel) -- if the channel has more \
-open items beyond that, don't mention them or fold their content into \
-another item's paragraph; a count of how many more there are is appended \
-separately, not narrated by you. If a channel has no open item, say so \
-briefly, and if a goal is given for it, add one short sentence naming \
-that goal as what's next for the project. \
+    return f"""You are a TPM agent's recap assistant.\
+{_ITEM_EXTRACTION_INSTRUCTIONS}
+
+For each project channel, narrate in "text" up to {max_items} of its \
+most-recent, immediately-actionable items, in the priority order you \
+already extracted them in above: for each, current status in one clause, \
+then a proposed next step -- 2-4 sentences per item, phrased as status \
+then next step, with more concrete detail than a one-line summary (what \
+was tried, why, what's blocking it, relevant numbers or file/function \
+names, when the transcript has them). This {max_items} cap limits only \
+how many items "text" describes, never how many belong in "items" above \
+-- a channel can have far more than {max_items} entries there; describe \
+only the leading {max_items} of them here -- if the channel has more open \
+items beyond that, don't mention them in "text" or fold their content \
+into another item's paragraph; a count of how many more there are is \
+appended separately, not narrated by you. If a channel has no open item, \
+say so briefly, and if a goal is given for it, add one short sentence \
+naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_DETAILED_FORMAT_GUARD} \
 Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
-not a transcript.{_ITEM_EXTRACTION_INSTRUCTIONS}"""
+not a transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
 
 # Fired only for items the main extraction call already tried and failed to
