@@ -581,9 +581,10 @@ def _item_paragraph_prefix(channel: str, label: str, detail: str) -> str:
 
 def _last_primary_by_channel(items: tuple[RecapItem, ...]) -> dict[str, RecapItem]:
     """Return the last (highest-priority-order) primary item per channel --
-    the item whose own paragraph a detailed recap's "(N additional open
-    items)" note belongs after, since that's the last paragraph shown for
-    that channel before the fold (see `_append_item_counts`)."""
+    the item whose own paragraph a detailed recap's additional-items note
+    (`_additional_items_paragraph`) immediately follows, since that's the
+    last paragraph shown for that channel before the fold
+    (see `_append_item_counts`)."""
     last: dict[str, RecapItem] = {}
     for item in items:
         if item.is_primary:
@@ -591,25 +592,49 @@ def _last_primary_by_channel(items: tuple[RecapItem, ...]) -> dict[str, RecapIte
     return last
 
 
-def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) -> str:
-    """Append a deterministic "(N additional open items)" note to `text`,
-    computed from the real non-primary item count in `items` rather than
-    left to the LLM's own prose judgment.
+def _additional_items_paragraph(channel: str, labels: list[str]) -> str:
+    """Build the standalone paragraph a detailed recap's fold note renders
+    as, e.g. "**backend -- 2 additional open items:** F6, F7".
 
-    The LLM was previously asked to narrate this count itself (see
+    A concise recap's fold note stays a short inline "(N additional open
+    items.)", since concise is explicitly the terse mode -- but a detailed
+    recap already gives each shown item its own paragraph and names it by
+    label, so folding several unnamed items into the tail of the last
+    paragraph's own sentence was hard to notice at a glance and gave no way
+    to identify them. This mirrors that same "**channel -- label:**" prefix
+    shape (`_DETAILED_FORMAT_GUARD`) so the note reads as one more entry in
+    the same followable list, and names each folded item the same way
+    `resolve_reference` (`recap_actions.py`) already matches a later
+    "tell me more about F6" against -- an unlabeled placeholder is used only
+    for the rare item the LLM left without one, never fabricated.
+    """
+    noun = "item" if len(labels) == 1 else "items"
+    names = ", ".join(label or "(unlabeled)" for label in labels)
+    return f"**{channel} -- {len(labels)} additional open {noun}:** {names}"
+
+
+def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) -> str:
+    """Append a deterministic additional-items note to `text`, computed from
+    the real non-primary items in `items` rather than left to the LLM's own
+    prose judgment.
+
+    The LLM was previously asked to narrate this itself (see
     _CONCISE_SYSTEM_PROMPT's history), but proved unreliable in practice --
     it would fold another item's content into the leading paragraph instead
     of counting it, or drop the mention entirely, while the grounded
     `items` list was correct the whole time. Called for both "concise" and
-    "detailed" recaps (see `build_recap`): a concise recap shows exactly one
-    item per channel, so the note lands on that channel's one paragraph
-    (`**channel**:`); a detailed one shows up to `config.recap.
+    "detailed" recaps (see `build_recap`), but rendered differently: a
+    concise recap shows exactly one item per channel, so a short "(N
+    additional open items.)" is appended inline to that channel's one
+    paragraph (`**channel**:`); a detailed one shows up to `config.recap.
     max_detailed_items` per channel, each in its own paragraph (`**channel
-    -- label**:`, see `_DETAILED_FORMAT_GUARD`), so the note lands on the
-    *last* of those (`_last_primary_by_channel`) -- the paragraph the fold
-    immediately follows. Either way, anything beyond what got shown is a
-    non-primary item here (see `RecapItem.is_primary`) and belongs in this
-    same count, not narrated by the LLM itself.
+    -- label**:`, see `_DETAILED_FORMAT_GUARD`), so the fold instead gets its
+    own paragraph naming each folded item's label
+    (`_additional_items_paragraph`), inserted right after the *last* of
+    those (`_last_primary_by_channel`) -- the paragraph the fold immediately
+    follows. Either way, anything beyond what got shown is a non-primary
+    item here (see `RecapItem.is_primary`) and belongs in this same note,
+    not narrated by the LLM itself.
 
     Every paragraph first has any `_LLM_COUNT_NOTE_RE`-shaped trailing note
     stripped, regardless of whether that channel has a real count to append
@@ -626,18 +651,18 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
     a dangling, content-free "**channel**:" header; since that channel
     already has its own item paragraph(s) elsewhere (it's in `last_primary`)
     this stray paragraph is pure noise once stripped, so it's dropped
-    outright rather than kept -- the real count still lands correctly on
+    outright rather than kept -- the real note still lands correctly after
     the last primary item's own paragraph via the loop below.
 
     Relies on the format guard's paragraph-prefix contract to find the
     right paragraph; one that doesn't start that way (the LLM ignoring the
-    format guard) is silently left without a count rather than guessing
+    format guard) is silently left without a note rather than guessing
     which paragraph it meant.
     """
-    counts: dict[str, int] = {}
+    additional: dict[str, list[str]] = {}
     for item in items:
         if not item.is_primary:
-            counts[item.channel] = counts.get(item.channel, 0) + 1
+            additional.setdefault(item.channel, []).append(item.label)
     last_primary = _last_primary_by_channel(items) if detail == "detailed" else {}
     stray_bare_prefixes = {f"**{channel}**:" for channel in last_primary}
     paragraphs = text.split("\n\n")
@@ -650,7 +675,8 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
         if cleaned.strip() in stray_bare_prefixes:
             changed = True
             continue
-        for channel, count in counts.items():
+        extra_paragraph = None
+        for channel, labels in additional.items():
             if detail == "detailed":
                 last_item = last_primary.get(channel)
                 prefix = (
@@ -658,14 +684,20 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
                     if last_item is not None
                     else None
                 )
+                if prefix and cleaned.startswith(prefix):
+                    extra_paragraph = _additional_items_paragraph(channel, labels)
+                    changed = True
+                    break
             else:
                 prefix = _item_paragraph_prefix(channel, "", detail)
-            if prefix and cleaned.startswith(prefix):
-                noun = "item" if count == 1 else "items"
-                cleaned = f"{cleaned} ({count} additional open {noun}.)"
-                changed = True
-                break
+                if prefix and cleaned.startswith(prefix):
+                    noun = "item" if len(labels) == 1 else "items"
+                    cleaned = f"{cleaned} ({len(labels)} additional open {noun}.)"
+                    changed = True
+                    break
         kept_paragraphs.append(cleaned)
+        if extra_paragraph is not None:
+            kept_paragraphs.append(extra_paragraph)
     if not changed:
         return text
     return "\n\n".join(kept_paragraphs)

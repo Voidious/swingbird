@@ -205,7 +205,7 @@ command.
 
 | You say | swingbird does |
 | --- | --- |
-| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 3) items per project, each with a few sentences of extra detail, plus a count of anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
+| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 3) items per project, each with a few sentences of extra detail, plus a separate line naming anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |

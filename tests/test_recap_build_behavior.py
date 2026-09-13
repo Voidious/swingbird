@@ -213,7 +213,8 @@ def test_build_recap_detailed_mode_shows_up_to_configured_items_as_primary(
     assert [item.is_primary for item in result.items] == [True, True, False]
     assert result.text == (
         "**backend -- F4:** prose covering the first item.\n\n"
-        "**backend -- F5:** prose covering the second item. (1 additional open item.)"
+        "**backend -- F5:** prose covering the second item.\n\n"
+        "**backend -- 1 additional open item:** F6"
     )
 
 
@@ -251,7 +252,49 @@ def test_build_recap_strips_llm_narrated_plus_prefixed_count(monkeypatch):
     result = build_recap(llm, config, detail="detailed")
 
     assert result.text == (
-        "**backend -- F4:** prose covering the first item. (1 additional open item.)"
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- 1 additional open item:** F5"
+    )
+
+
+def test_build_recap_names_multiple_additional_items_in_detailed_mode(monkeypatch):
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=1),
+    )
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** prose covering the first item.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F6",
+                "summary": "tertiary",
+                "instruction": "do the tertiary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, config, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- 2 additional open items:** F5, F6"
     )
 
 
@@ -304,7 +347,8 @@ def test_build_recap_drops_stray_standalone_count_paragraph_in_detailed_mode(
 
     assert result.text == (
         "**backend -- F4:** prose covering the first item.\n\n"
-        "**backend -- F5:** prose covering the second item. (1 additional open item.)"
+        "**backend -- F5:** prose covering the second item.\n\n"
+        "**backend -- 1 additional open item:** F6"
     )
 
 
