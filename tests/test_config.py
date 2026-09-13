@@ -508,3 +508,24 @@ def test_recap_max_messages_per_channel_rejects_invalid_values(tmp_path, value):
         ConfigError, match="max_messages_per_channel must be a positive integer"
     ):
         load_config(write(tmp_path, text))
+
+
+def test_recap_max_detailed_items_defaults(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.recap.max_detailed_items == 4
+
+
+def test_recap_max_detailed_items_is_configurable(tmp_path):
+    config = load_config(write(tmp_path, VALID + "\n[recap]\nmax_detailed_items = 6\n"))
+
+    assert config.recap.max_detailed_items == 6
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"6"'])
+def test_recap_max_detailed_items_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[recap]\nmax_detailed_items = {value}\n"
+    with pytest.raises(
+        ConfigError, match="max_detailed_items must be a positive integer"
+    ):
+        load_config(write(tmp_path, text))

@@ -243,18 +243,21 @@ def resolve_reference(
 
     If none of that identifies a match, the reference has no plural-intent
     wording, and the channel narrowing above left exactly one candidate
-    marked `is_primary` (the common case: `text` always narrates the
-    primary item, so a generic non-plural reference like "the open item",
-    "the first one", or a description of the primary item's own content
-    reasonably defaults to it), that primary candidate is returned --
-    `degraded=False`, since this is exactly what the reference meant, not a
-    fallback of last resort. This fires even when the channel has other
-    (non-primary) candidates too, unlike the single-candidate case below --
-    a reference to "the" item for a channel means the one `text` already
-    described, not "whichever one happens to be the only candidate." If
-    more than one candidate is marked primary (only possible with
-    hand-built `RecapItem`s outside `recap.py`'s own invariant of one
-    primary per channel), this doesn't guess between them.
+    marked `is_primary` (the common case for a concise recap, which always
+    narrates exactly one item per channel: a generic non-plural reference
+    like "the open item", "the first one", or a description of the primary
+    item's own content reasonably defaults to it), that primary candidate
+    is returned -- `degraded=False`, since this is exactly what the
+    reference meant, not a fallback of last resort. This fires even when
+    the channel has other (non-primary) candidates too, unlike the
+    single-candidate case below -- a reference to "the" item for a channel
+    means one `text` already described, not "whichever one happens to be
+    the only candidate." A detailed recap (see `recap.py`'s `RecapItem.
+    is_primary`) can genuinely mark more than one candidate primary per
+    channel -- when it does, this doesn't guess between them, so a bare
+    generic reference among several narrated items falls through to the
+    "no recap item matches" error below instead, same as it would for any
+    other reference that can't be narrowed to one item.
 
     Failing that, if the channel narrowing left exactly one candidate
     total, that candidate is returned anyway -- a generic reference can

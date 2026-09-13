@@ -1378,7 +1378,7 @@ def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch)
     _handle_event_and_get_first_sent(tmp_path, llm, sent)
 
     system_prompt = llm.calls[-1][0]["content"]
-    assert system_prompt == recap._DETAILED_SYSTEM_PROMPT
+    assert system_prompt == recap._detailed_system_prompt(4)
 
 
 def test_dispatch_proposes_and_asks_for_confirmation(tmp_path, monkeypatch):

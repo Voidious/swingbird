@@ -107,6 +107,7 @@ class DispatchConfig:
 
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_MAX_MESSAGES_PER_CHANNEL = 1000
+DEFAULT_MAX_DETAILED_ITEMS = 4
 
 
 @dataclass(frozen=True)
@@ -118,10 +119,16 @@ class RecapConfig:
     `max_messages_per_channel` bounds the paging `history.fetch_messages_since`
     does to fill that window -- a safety cap so one very chatty channel can't
     make a recap page through its entire history.
+
+    `max_detailed_items` caps how many of a channel's open items a
+    "detailed" recap narrates in its own text before folding the rest into
+    a count, same as a concise recap always does for everything past its
+    one leading item -- see recap.py's `RecapItem.is_primary`.
     """
 
     stale_after_days: int = DEFAULT_STALE_AFTER_DAYS
     max_messages_per_channel: int = DEFAULT_MAX_MESSAGES_PER_CHANNEL
+    max_detailed_items: int = DEFAULT_MAX_DETAILED_ITEMS
 
 
 @dataclass(frozen=True)
@@ -255,7 +262,18 @@ def _parse_recap(raw: dict) -> RecapConfig:
         or max_messages <= 0
     ):
         raise ConfigError("[recap].max_messages_per_channel must be a positive integer")
-    return RecapConfig(stale_after_days=days, max_messages_per_channel=max_messages)
+    max_detailed_items = section.get("max_detailed_items", DEFAULT_MAX_DETAILED_ITEMS)
+    if (
+        isinstance(max_detailed_items, bool)
+        or not isinstance(max_detailed_items, int)
+        or max_detailed_items <= 0
+    ):
+        raise ConfigError("[recap].max_detailed_items must be a positive integer")
+    return RecapConfig(
+        stale_after_days=days,
+        max_messages_per_channel=max_messages,
+        max_detailed_items=max_detailed_items,
+    )
 
 
 def _parse_identity(raw: dict) -> IdentityConfig:

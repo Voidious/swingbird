@@ -140,6 +140,9 @@ agents = ["Sonnet"]
   per channel to fill that window -- a single `buzz messages get` call maxes out at 200 messages
   regardless of the `--limit` requested, so swingbird pages backwards with `--before` as needed,
   and this is the safety valve stopping that from running away on an unusually chatty channel.
+  `max_detailed_items` (default `4`) caps how many of a project's open items a detailed recap
+  narrates before folding the rest into a count, the same way a concise recap always folds
+  everything past its one leading item.
 - **`[[channels]]`** -- one entry per project. `id` is the Buzz channel UUID; `name` is what
   you'll say in conversation ("recap backend", "tell backend to...") and is independent of the
   channel's own Buzz display name; `write` controls whether swingbird may dispatch instructions
@@ -200,7 +203,7 @@ command.
 
 | You say | swingbird does |
 | --- | --- |
-| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for the fuller three-bucket version: what needs attention, what's in flight, what finished recently. |
+| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 4) items per project, each with a few sentences of extra detail, plus a count of anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |

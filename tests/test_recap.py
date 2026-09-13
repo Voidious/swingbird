@@ -3,81 +3,20 @@ import json
 import pytest
 
 from swingbird import recap
-from swingbird.config import (
-    ChannelConfig,
-    Config,
-    LLMConfig,
-    OwnerConfig,
-    RecapConfig,
-    RelayConfig,
-)
+from swingbird.config import ChannelConfig, Config, OwnerConfig, RecapConfig
 from swingbird.llm import LLMClient
-from swingbird.recap import (
-    _CONCISE_SYSTEM_PROMPT,
-    _DETAILED_SYSTEM_PROMPT,
-    RecapError,
-    RecapItem,
-    build_recap,
+from swingbird.recap import _CONCISE_SYSTEM_PROMPT, RecapError, RecapItem, build_recap
+from tests.test_recap_build_behavior import (
+    CONFIG,
+    FRESH,
+    LLM_CONFIG,
+    NOW,
+    RELAY_CONFIG,
+    STALE,
+    FakeOpenAI,
+    _llm,
+    _system_prompt,
 )
-
-LLM_CONFIG = LLMConfig(base_url="https://x", model="m", api_key_env="X_KEY")
-RELAY_CONFIG = RelayConfig(url="wss://relay.example", private_key_env="SWINGBIRD_KEY")
-CONFIG = Config(
-    llm=LLM_CONFIG,
-    relay=RELAY_CONFIG,
-    channels=(
-        ChannelConfig(id="chan-1", name="backend", write=True, agents=("Codex",)),
-        ChannelConfig(id="chan-2", name="frontend", write=False, agents=("Goose",)),
-    ),
-    owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
-)
-
-NOW = 1_700_000_000
-FRESH = NOW - 1_000
-STALE = NOW - 40 * 86400  # 40 days ago, outside the default 30-day window
-
-
-class FakeMessage:
-    def __init__(self, content):
-        self.content = content
-
-
-class FakeChoice:
-    def __init__(self, content):
-        self.message = FakeMessage(content)
-
-
-class FakeResponse:
-    def __init__(self, content):
-        self.choices = [FakeChoice(content)]
-
-
-class FakeCompletions:
-    def __init__(self, content):
-        self._content = content
-        self.calls: list[dict] = []
-
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
-        return FakeResponse(self._content)
-
-
-class FakeChat:
-    def __init__(self, completions):
-        self.completions = completions
-
-
-class FakeOpenAI:
-    def __init__(self, content):
-        self.chat = FakeChat(FakeCompletions(content))
-
-
-def _llm(
-    text: str = "recap", items: list[dict] | None = None
-) -> tuple[LLMClient, FakeOpenAI]:
-    content = json.dumps({"text": text, "items": items or []})
-    fake = FakeOpenAI(content)
-    return LLMClient(LLM_CONFIG, client=fake), fake
 
 
 def _raw_llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
@@ -93,10 +32,6 @@ def _freeze_time(monkeypatch):
 
 def _transcript(fake) -> str:
     return fake.chat.completions.calls[0]["messages"][1]["content"]
-
-
-def _system_prompt(fake) -> str:
-    return fake.chat.completions.calls[0]["messages"][0]["content"]
 
 
 def test_build_recap_summarizes_all_channels(monkeypatch):
@@ -683,31 +618,6 @@ def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
     )
 
 
-def test_build_recap_detailed_mode_does_not_append_item_counts(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
-    llm, _ = _llm(
-        "**backend**: prose covering multiple items already.",
-        items=[
-            {
-                "channel": "backend",
-                "label": "F4",
-                "summary": "primary",
-                "instruction": "do the primary thing",
-            },
-            {
-                "channel": "backend",
-                "label": "F5",
-                "summary": "secondary",
-                "instruction": "do the secondary thing",
-            },
-        ],
-    )
-
-    result = build_recap(llm, CONFIG, detail="detailed")
-
-    assert result.text == "**backend**: prose covering multiple items already."
-
-
 def test_build_recap_rejects_response_missing_text(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _raw_llm(json.dumps({"items": []}))
@@ -939,31 +849,5 @@ def test_build_recap_respects_configured_stale_after_days(monkeypatch):
 
 def test_build_recap_defaults_to_concise_prompt(monkeypatch):
     fake = _setup_empty_channel_recap(monkeypatch)
-
-    assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT
-
-
-def test_build_recap_uses_detailed_prompt_when_requested(monkeypatch):
-    monkeypatch.setattr(
-        recap,
-        "fetch_messages_since",
-        lambda channel_id, since_ts, max_messages=None: [],
-    )
-    llm, fake = _llm()
-
-    build_recap(llm, CONFIG, channel_names=["backend"], detail="detailed")
-
-    assert _system_prompt(fake) == _DETAILED_SYSTEM_PROMPT
-
-
-def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
-    monkeypatch.setattr(
-        recap,
-        "fetch_messages_since",
-        lambda channel_id, since_ts, max_messages=None: [],
-    )
-    llm, fake = _llm()
-
-    build_recap(llm, CONFIG, channel_names=["backend"], detail="bogus")
 
     assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT

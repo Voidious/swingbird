@@ -313,10 +313,11 @@ def test_resolve_reference_generic_reference_without_a_channel_still_raises():
 
 def test_resolve_reference_generic_reference_with_ambiguous_channel_still_raises():
     # Two items share the "dripbird" channel here, and both are (by
-    # fixture default) marked `is_primary=True` -- realistically only one
-    # item per channel is ever primary (see `recap.py`'s `_parse_recap`),
-    # but this exercises that the primary-item fallback below refuses to
-    # guess between multiple primaries rather than assuming the first one.
+    # fixture default) marked `is_primary=True` -- a concise recap only
+    # ever marks one item per channel primary, but a detailed recap can
+    # genuinely mark several (see `recap.py`'s `_parse_recap`), so this
+    # exercises that the primary-item fallback below refuses to guess
+    # between multiple primaries rather than assuming the first one.
     with pytest.raises(RecapActionError, match="no recap item matches"):
         resolve_reference((ITEM_F4, ITEM_F5), "the first one for dripbird")
 
