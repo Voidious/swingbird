@@ -69,6 +69,19 @@ def test_elaborate_includes_summary_instruction_and_reference():
     assert "F4" in content
 
 
+def test_elaborate_gives_the_llm_each_items_exact_label():
+    # Regression: the LLM never saw an item's stored label, only its
+    # summary/instruction, so it sometimes invented its own paraphrased
+    # heading (e.g. "Integrate OpenAI support" for a stored label of
+    # "OpenAI support"). _backfill_missing_paragraphs then found no
+    # paragraph matching the real label and appended a duplicate, so the
+    # same item appeared twice under two different headings.
+    content = _user_content(items=(ITEM, OTHER_ITEM), threads=[[], []])
+
+    assert f"({ITEM.label})" in content
+    assert f"({OTHER_ITEM.label})" in content
+
+
 def test_elaborate_includes_thread_messages_when_present():
     content = _user_content(
         threads=[[{"created_at": 1, "content": "the original message"}]]

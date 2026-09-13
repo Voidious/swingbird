@@ -38,9 +38,13 @@ _FORMAT_GUARD = (
     "Format your answer as one paragraph per item, each starting with that "
     "item's channel and label in bold Markdown (e.g. \"**crispen -- "
     'selfcheck-20:** ..."), separated from the next by a blank line (a '
-    "literal \\n\\n between them). Use this format even when you were only "
-    "given one item -- don't switch to plain prose just because there's "
-    "nothing else to visually separate it from."
+    "literal \\n\\n between them). Reuse each item's own label exactly as "
+    "given below, verbatim -- never rephrase, shorten, or invent a "
+    "different wording for it, since a heading that doesn't match the "
+    "given label byte-for-byte is treated as that item having no paragraph "
+    "at all and gets a duplicate one appended. Use this format even when "
+    "you were only given one item -- don't switch to plain prose just "
+    "because there's nothing else to visually separate it from."
 )
 
 _SYSTEM_PROMPT = f"""You are a TPM agent elaborating on one or more items \
@@ -96,7 +100,16 @@ def elaborate(
         )
     for i, (item, thread_messages) in enumerate(zip(items, threads), start=1):
         prefix = f"Item {i}/{len(items)} -- " if multiple else ""
-        parts.append(f"{prefix}Recap item -- {item.channel}: {item.summary}")
+        # Label given explicitly (not left for the LLM to infer from summary/
+        # instruction text) -- observed live: without it, the LLM invented
+        # its own plausible-sounding heading ("Integrate OpenAI support")
+        # for an item whose actual stored label was "OpenAI support",
+        # `_backfill_missing_paragraphs`'s exact-string match then found no
+        # paragraph for the real label and appended a duplicate, so the same
+        # item appeared twice under two different headings.
+        parts.append(
+            f"{prefix}Recap item -- {item.channel} ({item.label}): {item.summary}"
+        )
         parts.append(f"{prefix}Recap instruction: {item.instruction}")
         if thread_messages:
             transcript = "\n".join(
