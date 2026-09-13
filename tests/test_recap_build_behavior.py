@@ -183,6 +183,97 @@ def test_build_recap_detailed_mode_shows_up_to_configured_items_as_primary(
     )
 
 
+def test_build_recap_strips_llm_narrated_plus_prefixed_count(monkeypatch):
+    # Observed live: the LLM narrated "(+1 more open item.)" -- a leading
+    # "+" the original regex's plain \d+ alternative didn't match, so the
+    # bogus note survived uncorrected right where the deterministic count
+    # should have landed instead.
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=1),
+    )
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** prose covering the first item. (+1 more open item.)",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, config, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** prose covering the first item. (1 additional open item.)"
+    )
+
+
+def test_build_recap_drops_stray_standalone_count_paragraph_in_detailed_mode(
+    monkeypatch,
+):
+    # Observed live: for a channel already narrated across multiple item
+    # paragraphs, the LLM narrated the fold count as its own separate,
+    # bare "**channel**: (+1 more open item.)" paragraph (the concise
+    # "no open item" shape) instead of appending it to the last shown
+    # item's own paragraph. Once its bogus count note is stripped, that
+    # paragraph is a content-free "**channel**:" header and should be
+    # dropped entirely -- the real count still belongs on the last shown
+    # item's own paragraph.
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=2),
+    )
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- F5:** prose covering the second item.\n\n"
+        "**backend**: (+1 more open item.)",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F6",
+                "summary": "tertiary",
+                "instruction": "do the tertiary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, config, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- F5:** prose covering the second item. (1 additional open item.)"
+    )
+
+
 def test_build_recap_concise_mode_only_shows_one_item_as_primary(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(

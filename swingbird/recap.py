@@ -111,8 +111,10 @@ the item>", "summary": "<one clause describing the item>", "instruction":
 "<the actual next step or recommendation, preserved as closely to the
 transcript's own wording as possible -- extract it, don't paraphrase or
 invent it>", "source_id": "<the tag (e.g. \\"m3\\") of the single transcript
-message that most directly states this instruction -- omit or use an empty
-string if it isn't clearly grounded in one specific message>", "keywords":
+message that most directly states this instruction -- make a genuine effort
+to find one for every item, even when you're extracting many items across
+several channels; only omit it or use an empty string when the instruction
+truly isn't grounded in one specific message, which should be rare>", "keywords":
 ["<2-4 short alternate phrases someone might later use to refer to this
 item -- synonyms, a category, or a plainer description of this same item's
 own label/summary/instruction, not new claims about the work; may be
@@ -346,17 +348,19 @@ def _parse_keywords(raw: object) -> tuple[str, ...]:
 # prompt request, not an enforced constraint, so it can still leak through
 # (observed live: a "(1 more open item.)" from the LLM stacked right next to
 # our own correct "(1 additional open item.)", a bare, occasionally wrong,
-# "(0 more open items.)" for a channel with nothing else, and a countless
+# "(0 more open items.)" for a channel with nothing else, a countless
 # "(Additional open items remain.)" -- no leading number/no/zero at all, and
-# "remain" instead of "remaining"). The leading count and trailing "remain"
-# are both optional here to catch that last shape too -- either one can be
-# absent from what the LLM narrates, but "more/additional/other/remaining"
-# plus "item(s)" together are specific enough to this one note that a false
-# strip elsewhere isn't a real risk. Stripped before _append_item_counts
-# adds the real, grounded count, so the two can never stack and a wrong
-# LLM-invented note is never left standing on its own.
+# "remain" instead of "remaining" -- and a "(+1 more open item.)" with a
+# leading "+" the plain \d+ alternative didn't match). The leading count and
+# trailing "remain" are both optional here to catch the countless shape too
+# -- either one can be absent from what the LLM narrates, but "more/
+# additional/other/remaining" plus "item(s)" together are specific enough to
+# this one note that a false strip elsewhere isn't a real risk. Stripped
+# before _append_item_counts adds the real, grounded count, so the two can
+# never stack and a wrong LLM-invented note is never left standing on its
+# own.
 _LLM_COUNT_NOTE_RE = re.compile(
-    r"\s*\(\s*(?:(?:\d+|no|zero)\s+)?(?:more|additional|other|remaining)\s+"
+    r"\s*\(\s*(?:(?:\+?\d+|no|zero)\s+)?(?:more|additional|other|remaining)\s+"
     r"(?:open\s+)?items?(?:\s+remain(?:s|ing)?)?\.?\s*\)\s*$",
     re.IGNORECASE,
 )
@@ -412,6 +416,17 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
     be worse than the stacked-duplicate case, since nothing would ever
     correct it.
 
+    Observed live: in detailed mode, the LLM sometimes narrates the count as
+    an entire standalone paragraph -- a bare "**channel**: (+1 more open
+    item.)" using the concise "no open item" shape -- instead of appending
+    it inline to the last shown item's own "**channel -- label**:"
+    paragraph. Stripping the trailing note from a paragraph like that leaves
+    a dangling, content-free "**channel**:" header; since that channel
+    already has its own item paragraph(s) elsewhere (it's in `last_primary`)
+    this stray paragraph is pure noise once stripped, so it's dropped
+    outright rather than kept -- the real count still lands correctly on
+    the last primary item's own paragraph via the loop below.
+
     Relies on the format guard's paragraph-prefix contract to find the
     right paragraph; one that doesn't start that way (the LLM ignoring the
     format guard) is silently left without a count rather than guessing
@@ -422,12 +437,17 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
         if not item.is_primary:
             counts[item.channel] = counts.get(item.channel, 0) + 1
     last_primary = _last_primary_by_channel(items) if detail == "detailed" else {}
+    stray_bare_prefixes = {f"**{channel}**:" for channel in last_primary}
     paragraphs = text.split("\n\n")
+    kept_paragraphs = []
     changed = False
-    for i, paragraph in enumerate(paragraphs):
+    for paragraph in paragraphs:
         cleaned = _LLM_COUNT_NOTE_RE.sub("", paragraph)
         if cleaned != paragraph:
             changed = True
+        if cleaned.strip() in stray_bare_prefixes:
+            changed = True
+            continue
         for channel, count in counts.items():
             if detail == "detailed":
                 last_item = last_primary.get(channel)
@@ -443,10 +463,10 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
                 cleaned = f"{cleaned} ({count} additional open {noun}.)"
                 changed = True
                 break
-        paragraphs[i] = cleaned
+        kept_paragraphs.append(cleaned)
     if not changed:
         return text
-    return "\n\n".join(paragraphs)
+    return "\n\n".join(kept_paragraphs)
 
 
 def _append_source_links(
