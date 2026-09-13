@@ -102,19 +102,28 @@ _DETAILED_FORMAT_GUARD = (
 _ITEMS_INSTRUCTIONS = """
 
 Each transcript message is tagged with a short id like "m3" (e.g. "[m3]
-[<timestamp>] some message"). Respond with JSON only, matching this shape:
+[<timestamp>] some message"). For every item you extract, work message-
+first: find the one transcript message that most directly states or
+requests that item's next step, note its tag, and only then write the
+item's other fields to describe what that specific message actually says.
+Never write an item's label/summary/instruction first and go looking for a
+citation afterward -- pick the grounding message before you describe it.
+Apply this same message-first process to every item you list for a
+channel, not just the first (primary) one -- a channel with several open
+items needs its second, third, and later items grounded exactly as
+carefully as its first, not skimmed through faster. Respond with JSON
+only, matching this shape:
 {"text": "<the recap text described above>", "items": [{"channel":
-"<the channel name from a \\"## <name>\\" transcript heading>", "label":
-"<a short identifier the user could refer to later -- reuse an id like
-\\"F4\\" if the transcript already uses one, otherwise a few words naming
-the item>", "summary": "<one clause describing the item>", "instruction":
-"<the actual next step or recommendation, preserved as closely to the
-transcript's own wording as possible -- extract it, don't paraphrase or
-invent it>", "source_id": "<the tag (e.g. \\"m3\\") of the single transcript
-message that most directly states this instruction -- make a genuine effort
-to find one for every item, even when you're extracting many items across
-several channels; only omit it or use an empty string when the instruction
-truly isn't grounded in one specific message, which should be rare>", "keywords":
+"<the channel name from a \\"## <name>\\" transcript heading>", "source_id":
+"<the tag (e.g. \\"m3\\") of the single transcript message you identified
+first, that most directly states this item's instruction -- omit or use an
+empty string only if you genuinely cannot find one specific message that
+states it, which should be rare>", "label": "<a short identifier the user
+could refer to later -- reuse an id like \\"F4\\" if the transcript already
+uses one, otherwise a few words naming the item>", "summary": "<one clause
+describing the item>", "instruction": "<the actual next step or
+recommendation, preserved as closely to the transcript's own wording as
+possible -- extract it, don't paraphrase or invent it>", "keywords":
 ["<2-4 short alternate phrases someone might later use to refer to this
 item -- synonyms, a category, or a plainer description of this same item's
 own label/summary/instruction, not new claims about the work; may be
