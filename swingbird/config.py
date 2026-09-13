@@ -27,6 +27,17 @@ class LLMConfig:
     base_url: str
     model: str
     api_key_env: str
+    provider: str | None = None
+
+
+# Known OpenAI-compatible providers' default base URL and API-key env var, so
+# a config only needs `provider` + `model` -- `base_url`/`api_key_env` are
+# still accepted explicitly to override a default or point at a provider not
+# listed here (e.g. a self-hosted OpenAI-compatible endpoint).
+LLM_PROVIDERS: dict[str, tuple[str, str]] = {
+    "moonshot": ("https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+}
 
 
 @dataclass(frozen=True)
@@ -161,7 +172,6 @@ def _merge(base: dict, override: dict) -> dict:
     return merged
 
 
-_LLM_REQUIRED = ("base_url", "model", "api_key_env")
 _RELAY_REQUIRED = ("url", "private_key_env")
 _CHANNEL_REQUIRED = ("id", "name", "write", "agents")
 _OWNER_REQUIRED = ("pubkey", "name")
@@ -203,13 +213,34 @@ def _parse_llm(raw: dict) -> LLMConfig:
     section = raw.get("llm")
     if not isinstance(section, dict):
         raise ConfigError("config is missing required [llm] section")
-    for key in _LLM_REQUIRED:
-        if not section.get(key):
-            raise ConfigError(f"[llm] is missing required field: {key}")
+    if not section.get("model"):
+        raise ConfigError("[llm] is missing required field: model")
+
+    provider = section.get("provider")
+    if provider is not None and provider not in LLM_PROVIDERS:
+        raise ConfigError(
+            f"[llm].provider must be one of {tuple(LLM_PROVIDERS)!r}, got {provider!r}"
+        )
+    default_base_url, default_api_key_env = LLM_PROVIDERS.get(provider, (None, None))
+
+    base_url = section.get("base_url") or default_base_url
+    if not base_url:
+        raise ConfigError(
+            "[llm] is missing required field: base_url (or set provider to one "
+            f"of {tuple(LLM_PROVIDERS)!r} to use its default)"
+        )
+    api_key_env = section.get("api_key_env") or default_api_key_env
+    if not api_key_env:
+        raise ConfigError(
+            "[llm] is missing required field: api_key_env (or set provider to "
+            f"one of {tuple(LLM_PROVIDERS)!r} to use its default)"
+        )
+
     return LLMConfig(
-        base_url=section["base_url"],
+        base_url=base_url,
         model=section["model"],
-        api_key_env=section["api_key_env"],
+        api_key_env=api_key_env,
+        provider=provider,
     )
 
 

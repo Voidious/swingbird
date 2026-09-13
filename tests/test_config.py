@@ -50,6 +50,7 @@ def test_load_valid_config(tmp_path):
     assert config.identity.name == "swingbird"
     assert config.recap.stale_after_days == 30
     assert channel.goal is None
+    assert config.llm.provider is None
 
 
 def test_channel_by_name_found_and_missing(tmp_path):
@@ -102,6 +103,130 @@ write = true
 agents = []
 """
     with pytest.raises(ConfigError, match="api_key_env"):
+        load_config(write(tmp_path, text))
+
+
+def test_llm_missing_model(tmp_path):
+    text = """
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match=r"\[llm\] is missing required field: model"):
+        load_config(write(tmp_path, text))
+
+
+def test_llm_missing_base_url_without_provider(tmp_path):
+    text = """
+[llm]
+model = "some-model"
+api_key_env = "MOONSHOT_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(
+        ConfigError, match=r"\[llm\] is missing required field: base_url"
+    ):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "provider,base_url,api_key_env",
+    [
+        ("moonshot", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
+        ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    ],
+)
+def test_llm_provider_fills_in_defaults(tmp_path, provider, base_url, api_key_env):
+    text = f"""
+[llm]
+provider = "{provider}"
+model = "some-model"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[owner]
+pubkey = "owner-pubkey"
+name = "Voidious"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    config = load_config(write(tmp_path, text))
+
+    assert config.llm.provider == provider
+    assert config.llm.base_url == base_url
+    assert config.llm.api_key_env == api_key_env
+
+
+def test_llm_explicit_base_url_and_api_key_env_override_provider(tmp_path):
+    text = """
+[llm]
+provider = "openai"
+model = "some-model"
+base_url = "https://my-proxy.example.com/v1"
+api_key_env = "MY_OPENAI_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[owner]
+pubkey = "owner-pubkey"
+name = "Voidious"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    config = load_config(write(tmp_path, text))
+
+    assert config.llm.base_url == "https://my-proxy.example.com/v1"
+    assert config.llm.api_key_env == "MY_OPENAI_KEY"
+
+
+def test_llm_rejects_unknown_provider(tmp_path):
+    text = """
+[llm]
+provider = "bogus"
+model = "some-model"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[[channels]]
+id = "chan-1"
+name = "swingbird-dev"
+write = true
+agents = []
+"""
+    with pytest.raises(ConfigError, match=r"\[llm\].provider must be one of"):
         load_config(write(tmp_path, text))
 
 

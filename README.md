@@ -93,9 +93,8 @@ just the ones that differ from `swingbird.toml`.
 
 ```toml
 [llm]
-base_url = "https://api.moonshot.ai/v1"
+provider = "moonshot"
 model = "kimi-k2.6"
-api_key_env = "MOONSHOT_API_KEY"
 
 [relay]
 url = "wss://relay.example.com"
@@ -119,8 +118,11 @@ agents = ["Sonnet"]
 ```
 
 - **`[llm]`** -- the OpenAI-compatible backend swingbird uses for intent classification, recaps,
-  and reply summaries. `api_key_env` names the environment variable to read the key from, not the
-  key itself.
+  and reply summaries. `provider` is `"moonshot"` or `"openai"`; it fills in `base_url` and
+  `api_key_env` (the environment variable to read the key from, not the key itself) with that
+  provider's defaults, so a config only needs `provider` + `model`. Set `base_url`/`api_key_env`
+  explicitly instead of (or to override) `provider` for a self-hosted or otherwise unlisted
+  OpenAI-compatible endpoint.
 - **`[relay]`** -- the Buzz relay to connect to, and the environment variable holding swingbird's
   own secret key (see [Buzz identity](#buzz-identity) above).
 - **`[owner]`** -- the one identity swingbird will ever treat as a command. Every other message it
