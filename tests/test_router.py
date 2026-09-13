@@ -279,6 +279,42 @@ def test_route_open_recap_note_mentions_recap_relay():
     assert "recap_relay" in system_content
 
 
+def test_route_open_recap_items_listed_when_provided():
+    router, fake = _router('{"intent": "recap_relay", "item_reference": "dripbird"}')
+
+    router.route(
+        "on the dripbird default model, is Kimi named after anyone specific?",
+        has_open_recap=True,
+        open_recap_items=(("dripbird", "Kimi 2.6 default model"),),
+    )
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "Open recap items:" in system_content
+    assert "dripbird: Kimi 2.6 default model" in system_content
+
+
+def test_route_open_recap_items_omitted_without_open_recap():
+    router, fake = _router('{"intent": "dispatch"}')
+
+    router.route(
+        "on the dripbird default model, is Kimi named after anyone specific?",
+        has_open_recap=False,
+        open_recap_items=(("dripbird", "Kimi 2.6 default model"),),
+    )
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "Open recap items:" not in system_content
+
+
+def test_route_open_recap_items_block_omitted_when_empty():
+    router, fake = _router('{"intent": "recap_detail", "message": "F4"}')
+
+    router.route("tell me more about F4", has_open_recap=True, open_recap_items=())
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "Open recap items:" not in system_content
+
+
 def test_route_notes_no_pending_dispatch_by_default():
     (_, system_content) = _route_and_get_system_content()
     assert "no dispatch proposal awaiting confirm" in system_content

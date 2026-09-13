@@ -151,8 +151,20 @@ that recap already surfaced, not as a request to regenerate a fresh one or
 post a fresh, unrelated dispatch. Only classify as recap when the user is
 clearly asking for a new or refreshed summary instead (e.g. "give me an
 update", "what's changed since then", naming a channel that wasn't part of
-the open recap); only classify as dispatch instead of recap_relay when the
-message doesn't build on any item the open recap surfaced at all."""
+the open recap).
+
+The open recap's actual items are listed below (channel: label). A message
+naming one of these channels and asking or saying something about it is
+building on that item -- classify it recap_relay, not dispatch, even when
+it's phrased as a plain question addressed to the channel (e.g. "ask
+frontend if the tests pass" is dispatch on its own, but if "frontend: fix
+the login timeout bug" is an open item, "does frontend's login fix need a
+migration?" is recap_relay) and even when the wording doesn't quote the
+item's label back verbatim -- match on what the item is about, not on
+whether the user's phrasing echoes an example above. Only classify as
+dispatch instead when the channel named has no open item below, or the
+message is unambiguously about something else the open item isn't (a new,
+unrelated ask for that same channel)."""
 
 _NO_OPEN_RECAP_NOTE = """
 
@@ -235,6 +247,7 @@ class IntentRouter:
         thread_id: str | None = None,
         has_open_recap: bool = False,
         has_pending_dispatch: bool = False,
+        open_recap_items: tuple[tuple[str, str], ...] = (),
     ) -> Intent:
         """Classify `text` into an `Intent`, calling the configured LLM.
 
@@ -252,6 +265,19 @@ class IntentRouter:
         "never mind" carries no signal of its own that a proposal is
         actually pending.
 
+        `open_recap_items` -- (channel, label) pairs for the open recap's own
+        items, when there is one -- is appended to `_OPEN_RECAP_NOTE` so the
+        classifier can check a message against what the open items actually
+        are, not just their wording shape. Without this, a message that's
+        clearly *about* an open item but doesn't echo `_OPEN_RECAP_NOTE`'s
+        own example phrasing (e.g. "for dripbird F4, ...") reliably fell back
+        to `dispatch` instead of `recap_relay` -- e.g. "on the dripbird
+        default model, is Kimi named after anyone specific?" when the open
+        recap had a dripbird item literally about the default model choice --
+        because the classifier had no item list to check the message against,
+        only its own phrasing to pattern-match. Empty when `has_open_recap`
+        is `False`, or the caller has no items for this thread.
+
         Retries the classification once if the first attempt comes back
         `chit_chat`, since that's the catch-all bucket an under-confident
         or momentarily-flaky classification collapses into (there's no
@@ -264,9 +290,12 @@ class IntentRouter:
         """
         if self._audit is not None:
             self._audit.log_transcript_in(thread_id, text)
+        open_recap_note = _OPEN_RECAP_NOTE if has_open_recap else _NO_OPEN_RECAP_NOTE
+        if has_open_recap and open_recap_items:
+            open_recap_note += "\n\n" + _format_open_recap_items(open_recap_items)
         system_prompt = (
             self._system_prompt
-            + (_OPEN_RECAP_NOTE if has_open_recap else _NO_OPEN_RECAP_NOTE)
+            + open_recap_note
             + (
                 _PENDING_DISPATCH_NOTE
                 if has_pending_dispatch
@@ -281,6 +310,11 @@ class IntentRouter:
         if intent.kind == "chit_chat":
             intent = _parse_intent(self._llm.complete_json(messages))
         return intent
+
+
+def _format_open_recap_items(items: tuple[tuple[str, str], ...]) -> str:
+    lines = [f"- {channel}: {label}" for channel, label in items]
+    return "Open recap items:\n" + "\n".join(lines)
 
 
 def _format_channel_list(config: Config) -> str:
