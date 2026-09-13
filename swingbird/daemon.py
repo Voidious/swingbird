@@ -416,8 +416,12 @@ class Daemon:
                 if resumed is not None:
                     return resumed
             has_open_recap = self._recap_store.get(thread_id) is not None
+            has_pending_dispatch = self._store.get(thread_id) is not None
             intent = self._router.route(
-                event["content"], thread_id=thread_id, has_open_recap=has_open_recap
+                event["content"],
+                thread_id=thread_id,
+                has_open_recap=has_open_recap,
+                has_pending_dispatch=has_pending_dispatch,
             )
             return self._act(intent, thread_id, event["id"])
         except _ACTIONABLE_ERRORS as exc:

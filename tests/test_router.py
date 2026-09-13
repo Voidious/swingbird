@@ -279,6 +279,30 @@ def test_route_open_recap_note_mentions_recap_relay():
     assert "recap_relay" in system_content
 
 
+def test_route_notes_no_pending_dispatch_by_default():
+    (_, system_content) = _route_and_get_system_content()
+    assert "no dispatch proposal awaiting confirm" in system_content
+
+
+def test_route_notes_pending_dispatch_when_flagged():
+    router, fake = _router('{"intent": "confirm"}')
+
+    router.route("confirm", has_pending_dispatch=True)
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "has a dispatch proposal awaiting confirm or" in system_content
+
+
+def test_route_open_recap_and_pending_dispatch_notes_both_appended():
+    router, fake = _router('{"intent": "confirm"}')
+
+    router.route("confirm", has_open_recap=True, has_pending_dispatch=True)
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "already has an open recap" in system_content
+    assert "has a dispatch proposal awaiting confirm or" in system_content
+
+
 def test_system_prompt_includes_known_channels_and_agents():
     (_, system_content) = _route_and_get_system_content()
     assert "backend" in system_content

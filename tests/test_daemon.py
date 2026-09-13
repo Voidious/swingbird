@@ -1459,6 +1459,33 @@ def test_confirm_posts_and_replies(tmp_path, monkeypatch):
     assert store.get("dm-chan") is None
 
 
+def test_confirm_tells_the_router_a_dispatch_is_pending(tmp_path, monkeypatch):
+    """A bare "confirm" carries no content of its own to classify from (see
+    `router._PENDING_DISPATCH_NOTE`) -- the daemon must tell the router a
+    proposal is actually waiting on this thread, or the classifier has no
+    way to know "confirm" means confirm and not chit_chat (observed live:
+    exactly this collapsed to chit_chat once, see the router module's own
+    reasoning for `_PENDING_DISPATCH_NOTE`)."""
+    _sent(monkeypatch)
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
+    store = PendingActionStore()
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        }
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store)
+
+    _confirm_event_pair(bot)
+
+    first_call, second_call = dispatch_llm.calls
+    assert "no dispatch proposal awaiting confirm" in first_call[0]["content"]
+    assert "has a dispatch proposal awaiting confirm or" in second_call[0]["content"]
+
+
 def test_confirm_against_an_inaccessible_channel_becomes_a_helpful_reply(
     tmp_path, monkeypatch
 ):

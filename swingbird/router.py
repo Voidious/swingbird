@@ -163,6 +163,37 @@ to reference, so don't classify as any of those here; a message asking
 about a channel's status is a plain recap instead, and a message meant for
 a channel/agent is a plain dispatch instead."""
 
+# Mirrors _OPEN_RECAP_NOTE/_NO_OPEN_RECAP_NOTE's own reasoning, for the same
+# underlying problem: classification sees only the current message, with no
+# memory of what the agent itself just said, so a bare "confirm" or "never
+# mind" has nothing in its own wording to distinguish "answering the
+# proposal you just saw" from a random aside -- confirm/cancel's own bullet
+# above states the *condition* ("only when the agent has already proposed a
+# specific dispatch"), but the classifier has no way to know whether that
+# condition currently holds without being told. Observed live: a lone
+# "confirm" sent right after the agent's own "Confirm to send, or cancel."
+# came back chit_chat instead of confirm, most likely because nothing in
+# that one word signals a pending proposal on its own. Appended independently
+# of the open/no-open-recap note above -- a thread can have both an open
+# recap and a pending dispatch proposal at once (e.g. mid recap_action).
+_PENDING_DISPATCH_NOTE = """
+
+Conversation state: this thread has a dispatch proposal awaiting confirm or
+cancel right now -- the agent's last message asked the user to "Confirm to
+send, or cancel." A short reply like "yes", "confirmed", "do it", "go
+ahead", "no", "cancel", or "never mind" is answering that specific
+question, so classify it as confirm or cancel accordingly, even though the
+reply's own wording carries no other content to classify from."""
+
+_NO_PENDING_DISPATCH_NOTE = """
+
+Conversation state: this thread has no dispatch proposal awaiting confirm
+or cancel right now -- nothing has been proposed, or it was already
+resolved. Don't classify a message as confirm or cancel here even if it
+would look like an affirmation/rejection in isolation (e.g. "yes", "never
+mind") -- classify it as chit_chat, or whatever its own wording otherwise
+matches, since there's nothing pending for it to confirm or cancel."""
+
 
 class RouterError(Exception):
     """Raised when the LLM's response can't be trusted as a classification."""
@@ -203,6 +234,7 @@ class IntentRouter:
         text: str,
         thread_id: str | None = None,
         has_open_recap: bool = False,
+        has_pending_dispatch: bool = False,
     ) -> Intent:
         """Classify `text` into an `Intent`, calling the configured LLM.
 
@@ -214,6 +246,11 @@ class IntentRouter:
         can still reference -- is appended to the system prompt as an
         explicit conversation-state note (see module docstring) rather than
         left for the model to guess from the message text alone.
+        `has_pending_dispatch` -- whether the thread has a proposed dispatch
+        still awaiting confirm/cancel -- gets the same treatment (see
+        `_PENDING_DISPATCH_NOTE`), for the same reason: a bare "confirm" or
+        "never mind" carries no signal of its own that a proposal is
+        actually pending.
 
         Retries the classification once if the first attempt comes back
         `chit_chat`, since that's the catch-all bucket an under-confident
@@ -227,8 +264,14 @@ class IntentRouter:
         """
         if self._audit is not None:
             self._audit.log_transcript_in(thread_id, text)
-        system_prompt = self._system_prompt + (
-            _OPEN_RECAP_NOTE if has_open_recap else _NO_OPEN_RECAP_NOTE
+        system_prompt = (
+            self._system_prompt
+            + (_OPEN_RECAP_NOTE if has_open_recap else _NO_OPEN_RECAP_NOTE)
+            + (
+                _PENDING_DISPATCH_NOTE
+                if has_pending_dispatch
+                else _NO_PENDING_DISPATCH_NOTE
+            )
         )
         messages = [
             {"role": "system", "content": system_prompt},
