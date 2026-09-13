@@ -27,6 +27,7 @@ deliberately out of scope here (see the recap follow-up plan).
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 from swingbird.recap import RecapItem
@@ -151,12 +152,24 @@ def _matches_text(candidate: str, normalized: str, words: list[str]) -> bool:
     applied to each of an item's `keywords` without duplicating the logic
     (see `resolve_reference`'s docstring for why each half of the check
     exists). Can't spuriously match an empty `candidate` -- no word is a
-    substring of ""."""
+    substring of "".
+
+    The word-level fallback matches on a word *boundary*, not a bare
+    substring -- `_STOPWORDS` only strips connector words like "for"/"the",
+    so an ordinary short word from the reference (e.g. "are", from "what
+    are the other items?") would otherwise coincidentally match inside an
+    unrelated candidate that merely contains those letters (observed live:
+    "are" matched a "bare confirm" keyword via plain substring, hijacking
+    "what are the other swingbird items?" to that one item instead of ever
+    reaching the "give me every non-primary item" fallback below). A
+    boundary match still finds "F4" inside a compound label like
+    "F4/F5/F6" (`/` isn't a word character), so it doesn't lose the
+    bundled-label case this fallback exists for."""
     lowered = candidate.lower()
     return (
         normalized in lowered
         or (candidate and lowered in normalized)
-        or any(word in lowered for word in words)
+        or any(re.search(rf"\b{re.escape(word)}\b", lowered) for word in words)
     )
 
 
@@ -169,7 +182,10 @@ def resolve_reference(
     a degraded fallback (see `ResolvedReference`).
 
     An empty reference or "all"/"everything" (case-insensitive) refers to
-    every item. Otherwise, `reference` is matched case-insensitively against
+    every item -- narrowed to `channel`'s items when a channel was
+    identified (explicitly or from the reference text), same as every other
+    match path below. Otherwise, `reference` is matched case-insensitively
+    against
     each item's `label`, `keywords`, or `channel`, and every match is
     returned -- zero matches raises rather than guessing, but whether more
     than one match is acceptable is the caller's policy to enforce, not this
@@ -268,10 +284,6 @@ def resolve_reference(
     reference still raises rather than guessing across channels.
     """
     normalized = (reference or "").strip().lower()
-    if normalized in _ALL_MARKERS:
-        if not items:
-            raise RecapActionError("no items in the last recap")
-        return ResolvedReference(list(items), degraded=False)
     words = [w for w in normalized.split() if len(w) > 1 and w not in _STOPWORDS]
     plural_intent = any(word in _PLURAL_INTENT_WORDS for word in words)
     if channel is not None:
@@ -303,6 +315,18 @@ def resolve_reference(
         if len(channels_named) == 1
         else items
     )
+    if normalized in _ALL_MARKERS:
+        # Narrowed to `candidates`, not the raw `items`, so an explicit
+        # `channel` (the router's own classification -- e.g. for "what are
+        # the additional open items for swingbird?", which the router can
+        # reduce to an empty leftover reference plus `channel="swingbird"`)
+        # still scopes "all" to that one channel instead of returning every
+        # item in the thread's whole store, which would leak other
+        # channels' items into the answer whenever the store isn't already
+        # channel-scoped (e.g. after a global, all-channels recap).
+        if not candidates:
+            raise RecapActionError("no items in the last recap")
+        return ResolvedReference(list(candidates), degraded=False)
     match_words = [
         w for w in words if w not in _GENERIC_WORDS and w not in _PLURAL_INTENT_WORDS
     ]

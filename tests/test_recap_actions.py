@@ -97,6 +97,21 @@ def test_resolve_reference_empty_string_means_all():
     assert resolved.degraded is False
 
 
+def test_resolve_reference_empty_string_with_explicit_channel_narrows_to_it():
+    # Live bug: the router can reduce "what are the additional open items
+    # for swingbird?" to an empty leftover reference plus an explicit
+    # `channel="swingbird"` classification. An empty/"all" reference must
+    # still be scoped to that channel, not returned as every item across
+    # every channel in the thread's whole store (which would leak other
+    # channels' items into the answer after a global, all-channels recap).
+    resolved = resolve_reference(
+        (ITEM_F4, ITEM_F5, ITEM_BACKEND), "", channel="dripbird"
+    )
+
+    assert resolved.items == [ITEM_F4, ITEM_F5]
+    assert resolved.degraded is False
+
+
 @pytest.mark.parametrize("reference", ["all", "ALL", "everything", "  all  "])
 def test_resolve_reference_all_markers_mean_all(reference):
     resolved = resolve_reference((ITEM_F4, ITEM_F5), reference)
@@ -180,6 +195,52 @@ def test_resolve_reference_word_fallback_ignores_stopwords():
 
     with pytest.raises(RecapActionError, match="no recap item matches"):
         resolve_reference((decoy,), "F4 for dripbird")
+
+
+def test_resolve_reference_word_fallback_requires_a_word_boundary_match():
+    # Live bug: "what are the other swingbird items?" hijacked a completely
+    # unrelated item whose keyword was "bare confirm" -- "are" (from "what
+    # are") isn't a stopword, and a plain substring check finds it inside
+    # "bare". Requiring a word-boundary match prevents this false positive
+    # while still falling through to the plural-intent "every non-primary
+    # item" fallback the reference actually asked for.
+    decoy = RecapItem(
+        channel="swingbird",
+        label="no-source-ID confirmation fallback",
+        summary="s",
+        instruction="i",
+        keywords=("bare confirm", "pending dispatch"),
+    )
+    other = RecapItem(
+        channel="swingbird",
+        label="message-ID reliability",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (decoy, other), "what are the other swingbird items?", channel="swingbird"
+    )
+
+    assert resolved.items == [other]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_word_fallback_still_matches_a_bundled_label_at_the_edge():
+    # The word-boundary requirement must not lose the case it exists for:
+    # "F4" bounded by "/" on both sides in a compound label is still a
+    # legitimate whole-word match.
+    bundled = RecapItem(
+        channel="dripbird",
+        label="F4/F5/F6",
+        summary="three issues found",
+        instruction="pick one to fix first",
+    )
+
+    resolved = resolve_reference((bundled, ITEM_BACKEND), "F6 for dripbird")
+
+    assert resolved.items == [bundled]
 
 
 def test_resolve_reference_word_fallback_ignores_generic_words():

@@ -114,7 +114,46 @@ def elaborate(
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
-    return _append_source_links(llm.complete(messages), items, config)
+    text = llm.complete(messages)
+    if multiple:
+        text = _backfill_missing_paragraphs(text, items)
+    return _append_source_links(text, items, config)
+
+
+def _backfill_missing_paragraphs(text: str, items: list[RecapItem]) -> str:
+    """Append a deterministic fallback paragraph for any item whose own
+    "**channel -- label:**" paragraph didn't come back in `text` at all.
+
+    `_FORMAT_GUARD` asks for one paragraph per item unconditionally, but
+    for a multi-item batch (e.g. "what are the other items?" resolving to
+    5-7 non-primary items at once) the LLM sometimes collapses several of
+    them into a single combined answer instead of giving each its own
+    paragraph -- observed live: `recap_actions.resolve_reference` correctly
+    resolved every item, but the elaboration that came back only narrated
+    one of them, silently dropping the rest from what the user saw. Rather
+    than trusting the LLM to self-correct (a second full elaboration call
+    would double cost -- see this module's own single-call design), this
+    detects exactly that failure deterministically -- the same prefix
+    `_append_source_links`/`outbound.append_paragraph_link` already depend
+    on to find a paragraph -- and fills in only what's missing, at no
+    extra LLM cost. The fallback paragraph is just the item's own already-
+    grounded summary/instruction, not a fresh elaboration, but it's never
+    silently absent."""
+    paragraphs = text.split("\n\n")
+    missing = [
+        item
+        for item in items
+        if not any(
+            p.startswith(f"**{item.channel} -- {item.label}:**") for p in paragraphs
+        )
+    ]
+    if not missing:
+        return text
+    fallback = "\n\n".join(
+        f"**{item.channel} -- {item.label}:** {item.summary} Next: {item.instruction}"
+        for item in missing
+    )
+    return f"{text}\n\n{fallback}" if text.strip() else fallback
 
 
 def _append_source_links(text: str, items: list[RecapItem], config: Config) -> str:

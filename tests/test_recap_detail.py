@@ -159,3 +159,58 @@ def test_elaborate_omits_source_link_for_an_unmapped_channel():
     result = elaborate(llm, [grounded], [[]], [], "F4", CONFIG)
 
     assert result == "**ghost-channel -- F4:** it's blocked."
+
+
+def test_elaborate_backfills_every_item_the_llm_collapsed_into_one_answer():
+    # Live bug: given multiple items, the LLM sometimes ignores
+    # _FORMAT_GUARD and folds them into one combined answer instead of
+    # giving each its own paragraph -- silently dropping every item but
+    # the one it narrated from what the user sees.
+    llm = FakeLLM(text_response="Both are still blocked on the same design call.")
+
+    result = elaborate(llm, [ITEM, OTHER_ITEM], [[], []], [], "all", CONFIG)
+
+    assert result == (
+        "Both are still blocked on the same design call.\n\n"
+        "**dripbird -- F4:** unused-ignore propagation "
+        "Next: Fix the deterministic directive trip-check.\n\n"
+        "**dripbird -- F5:** undefined-sentinel cloneDeep split "
+        "Next: Design a fix for the cloneDeep split."
+    )
+
+
+def test_elaborate_backfills_only_the_item_missing_its_own_paragraph():
+    # One item got its own paragraph, the other didn't -- only the missing
+    # one should be backfilled, not both.
+    llm = FakeLLM(text_response="**dripbird -- F4:** it's blocked on a design call.")
+
+    result = elaborate(llm, [ITEM, OTHER_ITEM], [[], []], [], "all", CONFIG)
+
+    assert result == (
+        "**dripbird -- F4:** it's blocked on a design call.\n\n"
+        "**dripbird -- F5:** undefined-sentinel cloneDeep split "
+        "Next: Design a fix for the cloneDeep split."
+    )
+
+
+def test_elaborate_does_not_backfill_when_every_item_has_its_own_paragraph():
+    text_response = (
+        "**dripbird -- F4:** it's blocked.\n\n"
+        "**dripbird -- F5:** it's still being designed."
+    )
+    llm = FakeLLM(text_response=text_response)
+
+    result = elaborate(llm, [ITEM, OTHER_ITEM], [[], []], [], "all", CONFIG)
+
+    assert result == text_response
+
+
+def test_elaborate_does_not_backfill_a_single_item_response():
+    # The backfill only exists to catch a multi-item collapse -- a single
+    # item that ignores the format guard is a pre-existing, separate
+    # concern (its link just won't attach, same as always).
+    llm = FakeLLM(text_response="it's blocked on a design call, no bold prefix.")
+
+    result = elaborate(llm, [ITEM], [[]], [], "F4", CONFIG)
+
+    assert result == "it's blocked on a design call, no bold prefix."

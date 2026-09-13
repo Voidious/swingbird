@@ -1189,6 +1189,58 @@ def test_recap_detail_elaborates_every_non_primary_item_for_additional_items(
             "channel": "backend",
             "message": "the additional items",
         },
+        text_response=(
+            "**backend -- F5:** More on F5.\n\n**backend -- F6:** More on F6."
+        ),
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == (
+        "dm-chan",
+        "**backend -- F5:** More on F5.\n\n**backend -- F6:** More on F6.",
+    )
+    user_content = llm.calls[-1][1]["content"]
+    assert "undefined-sentinel cloneDeep split" in user_content
+    assert "lower priority follow-up" in user_content
+    assert "unused-ignore propagation" not in user_content
+
+
+def test_recap_detail_backfills_a_paragraph_the_llm_collapsed_away(
+    tmp_path, monkeypatch
+):
+    """Live bug: resolving "the additional items" correctly found every
+    non-primary item, but the elaboration call itself sometimes collapses
+    several items into one combined answer instead of giving each its own
+    paragraph, silently dropping the rest from what the user sees (see
+    `recap_detail._backfill_missing_paragraphs`). The daemon must still
+    surface every resolved item even when the LLM's own response doesn't
+    name them."""
+    monkeypatch.setattr(daemon, "fetch_recent_messages", lambda *a, **k: [])
+    sent = _sent(monkeypatch)
+    other_item = RecapItem(
+        channel="backend",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+    third_item = RecapItem(
+        channel="backend",
+        label="F6",
+        summary="lower priority follow-up",
+        instruction="Revisit once F4/F5 land.",
+        is_primary=False,
+    )
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item, third_item)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_detail",
+            "channel": "backend",
+            "message": "the additional items",
+        },
         text_response="More on F5 and F6.",
     )
 
@@ -1196,11 +1248,16 @@ def test_recap_detail_elaborates_every_non_primary_item_for_additional_items(
         tmp_path, llm, sent, recap_store=recap_store
     )
 
-    assert args == ("dm-chan", "More on F5 and F6.")
-    user_content = llm.calls[-1][1]["content"]
-    assert "undefined-sentinel cloneDeep split" in user_content
-    assert "lower priority follow-up" in user_content
-    assert "unused-ignore propagation" not in user_content
+    assert args == (
+        "dm-chan",
+        (
+            "More on F5 and F6."
+            "\n\n**backend -- F5:** undefined-sentinel cloneDeep split "
+            "Next: Design a fix for the cloneDeep split."
+            "\n\n**backend -- F6:** lower priority follow-up "
+            "Next: Revisit once F4/F5 land."
+        ),
+    )
 
 
 def test_recap_detail_falls_back_to_the_recaps_own_scoped_channel(

@@ -434,6 +434,10 @@ def build_recap(
         items=_backfill_missing_sources(llm, recap.items, id_map, content_map),
     )
     recap = Recap(
+        text=_ensure_channel_paragraphs(recap.text, recap.items, detail),
+        items=recap.items,
+    )
+    recap = Recap(
         text=_append_item_counts(recap.text, recap.items, detail), items=recap.items
     )
     recap = Recap(
@@ -441,6 +445,53 @@ def build_recap(
         items=recap.items,
     )
     return recap
+
+
+def _ensure_channel_paragraphs(
+    text: str, items: tuple[RecapItem, ...], detail: str
+) -> str:
+    """Append a deterministic fallback paragraph for any channel whose
+    primary item(s) came back in `items` but never got a paragraph in
+    `text` at all.
+
+    `_ITEM_EXTRACTION_INSTRUCTIONS` has the LLM extract `items` before
+    writing `text`, so `items` can be correctly grounded for a channel even
+    when the LLM's own narration skips that channel entirely -- observed
+    live on a global, multi-channel recap: the busiest channel (most items,
+    most competing content) was left out of `text` two times out of three,
+    while `items` still had its entries. This is the same "attention
+    degrades across a long single generation" failure `_backfill_missing_
+    sources` already addresses for a single item's citation, just at the
+    coarser "did this channel get a paragraph at all" level -- and, like
+    that backfill, it's a deterministic patch rather than a second LLM
+    call, since the content to render (`item.summary`) is already grounded.
+
+    Only fires for a channel that's missing outright -- a channel `_append_
+    item_counts` can already find a paragraph for (even a stray or
+    malformed one) is left alone here. Checks for the same `"**{channel}"`
+    prefix `_append_item_counts`/`_append_source_links` match against, so a
+    fallback paragraph this adds is itself indistinguishable from an
+    LLM-written one to those two passes that run after it.
+    """
+    paragraphs = text.split("\n\n")
+    channels_with_items = {item.channel for item in items if item.is_primary}
+    channels_present = {
+        channel
+        for channel in channels_with_items
+        if any(p.startswith(f"**{channel}") for p in paragraphs)
+    }
+    missing_items = [
+        item
+        for item in items
+        if item.is_primary and item.channel not in channels_present
+    ]
+    if not missing_items:
+        return text
+    fallback = "\n\n".join(
+        f"{_item_paragraph_prefix(item.channel, item.label, detail)} {item.summary}"
+        for item in missing_items
+    )
+    return f"{text}\n\n{fallback}" if text.strip() else fallback
 
 
 def _parse_recap(

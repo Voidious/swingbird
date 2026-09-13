@@ -345,6 +345,119 @@ def test_build_recap_drops_items_without_an_instruction(monkeypatch):
     assert result.items == ()
 
 
+def test_build_recap_backfills_a_paragraph_for_a_channel_missing_from_text(
+    monkeypatch,
+):
+    # Live bug: a global recap's grounded "items" still named a channel the
+    # LLM's own "text" left out entirely -- observed on the busiest channel
+    # in a multi-channel recap two times out of three. The rendered text
+    # must still mention every channel it has a grounded primary item for.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: shipping the login fix.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "login fix",
+                "instruction": "ship it",
+            },
+            {
+                "channel": "frontend",
+                "label": "F9",
+                "summary": "dropdown regression",
+                "instruction": "fix the dropdown",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**backend**: shipping the login fix.\n\n**frontend**: dropdown regression"
+    )
+
+
+def test_build_recap_backfills_every_missing_primary_item_in_detailed_mode(
+    monkeypatch,
+):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** shipping the login fix.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "login fix",
+                "instruction": "ship it",
+            },
+            {
+                "channel": "frontend",
+                "label": "F9",
+                "summary": "dropdown regression",
+                "instruction": "fix the dropdown",
+            },
+            {
+                "channel": "frontend",
+                "label": "F10",
+                "summary": "modal focus trap",
+                "instruction": "fix focus trapping",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** shipping the login fix.\n\n"
+        "**frontend -- F9:** dropdown regression\n\n"
+        "**frontend -- F10:** modal focus trap"
+    )
+
+
+def test_build_recap_backfill_is_the_whole_text_when_the_llm_wrote_nothing(
+    monkeypatch,
+):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "login fix",
+                "instruction": "ship it",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**backend**: login fix"
+
+
+def test_build_recap_does_not_backfill_a_channel_already_present_in_text(
+    monkeypatch,
+):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    text = "**backend**: shipping the login fix.\n\n**frontend**: nothing new."
+    llm, _ = _llm(
+        text,
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "login fix",
+                "instruction": "ship it",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == text
+
+
 def test_build_recap_appends_additional_item_count_to_concise_text(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
