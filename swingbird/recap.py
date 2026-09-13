@@ -552,10 +552,12 @@ def _parse_keywords(raw: object) -> tuple[str, ...]:
 # our own correct "(1 additional open item.)", a bare, occasionally wrong,
 # "(0 more open items.)" for a channel with nothing else, a countless
 # "(Additional open items remain.)" -- no leading number/no/zero at all, and
-# "remain" instead of "remaining" -- and a "(+1 more open item.)" with a
-# leading "+" the plain \d+ alternative didn't match). The leading count and
-# trailing "remain" are both optional here to catch the countless shape too
-# -- either one can be absent from what the LLM narrates, but "more/
+# "remain" instead of "remaining" -- a "(+1 more open item.)" with a leading
+# "+" the plain \d+ alternative didn't match, and a countless "(Additional
+# open items omitted.)" -- same shape as "remain(ing)" but naming the fold
+# itself as an omission instead of describing what's left over). The leading
+# count and trailing verb are both optional here to catch the countless
+# shapes too -- either can be absent from what the LLM narrates, but "more/
 # additional/other/remaining" plus "item(s)" together are specific enough to
 # this one note that a false strip elsewhere isn't a real risk. Stripped
 # before _append_item_counts adds the real, grounded count, so the two can
@@ -563,7 +565,8 @@ def _parse_keywords(raw: object) -> tuple[str, ...]:
 # own.
 _LLM_COUNT_NOTE_RE = re.compile(
     r"\s*\(\s*(?:(?:\+?\d+|no|zero)\s+)?(?:more|additional|other|remaining)\s+"
-    r"(?:open\s+)?items?(?:\s+remain(?:s|ing)?)?\.?\s*\)\s*$",
+    r"(?:open\s+)?items?(?:\s+(?:remain(?:s|ing)?|omitted|excluded|hidden|"
+    r"skipped|not\s+shown))?\.?\s*\)\s*$",
     re.IGNORECASE,
 )
 
