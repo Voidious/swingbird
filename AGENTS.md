@@ -80,11 +80,13 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `avatar.py` | Builds the `data:image/svg+xml,...` URI for an "Emoji" style Buzz avatar, matching Buzz Desktop's own encoding. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
-| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_relay / chit-chat). |
+| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_list / recap_relay / chit-chat). |
 | `pending_actions.py` | Confirm/cancel state machine for proposed dispatches. |
 | `history.py` | One-shot fetch of recent channel messages (via `outbound.run_buzz_cli`), for recaps. |
 | `recap.py` | LLM-summarizes recent channel activity into a short recap, plus structured per-channel `RecapItem`s. |
 | `recap_actions.py` | Stores the latest recap's items per thread and resolves a "go ahead with X" / "tell me more about X" / "for X, ..." reference against them. |
+| `recap_detail.py` | LLM-elaborates on one or more recap items beyond their stored summary/instruction, for `recap_detail` ("tell me more about X"). |
+| `recap_list.py` | Enumerates a recap's additional/open items at the recap's own level of detail, for `recap_list` ("what are the other items") -- no LLM call, unlike `recap_detail.py`. |
 | `dispatch_phrasing.py` | Narrows/rewrites a recap item's own instruction into a directive, for `recap_action`. |
 | `recap_relay.py` | Forwards the user's own question/comment about a recap item to its agent near-verbatim, resolving ambiguous references (e.g. "it") against the item's context, for `recap_relay`. |
 | `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |

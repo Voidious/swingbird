@@ -99,6 +99,7 @@ from swingbird.recap_disambiguation import (
     format_choices,
     resolve_choice,
 )
+from swingbird.recap_list import render_items
 from swingbird.recap_relay import relay_with_context
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
@@ -477,6 +478,8 @@ class Daemon:
             return self._recap_action(intent, thread_id)
         if intent.kind == "recap_detail":
             return self._recap_detail(intent, thread_id)
+        if intent.kind == "recap_list":
+            return self._recap_list(intent, thread_id)
         if intent.kind == "recap_relay":
             return self._recap_relay(intent, thread_id)
         return _CHIT_CHAT_REPLY
@@ -557,6 +560,21 @@ class Daemon:
             self._config,
             no_other_items=resolved.degraded,
         )
+
+    def _recap_list(self, intent: Intent, thread_id: str) -> str:
+        """Enumerate the recap's additional/open items at the recap's own
+        level of detail (see `recap_list.render_items`) -- unlike
+        `_recap_detail`, this never calls the LLM or fetches an item's
+        source thread: there's nothing to ground beyond each item's own
+        already-grounded `summary`/`instruction`, so doing either would
+        just be wasted work.
+        """
+        resolved = self._resolve_recap_items(thread_id, intent.message, intent.channel)
+        for item in resolved.items:
+            self._audit.log_recap_reference(
+                thread_id, "recap_list", intent.message, item
+            )
+        return render_items(resolved.items, resolved.degraded, self._config)
 
     def _fetch_item_thread(self, item: RecapItem) -> list[dict]:
         """Return every message in the thread `item.source_event_id`

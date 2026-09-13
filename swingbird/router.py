@@ -40,6 +40,7 @@ VALID_INTENTS = (
     "cancel",
     "recap_action",
     "recap_detail",
+    "recap_list",
     "recap_relay",
     "chit_chat",
 )
@@ -82,32 +83,39 @@ Classify the user's message into exactly one of these intents:
   -- do not try to identify the channel or agent yourself, and do not
   restate the recommendation's content, since only the raw reference is
   needed to look it back up.
-- recap_detail: asking for more detail on something the *recap* surfaced,
-  without asking to proceed with it -- e.g. "tell me more about F4", "what
-  did dripbird say about the duplicate extractor". Also covers asking to
-  enumerate the recap's additional/open items instead of elaborating on one
-  named thing -- e.g. "what are the other items", "what else is there",
-  "show me the rest", "what other items" -- these are recap_detail too, not
-  a request for something new, even without any "tell me more" phrasing.
-  Same "message" handling as recap_action: preserve the user's own
-  reference to which item(s), don't restate its content.
+- recap_detail: asking this agent to genuinely elaborate on something the
+  *recap* surfaced -- go deeper than the recap's own wording, without
+  asking to proceed with it -- e.g. "tell me more about F4", "what did
+  dripbird say about the duplicate extractor", "tell me more about the
+  additional items" (explicit "tell me more"/"elaborate"/"go deeper"
+  phrasing, even when it's about more than one item). Same "message"
+  handling as recap_action: preserve the user's own reference to which
+  item(s), don't restate its content.
+- recap_list: asking to see/enumerate the recap's additional/open items
+  themselves, without asking for deeper detail on any of them -- e.g. "what
+  are the other items", "what else is there", "show me the rest", "what
+  other items". The distinction from recap_detail is "tell me more"/
+  "elaborate" wording: if the message just asks *which* other items exist,
+  it's recap_list; if it also asks to go deeper on them, it's recap_detail.
+  Same "message" handling as recap_action/recap_detail: preserve the user's
+  own reference, don't restate content.
 - recap_relay: forwarding the user's own new question, comment, or
   pushback about a specific item the *recap* surfaced, on to the agent
   that owns it -- e.g. "for dripbird F4, couldn't we just pre-compile
   it?", "ask backend if F4 still needs the migration", "tell frontend
   that sounds risky, what about caching instead". Unlike recap_action
   (proceeding with the recap's own recommendation, nothing new from the
-  user) and recap_detail (asking *this* agent to elaborate, nothing gets
-  relayed anywhere), recap_relay is new content of the user's own that
-  should be sent on to the coding agent. Put the user's reference to
-  *which item* they mean into "item_reference" -- same handling as
-  recap_action's reference (preserve wording, e.g. "F4", "dripbird F4"),
-  do not identify the channel yourself. Put the actual text to relay
-  into "message", preserved as closely to the user's own wording as
-  possible, same rule as dispatch -- extract it, don't paraphrase, and
-  don't fold the item reference into it (e.g. for "for dripbird F4,
-  couldn't we just pre-compile it?", "item_reference" is "F4" or
-  "dripbird F4" and "message" is "couldn't we just pre-compile it?").
+  user) and recap_detail/recap_list (asking *this* agent about its own
+  recap, nothing gets relayed anywhere), recap_relay is new content of the
+  user's own that should be sent on to the coding agent. Put the user's
+  reference to *which item* they mean into "item_reference" -- same
+  handling as recap_action's reference (preserve wording, e.g. "F4",
+  "dripbird F4"), do not identify the channel yourself. Put the actual
+  text to relay into "message", preserved as closely to the user's own
+  wording as possible, same rule as dispatch -- extract it, don't
+  paraphrase, and don't fold the item reference into it (e.g. for "for
+  dripbird F4, couldn't we just pre-compile it?", "item_reference" is "F4"
+  or "dripbird F4" and "message" is "couldn't we just pre-compile it?").
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:
@@ -141,8 +149,8 @@ _OPEN_RECAP_NOTE = """
 
 Conversation state: this thread already has an open recap -- a structured
 recap with per-channel items was given earlier in this conversation, and the
-user can still reference it. Prefer recap_detail, recap_action, or
-recap_relay over a plain recap or a plain dispatch when the wording could
+user can still reference it. Prefer recap_detail, recap_list, recap_action,
+or recap_relay over a plain recap or a plain dispatch when the wording could
 describe either (e.g. "tell me more about the open items for dripbird",
 "what's the status on F4", "go ahead with the duplicate extractor fix",
 "what are the other items", "what else is there", "for dripbird F4,
@@ -170,10 +178,10 @@ _NO_OPEN_RECAP_NOTE = """
 
 Conversation state: this thread has no open recap right now -- nothing has
 been recapped yet, or too much has happened since for one to still apply.
-recap_detail, recap_action, and recap_relay all require an existing recap
-to reference, so don't classify as any of those here; a message asking
-about a channel's status is a plain recap instead, and a message meant for
-a channel/agent is a plain dispatch instead."""
+recap_detail, recap_list, recap_action, and recap_relay all require an
+existing recap to reference, so don't classify as any of those here; a
+message asking about a channel's status is a plain recap instead, and a
+message meant for a channel/agent is a plain dispatch instead."""
 
 # Mirrors _OPEN_RECAP_NOTE/_NO_OPEN_RECAP_NOTE's own reasoning, for the same
 # underlying problem: classification sees only the current message, with no
@@ -220,9 +228,9 @@ class Intent:
     detail: str = "concise"
     # Only set by the router's own LLM classification for a `recap_relay`
     # intent -- the user's reference to which recap item `message` is about
-    # (see router module docstring). `recap_action`/`recap_detail` instead
-    # put their own reference straight into `message`, since they have no
-    # separate content to relay alongside it.
+    # (see router module docstring). `recap_action`/`recap_detail`/
+    # `recap_list` instead put their own reference straight into `message`,
+    # since they have no separate content to relay alongside it.
     item_reference: str | None = None
     # Never set by the router's own LLM classification -- only by
     # `daemon._recap_action`/`daemon._recap_relay`, to thread a recap

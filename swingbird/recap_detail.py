@@ -17,7 +17,7 @@ them in a single call rather than needing one call per item.
 
 Each item's own paragraph in the LLM's answer also gets a Buzz message
 link appended, when `item.source_event_id` is set -- see
-`_append_source_links`.
+`append_source_links`.
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def elaborate(
     text = llm.complete(messages)
     if multiple:
         text = _backfill_missing_paragraphs(text, items)
-    return _append_source_links(text, items, config)
+    return append_source_links(text, items, config)
 
 
 def _backfill_missing_paragraphs(text: str, items: list[RecapItem]) -> str:
@@ -169,7 +169,7 @@ def _backfill_missing_paragraphs(text: str, items: list[RecapItem]) -> str:
     return f"{text}\n\n{fallback}" if text.strip() else fallback
 
 
-def _append_source_links(text: str, items: list[RecapItem], config: Config) -> str:
+def append_source_links(text: str, items: list[RecapItem], config: Config) -> str:
     """Append a Buzz message link to each item's own paragraph in `text`,
     pointing at `item.source_event_id` when the recap grounded it in one
     specific transcript message (see `RecapItem.source_event_id`) --
@@ -178,6 +178,11 @@ def _append_source_links(text: str, items: list[RecapItem], config: Config) -> s
     plain "**channel**:", since that's the format this module's own prompt
     asks for. A channel name `config` doesn't recognize is silently
     skipped, same rationale as recap.py's version.
+
+    Not private (unlike recap.py's version) -- `recap_list.py` renders the
+    exact same "**channel -- label:**" paragraph shape without going
+    through `elaborate` at all, and reuses this rather than duplicating the
+    link-attachment logic.
     """
     for item in items:
         if item.source_event_id is None:

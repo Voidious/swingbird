@@ -177,6 +177,16 @@ def test_route_recap_detail_extracts_reference_verbatim():
     assert intent == Intent(kind="recap_detail", message="the duplicate extractor fix")
 
 
+def test_route_recap_list_extracts_reference_verbatim():
+    router, _ = _router(
+        json.dumps({"intent": "recap_list", "message": "the other items"})
+    )
+
+    intent = router.route("what are the other items")
+
+    assert intent == Intent(kind="recap_list", message="the other items")
+
+
 def test_route_recap_relay_extracts_item_reference_and_message_separately():
     router, _ = _router(
         json.dumps(

@@ -1438,6 +1438,145 @@ def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch)
     assert system_prompt == recap._detailed_system_prompt(3)
 
 
+def test_recap_list_renders_items_without_calling_the_llm(tmp_path, monkeypatch):
+    """Unlike recap_detail, recap_list must never elaborate -- it lists the
+    recap's own stored summary/instruction, so only the router's own
+    classification call ever reaches the LLM."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_list", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == (
+        "dm-chan",
+        (
+            "**backend -- F4:** unused-ignore propagation "
+            "Fix the deterministic directive trip-check."
+        ),
+    )
+    assert len(llm.calls) == 1
+
+
+def test_recap_list_resolves_via_intent_channel_when_message_is_generic(
+    tmp_path, monkeypatch
+):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_list",
+            "channel": "backend",
+            "message": "the open items",
+        }
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert "unused-ignore propagation" in args[1]
+
+
+def test_recap_list_lists_every_non_primary_item_for_additional_items(
+    tmp_path, monkeypatch
+):
+    sent = _sent(monkeypatch)
+    other_item = RecapItem(
+        channel="backend",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+    third_item = RecapItem(
+        channel="backend",
+        label="F6",
+        summary="lower priority follow-up",
+        instruction="Revisit once F4/F5 land.",
+        is_primary=False,
+    )
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item, third_item)
+    llm = FakeLLM(
+        json_response={
+            "intent": "recap_list",
+            "channel": "backend",
+            "message": "the additional items",
+        }
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert "undefined-sentinel cloneDeep split" in args[1]
+    assert "lower priority follow-up" in args[1]
+    assert "unused-ignore propagation" not in args[1]
+
+
+def test_recap_list_falls_back_to_the_recaps_own_scoped_channel(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    other_item = RecapItem(
+        channel="backend",
+        label="F5",
+        summary="undefined-sentinel cloneDeep split",
+        instruction="Design a fix for the cloneDeep split.",
+        is_primary=False,
+    )
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, other_item, channel="backend")
+    llm = FakeLLM(json_response={"intent": "recap_list", "message": "the other items"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert "undefined-sentinel cloneDeep split" in args[1]
+
+
+def test_recap_list_no_other_items_says_so_plainly(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, channel="backend")
+    llm = FakeLLM(json_response={"intent": "recap_list", "message": "the other items"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1].startswith("There are no other open items for that channel")
+    assert "unused-ignore propagation" in args[1]
+
+
+def test_recap_list_unmapped_channel_omits_the_source_link(tmp_path, monkeypatch):
+    """Unlike recap_detail (which must fetch the item's source thread and so
+    raises for a channel `config` doesn't recognize), recap_list never looks
+    up the channel for anything but an optional link -- an unmapped channel
+    just renders without one, same as recap_detail.append_source_links does
+    for its own paragraphs."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", UNKNOWN_CHANNEL_ITEM)
+    llm = FakeLLM(json_response={"intent": "recap_list", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1] == (
+        "**ghost-channel -- F4:** unused-ignore propagation "
+        "Fix the deterministic directive trip-check."
+    )
+
+
+def test_recap_list_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "recap_list", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args[1].startswith("Couldn't do that: I don't have a recent recap")
+
+
 def test_dispatch_proposes_and_asks_for_confirmation(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     store = PendingActionStore()
