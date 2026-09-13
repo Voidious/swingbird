@@ -108,7 +108,8 @@ def test_build_recap_appends_a_link_per_shown_item_in_detailed_mode(monkeypatch)
         ),
     )
     llm, _ = _llm(
-        "**backend**: prose covering both items already.",
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- F5:** prose covering the second item.",
         items=[
             {
                 "channel": "backend",
@@ -130,8 +131,9 @@ def test_build_recap_appends_a_link_per_shown_item_in_detailed_mode(monkeypatch)
     result = build_recap(llm, config, detail="detailed")
 
     assert result.text == (
-        "**backend**: prose covering both items already.\n"
-        "buzz://message?channel=chan-1&id=evt-a\n"
+        "**backend -- F4:** prose covering the first item.\n"
+        "buzz://message?channel=chan-1&id=evt-a\n\n"
+        "**backend -- F5:** prose covering the second item.\n"
         "buzz://message?channel=chan-1&id=evt-b"
     )
 
@@ -148,7 +150,8 @@ def test_build_recap_detailed_mode_shows_up_to_configured_items_as_primary(
     )
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
-        "**backend**: prose covering multiple items already.",
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- F5:** prose covering the second item.",
         items=[
             {
                 "channel": "backend",
@@ -175,7 +178,8 @@ def test_build_recap_detailed_mode_shows_up_to_configured_items_as_primary(
 
     assert [item.is_primary for item in result.items] == [True, True, False]
     assert result.text == (
-        "**backend**: prose covering multiple items already. (1 additional open item.)"
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- F5:** prose covering the second item. (1 additional open item.)"
     )
 
 

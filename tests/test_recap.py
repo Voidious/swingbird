@@ -459,6 +459,37 @@ def test_build_recap_strips_llm_narrated_zero_count_with_nothing_to_append(
     assert result.text == "**crispen**: primary item text."
 
 
+def test_build_recap_strips_llm_narrated_countless_remain_note(monkeypatch):
+    # Observed live: the LLM narrated "(Additional open items remain.)" --
+    # no leading number/no/zero, and "remain" instead of "remaining" -- which
+    # the original regex (requiring a leading count word) didn't catch,
+    # leaving a bogus, uncorrected note standing on its own.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**swingbird**: primary item text. (Additional open items remain.)",
+        items=[
+            {
+                "channel": "swingbird",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "swingbird",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == (
+        "**swingbird**: primary item text. (1 additional open item.)"
+    )
+
+
 def test_build_recap_strips_llm_narrated_count_case_insensitively(monkeypatch):
     monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
@@ -598,7 +629,7 @@ def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
         ),
     )
     llm, _ = _llm(
-        "**backend**: prose covering multiple items already.",
+        "**backend -- F4:** prose covering the one item already.",
         items=[
             {
                 "channel": "backend",
@@ -613,7 +644,7 @@ def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
     result = build_recap(llm, CONFIG, detail="detailed")
 
     assert result.text == (
-        "**backend**: prose covering multiple items already.\n"
+        "**backend -- F4:** prose covering the one item already.\n"
         "buzz://message?channel=chan-1&id=evt-a"
     )
 

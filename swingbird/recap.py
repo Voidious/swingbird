@@ -77,6 +77,28 @@ _FORMAT_GUARD = (
     "a single run-on paragraph."
 )
 
+# Detailed recap's own version of _FORMAT_GUARD -- a concise recap only ever
+# shows one item per channel, so "one paragraph per channel" and "one
+# paragraph per item" are the same instruction there. A detailed recap can
+# show several items per channel (up to config.recap.max_detailed_items), so
+# the two diverge: without this, the LLM folds every shown item for a
+# channel into one run-on paragraph instead of a followable list, which is
+# indistinguishable from the old free-form prompt this replaced. Mirrors
+# recap_detail.py's own _FORMAT_GUARD (same "**channel -- label:**" prefix,
+# unconditional even for a single item) so a detailed recap's per-item look
+# matches its "tell me more" follow-up's look.
+_DETAILED_FORMAT_GUARD = (
+    'Format "text" as one paragraph per item: each item\'s paragraph '
+    "starts with its channel name and label in bold Markdown (e.g. "
+    '"**swingbird -- F4:** ..."), separated from the next paragraph -- '
+    "even one for the same channel -- by a blank line (a literal \\n\\n "
+    "between them in the JSON string). List each channel's items together "
+    "and in the priority order given, but never merge more than one item "
+    "into a single paragraph. If a channel has no open item, give it one "
+    'paragraph instead, starting "**channel**: ..." the same way a concise '
+    "recap does. Never merge multiple channels' content together either."
+)
+
 _ITEMS_INSTRUCTIONS = """
 
 Each transcript message is tagged with a short id like "m3" (e.g. "[m3]
@@ -128,11 +150,14 @@ def _detailed_system_prompt(max_items: int) -> str:
     (`config.recap.max_detailed_items` -- see `build_recap`).
 
     Deliberately built the same way `_CONCISE_SYSTEM_PROMPT` is -- lead
-    item(s) then next step, per channel, sharing every guard -- rather than
-    the old free-form three-bucket ("what needs attention / in flight /
-    finished") prompt this replaced. That older prompt didn't narrate
-    individually-referenceable items at all, so a "detailed recap" couldn't
-    support the same "tell me more about F4" follow-ups a concise one could.
+    item(s) then next step, per channel, sharing every guard but the format
+    one -- rather than the old free-form three-bucket ("what needs
+    attention / in flight / finished") prompt this replaced. That older
+    prompt didn't narrate individually-referenceable items at all, so a
+    "detailed recap" couldn't support the same "tell me more about F4"
+    follow-ups a concise one could. Uses `_DETAILED_FORMAT_GUARD` instead of
+    `_FORMAT_GUARD` since it can narrate several items per channel, each
+    needing its own paragraph -- see that constant.
     A function instead of a module-level constant only because `max_items`
     is configurable and has to reach the LLM's own instructions, not just
     `_parse_recap`'s bookkeeping.
@@ -146,11 +171,11 @@ status then next step, with more concrete detail than a one-line summary \
 function names, when the transcript has them). Describe only those \
 leading items (up to {max_items} per channel) -- if the channel has more \
 open items beyond that, don't mention them or fold their content into \
-this paragraph; a count of how many more there are is appended \
+another item's paragraph; a count of how many more there are is appended \
 separately, not narrated by you. If a channel has no open item, say so \
 briefly, and if a goal is given for it, add one short sentence naming \
 that goal as what's next for the project. \
-{_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
+{_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_DETAILED_FORMAT_GUARD} \
 Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
 not a transcript.{_ITEMS_INSTRUCTIONS}"""
 
@@ -255,9 +280,12 @@ def build_recap(
     recap = _parse_recap(
         llm.complete_json(messages), id_map, content_map, max_items_per_channel
     )
-    recap = Recap(text=_append_item_counts(recap.text, recap.items), items=recap.items)
     recap = Recap(
-        text=_append_source_links(recap.text, recap.items, config), items=recap.items
+        text=_append_item_counts(recap.text, recap.items, detail), items=recap.items
+    )
+    recap = Recap(
+        text=_append_source_links(recap.text, recap.items, config, detail),
+        items=recap.items,
     )
     return recap
 
@@ -317,30 +345,63 @@ def _parse_keywords(raw: object) -> tuple[str, ...]:
 # more there are is appended separately, not narrated by you") -- that's a
 # prompt request, not an enforced constraint, so it can still leak through
 # (observed live: a "(1 more open item.)" from the LLM stacked right next to
-# our own correct "(1 additional open item.)", and a bare, occasionally wrong,
-# "(0 more open items.)" for a channel with nothing else). Stripped before
-# _append_item_counts adds the real, grounded count, so the two can never
-# stack and a wrong LLM-invented number is never left standing on its own.
+# our own correct "(1 additional open item.)", a bare, occasionally wrong,
+# "(0 more open items.)" for a channel with nothing else, and a countless
+# "(Additional open items remain.)" -- no leading number/no/zero at all, and
+# "remain" instead of "remaining"). The leading count and trailing "remain"
+# are both optional here to catch that last shape too -- either one can be
+# absent from what the LLM narrates, but "more/additional/other/remaining"
+# plus "item(s)" together are specific enough to this one note that a false
+# strip elsewhere isn't a real risk. Stripped before _append_item_counts
+# adds the real, grounded count, so the two can never stack and a wrong
+# LLM-invented note is never left standing on its own.
 _LLM_COUNT_NOTE_RE = re.compile(
-    r"\s*\(\s*(?:\d+|no|zero)\s+(?:more|additional|other|remaining)\s+"
-    r"(?:open\s+)?items?\.?\s*\)\s*$",
+    r"\s*\(\s*(?:(?:\d+|no|zero)\s+)?(?:more|additional|other|remaining)\s+"
+    r"(?:open\s+)?items?(?:\s+remain(?:s|ing)?)?\.?\s*\)\s*$",
     re.IGNORECASE,
 )
 
 
-def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
-    """Append a deterministic "(N additional open items)" note to each
-    channel's paragraph in `text`, computed from the real non-primary item
-    count in `items` rather than left to the LLM's own prose judgment.
+def _item_paragraph_prefix(channel: str, label: str, detail: str) -> str:
+    """Return the bold Markdown prefix that starts an item's own paragraph
+    in recap "text", per `_FORMAT_GUARD` (concise: "**channel**:") or
+    `_DETAILED_FORMAT_GUARD` (detailed: "**channel -- label:**", matching
+    `recap_detail.py`'s own per-item format).
+    """
+    if detail == "detailed":
+        return f"**{channel} -- {label}:**"
+    return f"**{channel}**:"
+
+
+def _last_primary_by_channel(items: tuple[RecapItem, ...]) -> dict[str, RecapItem]:
+    """Return the last (highest-priority-order) primary item per channel --
+    the item whose own paragraph a detailed recap's "(N additional open
+    items)" note belongs after, since that's the last paragraph shown for
+    that channel before the fold (see `_append_item_counts`)."""
+    last: dict[str, RecapItem] = {}
+    for item in items:
+        if item.is_primary:
+            last[item.channel] = item
+    return last
+
+
+def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) -> str:
+    """Append a deterministic "(N additional open items)" note to `text`,
+    computed from the real non-primary item count in `items` rather than
+    left to the LLM's own prose judgment.
 
     The LLM was previously asked to narrate this count itself (see
     _CONCISE_SYSTEM_PROMPT's history), but proved unreliable in practice --
     it would fold another item's content into the leading paragraph instead
     of counting it, or drop the mention entirely, while the grounded
     `items` list was correct the whole time. Called for both "concise" and
-    "detailed" recaps (see `build_recap`) -- a concise recap always shows
-    exactly one item per channel, a detailed one up to `config.recap.
-    max_detailed_items`, but either way anything beyond what got shown is a
+    "detailed" recaps (see `build_recap`): a concise recap shows exactly one
+    item per channel, so the note lands on that channel's one paragraph
+    (`**channel**:`); a detailed one shows up to `config.recap.
+    max_detailed_items` per channel, each in its own paragraph (`**channel
+    -- label**:`, see `_DETAILED_FORMAT_GUARD`), so the note lands on the
+    *last* of those (`_last_primary_by_channel`) -- the paragraph the fold
+    immediately follows. Either way, anything beyond what got shown is a
     non-primary item here (see `RecapItem.is_primary`) and belongs in this
     same count, not narrated by the LLM itself.
 
@@ -351,16 +412,16 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
     be worse than the stacked-duplicate case, since nothing would ever
     correct it.
 
-    Relies on `_FORMAT_GUARD`'s "one paragraph per channel, each starting
-    with **<channel>**" contract to find the right paragraph; a channel
-    whose paragraph doesn't start that way (the LLM ignoring the format
-    guard) is silently left without a count rather than guessing which
-    paragraph it meant.
+    Relies on the format guard's paragraph-prefix contract to find the
+    right paragraph; one that doesn't start that way (the LLM ignoring the
+    format guard) is silently left without a count rather than guessing
+    which paragraph it meant.
     """
     counts: dict[str, int] = {}
     for item in items:
         if not item.is_primary:
             counts[item.channel] = counts.get(item.channel, 0) + 1
+    last_primary = _last_primary_by_channel(items) if detail == "detailed" else {}
     paragraphs = text.split("\n\n")
     changed = False
     for i, paragraph in enumerate(paragraphs):
@@ -368,7 +429,16 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
         if cleaned != paragraph:
             changed = True
         for channel, count in counts.items():
-            if cleaned.startswith(f"**{channel}**:"):
+            if detail == "detailed":
+                last_item = last_primary.get(channel)
+                prefix = (
+                    _item_paragraph_prefix(channel, last_item.label, detail)
+                    if last_item is not None
+                    else None
+                )
+            else:
+                prefix = _item_paragraph_prefix(channel, "", detail)
+            if prefix and cleaned.startswith(prefix):
                 noun = "item" if count == 1 else "items"
                 cleaned = f"{cleaned} ({count} additional open {noun}.)"
                 changed = True
@@ -380,21 +450,25 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...]) -> str:
 
 
 def _append_source_links(
-    text: str, items: tuple[RecapItem, ...], config: Config
+    text: str, items: tuple[RecapItem, ...], config: Config, detail: str
 ) -> str:
-    """Append a Buzz message link to each channel's paragraph in `text` for
-    every primary item's `source_event_id`, when the LLM grounded it in one
-    specific transcript message (see `RecapItem.source_event_id`) -- one
-    link per line, in the order `items` lists them, since a detailed
-    recap's channel paragraph can narrate more than one (see `RecapItem.
-    is_primary`).
+    """Append a Buzz message link to `text` for every primary item's
+    `source_event_id`, when the LLM grounded it in one specific transcript
+    message (see `RecapItem.source_event_id`).
+
+    A concise recap has one paragraph per channel (`**channel**:`), so every
+    primary item for that channel shares it and a link lands on the same
+    paragraph, one per line, in the order `items` lists them. A detailed
+    recap gives each primary item its own paragraph (`**channel --
+    label**:`, see `_DETAILED_FORMAT_GUARD`), so each item's link lands on
+    its own paragraph instead -- mirrors `recap_detail.py`'s own
+    `_append_source_links`, which uses this same per-item format
+    unconditionally since it only ever elaborates on already-selected items.
 
     Only ever a primary item -- those are the only ones `text` actually
     narrates (see `_ITEMS_INSTRUCTIONS`); a non-primary item is just
     counted by `_append_item_counts`, never described, so there's no
-    content of its own for a link to attach to. Relies on the same
-    `**channel**:`-prefixed paragraph `_append_item_counts` does (see
-    `_FORMAT_GUARD`).
+    content of its own for a link to attach to.
 
     `config.channel_by_name(item.channel)` is guaranteed to succeed
     whenever `source_event_id` is set: `_resolve_tag` only ever resolves
@@ -409,7 +483,8 @@ def _append_source_links(
             continue
         channel = config.channel_by_name(item.channel)
         link = outbound.message_link(channel.id, item.source_event_id)
-        text = outbound.append_paragraph_link(text, f"**{item.channel}**:", link)
+        prefix = _item_paragraph_prefix(item.channel, item.label, detail)
+        text = outbound.append_paragraph_link(text, prefix, link)
     return text
 
 
