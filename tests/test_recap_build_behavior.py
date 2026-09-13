@@ -64,6 +64,40 @@ class FakeOpenAI:
         self.chat = FakeChat(FakeCompletions(content))
 
 
+class FakeSequentialCompletions:
+    """Returns each of `responses` in turn (one per call), repeating the
+    last one for any call beyond the given list -- for tests exercising
+    `_backfill_missing_sources`'s own follow-up call, which needs a second,
+    independently-scripted response distinct from the main extraction
+    call's. A `response` that's an exception instance is raised instead of
+    returned, so a test can simulate the backfill call itself failing."""
+
+    def __init__(self, responses: list):
+        self._responses = responses
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        index = min(len(self.calls) - 1, len(self._responses) - 1)
+        response = self._responses[index]
+        if isinstance(response, BaseException):
+            raise response
+        return FakeResponse(response)
+
+
+class FakeSequentialOpenAI:
+    def __init__(self, responses: list):
+        self.chat = FakeChat(FakeSequentialCompletions(responses))
+
+
+def _llm_sequence(*responses: str) -> tuple[LLMClient, FakeSequentialOpenAI]:
+    """Like `_llm`, but for tests needing distinct scripted responses across
+    more than one `complete_json` call -- pass each response already JSON-
+    encoded (or an exception instance to simulate that call failing)."""
+    fake = FakeSequentialOpenAI(list(responses))
+    return LLMClient(LLM_CONFIG, client=fake), fake
+
+
 def _llm(
     text: str = "recap", items: list[dict] | None = None
 ) -> tuple[LLMClient, FakeOpenAI]:

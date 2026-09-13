@@ -21,12 +21,12 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from swingbird import outbound
 from swingbird.config import ChannelConfig, Config
 from swingbird.history import fetch_messages_since
-from swingbird.llm import LLMClient
+from swingbird.llm import LLMClient, LLMError
 
 _LAUNDERING_GUARD = (
     "Never describe work that is drafted, proposed, or awaiting the user's "
@@ -221,6 +221,114 @@ Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
 not a transcript.{_ITEM_EXTRACTION_INSTRUCTIONS}"""
 
 
+# Fired only for items the main extraction call already tried and failed to
+# ground (RecapItem.source_event_id is None) -- never for one that already
+# has a source_id, so a recap where extraction worked the first time (the
+# common case, especially for a channel's primary item) never pays for a
+# second call at all. This is the module docstring's "one call does both
+# jobs" tradeoff applied selectively rather than abandoned: a second full
+# extraction+text call for every recap would double cost unconditionally;
+# a small, grounding-only call that only fires on the actual failure mode
+# (observed live: worse for non-primary items and later channels in a
+# global recap, where the main call's attention has already moved on to
+# writing "text") costs nothing when extraction already succeeded and asks
+# a much narrower question -- "which one message states this already-
+# written item" -- than the main call's "read this whole transcript, write
+# a recap, and cite everything as you go."
+_BACKFILL_SYSTEM_PROMPT = """You are grounding work items that an earlier \
+extraction pass described but couldn't confidently cite a source message \
+for. You'll be given, per channel, that channel's own tagged messages \
+(each shown as "[m3] <message text>") and a numbered list of items from \
+that channel, each with the summary/instruction already extracted for it. \
+For each item, find the one message that most directly states or \
+requests it, and report that message's tag. If genuinely no single \
+message in the given transcript states it, report a null source_id for \
+that item rather than guessing the closest one.
+
+Respond with JSON only, one entry per item you were given (in any order): \
+{"groundings": [{"index": <the item's index number, as given>, \
+"source_id": "<tag, or null if none clearly grounds it>"}]}"""
+
+
+def _needs_backfill(item: RecapItem, content_map: dict[str, dict[str, str]]) -> bool:
+    """An item is worth a backfill attempt only if the main call left it
+    ungrounded and its channel actually has tagged messages to search --
+    a channel with none (e.g. "no recent activity") has nothing a backfill
+    call could find either, so it's excluded rather than sent as an empty
+    section."""
+    return item.source_event_id is None and bool(content_map.get(item.channel))
+
+
+def _backfill_missing_sources(
+    llm: LLMClient,
+    items: tuple[RecapItem, ...],
+    id_map: dict[str, dict[str, str]],
+    content_map: dict[str, dict[str, str]],
+) -> tuple[RecapItem, ...]:
+    """Make one best-effort follow-up call to (re)ground any item the main
+    extraction call left without a `source_event_id`, per channel that has
+    at least one such item -- see `_BACKFILL_SYSTEM_PROMPT` for why this is
+    cheap and narrow rather than the module docstring's usual "one call
+    does both jobs" concern.
+
+    Returns `items` unchanged (same tuple, same objects) when nothing needs
+    backfilling, when the call itself fails (`LLMError` -- a recap should
+    never fail because a reliability nicety on top of it did), or when the
+    response doesn't parse as expected -- exactly `_resolve_tag`'s own
+    "never guess" rule (`RecapItem.source_event_id` is never guessed),
+    just applied to this call's response instead of the main one's.
+    """
+    missing = [
+        (i, item) for i, item in enumerate(items) if _needs_backfill(item, content_map)
+    ]
+    if not missing:
+        return items
+    sections: dict[str, list[str]] = {}
+    for index, item in missing:
+        sections.setdefault(item.channel, []).append(
+            f"Index {index}: summary: {item.summary}; instruction: {item.instruction}"
+        )
+    parts = []
+    for channel, item_lines in sections.items():
+        transcript = "\n".join(
+            f"[{tag}] {content}" for tag, content in content_map[channel].items()
+        )
+        parts.append(
+            f"## {channel}\n{transcript}\n\nItems needing a source:\n"
+            + "\n".join(item_lines)
+        )
+    messages = [
+        {"role": "system", "content": _BACKFILL_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+    try:
+        response = llm.complete_json(messages)
+    except LLMError:
+        return items
+    groundings = response.get("groundings")
+    if not isinstance(groundings, list):
+        return items
+    by_index = dict(missing)
+    result = list(items)
+    for entry in groundings:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("index")
+        if not isinstance(index, int) or index not in by_index:
+            continue
+        item = by_index[index]
+        tag = entry.get("source_id")
+        source_event_id = _resolve_tag(id_map, item.channel, tag)
+        if source_event_id is None:
+            continue
+        result[index] = replace(
+            item,
+            source_event_id=source_event_id,
+            source_content=_resolve_tag(content_map, item.channel, tag),
+        )
+    return tuple(result)
+
+
 class RecapError(Exception):
     """Raised when a recap is requested for an unknown channel, or the LLM's
     response can't be trusted as a recap."""
@@ -320,6 +428,10 @@ def build_recap(
     ]
     recap = _parse_recap(
         llm.complete_json(messages), id_map, content_map, max_items_per_channel
+    )
+    recap = Recap(
+        text=recap.text,
+        items=_backfill_missing_sources(llm, recap.items, id_map, content_map),
     )
     recap = Recap(
         text=_append_item_counts(recap.text, recap.items, detail), items=recap.items
