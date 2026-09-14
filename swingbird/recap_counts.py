@@ -151,6 +151,26 @@ _LLM_COUNT_SENTENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A bare "**channel**:" (or "**channel:**" -- colon placement relative to
+# the closing bold marker varies, observed live) paragraph of its own,
+# right after our real "**channel -- N additional open items:** ..." fold
+# paragraph, whose only content is a directly-stated count narration with
+# no subject phrase at all -- e.g. "**swingbird:** 9 additional open items
+# are listed above." `_LLM_COUNT_SENTENCE_RE` requires a "there is/are" or
+# "<word> has/have" subject before the count, so a bare statement like this
+# (no subject -- it just leads with the number) never matched. Matched and
+# handled separately from the bare-prefix-with-nothing-after-it case below
+# (`stray_bare_prefixes`) because here the narration text is still present
+# after the prefix -- stripping only the prefix would leave the bogus
+# sentence standing, and stripping only via `_LLM_COUNT_SENTENCE_RE` doesn't
+# fire since there's no subject for it to anchor on.
+_BARE_CHANNEL_PREFIX_RE = re.compile(r"^\*\*([^*\n]+?)(?:\*\*:|:\*\*)\s*")
+_COUNT_ONLY_TEXT_RE = re.compile(
+    r"^(?:(?:\+?\d+|no|zero)\s+)?(?:more|additional|other|remaining)\s+"
+    r"(?:open\s+)?(?:\S+\s+)?items?\b.*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) -> str:
     """Append a deterministic additional-items note to `text`, computed from
@@ -223,6 +243,20 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
     `_LLM_COUNT_SENTENCE_RE`'s subject alternation (`there is/are` or
     `<word> has/have`) now catches this phrasing the same way it already
     caught "there are".
+
+    Observed live: right after that same real fold paragraph, the LLM also
+    narrated a bare "**swingbird:** 9 additional open items are listed
+    above." paragraph of its own -- no subject phrase at all this time (not
+    even "there are" or "swingbird has"), just the count stated directly
+    after a bare channel prefix mimicking the concise format guard's
+    "**channel**:" shape (here with the colon inside the bold instead of
+    outside it, another live-observed variant). `_LLM_COUNT_SENTENCE_RE`
+    never matches this since it requires a subject before the count.
+    `_BARE_CHANNEL_PREFIX_RE`/`_COUNT_ONLY_TEXT_RE` catch it directly:
+    strip a leading bare channel prefix (either colon placement) and, if
+    everything left is just a count narration, drop the whole paragraph --
+    same treatment as the dangling-prefix `stray_bare_prefixes` case, just
+    reached without needing the sentence-regex to have emptied it first.
     """
     additional: dict[str, list[str]] = {}
     for item in items:
@@ -241,6 +275,12 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
         if without_sentence != cleaned:
             changed = True
         cleaned = without_sentence
+        prefix_match = _BARE_CHANNEL_PREFIX_RE.match(cleaned)
+        if prefix_match and _COUNT_ONLY_TEXT_RE.match(
+            cleaned[prefix_match.end() :].strip()
+        ):
+            changed = True
+            continue
         if not cleaned.strip() or cleaned.strip() in stray_bare_prefixes:
             changed = True
             continue

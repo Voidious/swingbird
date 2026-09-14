@@ -163,6 +163,51 @@ def test_build_recap_drops_llm_narrated_count_sentence_naming_the_channel(
     )
 
 
+def test_build_recap_drops_llm_narrated_bare_prefix_count_sentence(monkeypatch):
+    # Observed live: right after our own correct "**backend -- 1 additional
+    # open item:** F5" fold paragraph, the LLM separately narrated a bare
+    # "**backend:** 1 additional open item is listed above." paragraph of
+    # its own -- no "there is/are" or "<channel> has/have" subject at all
+    # this time, just the count stated directly after a bare channel prefix
+    # (colon inside the bold, unlike the format guard's own "**channel**:").
+    # `_LLM_COUNT_SENTENCE_RE` never matched this since it requires a subject
+    # before the count; `_BARE_CHANNEL_PREFIX_RE`/`_COUNT_ONLY_TEXT_RE` catch
+    # it directly instead.
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=1),
+    )
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend:** 1 additional open item is listed above.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, config, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- 1 additional open item:** F5"
+    )
+
+
 def test_build_recap_drops_llm_narrated_has_sentence_after_real_fold_paragraph(
     monkeypatch,
 ):
