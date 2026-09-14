@@ -24,9 +24,13 @@ you:       tell backend to fix the login bug
 swingbird: About to relay to backend (for Sonnet): 'fix the login bug'. Confirm to send, or cancel.
 
 you:       confirm
-swingbird: Confirmed and relayed (event ...).
+swingbird: Confirmed and relayed: buzz://message?channel=...&id=...
            [a little later]
 swingbird: Fixed the login bug -- turned out to be a stale session cookie.
+
+you:       for backend F4, couldn't we just cache that instead?
+swingbird: About to relay to backend (for Sonnet): "couldn't we just cache that instead?"
+           Confirm to send, or cancel.
 ```
 
 Every dispatched instruction is proposed first and only sent once you confirm it -- swingbird
@@ -106,6 +110,12 @@ name = "<your Buzz display name>"
 
 [identity]
 name = "swingbird"
+description = "TPM agent for swingbird-dev"
+
+[identity.avatar]
+style = "emoji"
+emoji = "🐦"
+color = "#3399FF"
 
 [dispatch]
 reply_wait_seconds = 180
@@ -127,9 +137,12 @@ agents = ["Sonnet"]
   own secret key (see [Buzz identity](#buzz-identity) above).
 - **`[owner]`** -- the one identity swingbird will ever treat as a command. Every other message it
   sees, including a coding agent's own replies in a subscribed channel, is read-only context.
-- **`[identity]`** -- swingbird's own Buzz display name. Synced on startup whenever the identity's
-  current profile name doesn't match, so a fresh identity or a renamed deployment always shows up
-  under a name you'll recognize.
+- **`[identity]`** -- swingbird's own Buzz profile: `name` (required), plus an optional
+  `description` (bio) and `[identity.avatar]` (only the `"emoji"` style is supported so far: a
+  colored circular background with one emoji centered on it, matching Buzz Desktop's own
+  "Emoji" avatar style). Synced on startup whenever the identity's current profile doesn't
+  already match, so a fresh identity or a renamed deployment always shows up looking the way
+  you configured it.
 - **`[dispatch]`** -- optional. `reply_wait_seconds` (default `180`) is how long swingbird waits
   for a reply to a relayed instruction before giving up on summarizing it back to you. Keep this
   short if you might ever run swingbird as a voice assistant -- a reply arriving minutes later,
@@ -205,16 +218,20 @@ command.
 
 | You say | swingbird does |
 | --- | --- |
-| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 3) items per project, each with a few sentences of extra detail, plus a separate line naming anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix." |
+| "what's going on?" / "recap backend" | Concise by default: one immediately-actionable item per project (current status, then a proposed next step), plus a count of any other open items. Channels idle past `[recap].stale_after_days` are dropped from an all-channels recap (a named channel is always included). Say "detailed recap" (or similar) for up to `[recap].max_detailed_items` (default 3) items per project, each with a few sentences of extra detail, plus a separate line naming anything folded beyond that. Either way, every item shown can be followed up on -- "tell me more about F4," "go ahead with the login fix," "what are the other items?" |
 | "tell backend to fix the login bug" / "ask frontend if the tests pass" | Proposes relaying that instruction (or question) to the named channel/agent. Nothing is sent until you confirm. |
+| "go ahead with F4" / "do the login fix" | Resolves "F4"/"the login fix" against the most recent recap's items, then proposes relaying that item's own instruction to its agent -- same confirm/cancel flow as a fresh dispatch. |
+| "tell me more about F4" | Asks the LLM to elaborate on that recap item beyond its stored summary, using its original source thread -- no relay, nothing to confirm. |
+| "what are the other items?" | Lists a recap's folded/additional items at the same concise or detailed level the recap itself used -- no LLM call, just a formatted read of what's already stored. |
+| "for backend F4, couldn't we just cache that instead?" | Forwards your own question or comment about that recap item to its agent, close to verbatim (resolving a vague "it"/"that" using the item's context first) -- same confirm/cancel flow as a fresh dispatch. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
 | "cancel" / "never mind" | Discards the pending proposal without sending anything. |
 | anything else | swingbird says it's outside what it handles, and suggests asking for a recap or a dispatch instead. |
 
-If swingbird can't tell which channel or agent a dispatch request means, it asks you to clarify
-rather than guessing -- answering that follow-up resolves the original request. Once you confirm a
-dispatch, swingbird waits (up to `[dispatch].reply_wait_seconds`) for the target agent's reply,
-then summarizes it back into your DM.
+If swingbird can't tell which channel, agent, or recap item a request means, it asks you to
+clarify rather than guessing -- answering that follow-up resolves the original request. Once you
+confirm a dispatch, swingbird waits (up to `[dispatch].reply_wait_seconds`) for the target agent's
+reply, then summarizes it back into your DM.
 
 ## Development
 
