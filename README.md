@@ -7,10 +7,9 @@ project channels, relays instructions to your coding agents, and always confirms
 it writes anything on your behalf.
 
 _The upbeat, unbothered swingbird roams the canopy of the Forest of Code, vibing with the Abstract
-Syntax Trees as humans and agents work below. Sporting feathers of the dankest colors, headphones
-that slap, and a small tablet, the swingbird is ready to spill the tea on project status, lock in
-on potential solutions, or yeet commands to your coding agents to keep your projects in full
-swing._
+Syntax Trees as humans and agents work below. Sporting a lowkey dank hoodie and carrying a small
+tablet, the swingbird is ready to spill the tea on project status, lock in on potential solutions,
+or serve instructions to your coding agents to keep your project in full swing._
 
 ## Overview
 
