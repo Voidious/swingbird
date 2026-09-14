@@ -17,6 +17,7 @@ from tests.test_recap_build_behavior import (
     _llm,
     _system_prompt,
 )
+from tests.test_recap_build_helpers import _build_recap_empty_channel_with_item
 
 
 def _raw_llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
@@ -273,20 +274,7 @@ def test_build_recap_parses_keywords(monkeypatch):
 
 
 def test_build_recap_defaults_keywords_to_empty_tuple_when_omitted(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
-    llm, _ = _llm(
-        "here's the recap",
-        items=[
-            {
-                "channel": "backend",
-                "label": "F4",
-                "summary": "s",
-                "instruction": "do it",
-            }
-        ],
-    )
-
-    result = build_recap(llm, CONFIG)
+    result = _build_recap_empty_channel_with_item(monkeypatch)
 
     assert result.items[0].keywords == ()
 

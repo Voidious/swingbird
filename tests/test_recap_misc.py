@@ -83,6 +83,41 @@ def test_build_recap_drops_llm_narrated_count_sentence_in_detailed_mode(
     )
 
 
+def test_build_recap_strips_llm_narrated_count_sentence_trailing_real_content(
+    monkeypatch,
+):
+    # Observed live in concise mode: the LLM tacked the freestanding-sentence
+    # shape onto the *end* of the primary item's own paragraph, right before
+    # our own correct parenthetical note -- "...it. There are 10 additional
+    # open items. (9 additional open items.)" -- rather than as a paragraph
+    # of its own. `_LLM_COUNT_SENTENCE_RE` previously only matched via
+    # `fullmatch` against a whole paragraph, so this mid-paragraph case
+    # sailed through unstripped, leaving both the bogus and the real count
+    # stacked at the end of the same paragraph.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**swingbird**: primary item text. There are 10 additional open items.",
+        items=[
+            {
+                "channel": "swingbird",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "swingbird",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG)
+
+    assert result.text == "**swingbird**: primary item text. (1 additional open item.)"
+
+
 def test_build_recap_drops_llm_narrated_count_sentence_naming_the_channel(
     monkeypatch,
 ):

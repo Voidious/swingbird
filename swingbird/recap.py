@@ -579,7 +579,7 @@ def _parse_recap(
         items.append(
             RecapItem(
                 channel=channel,
-                label=item.get("label", ""),
+                label=_normalize_label(item.get("label", "")),
                 summary=item.get("summary", ""),
                 instruction=item.get("instruction", ""),
                 is_primary=is_primary,
@@ -591,6 +591,22 @@ def _parse_recap(
             )
         )
     return Recap(text=text, items=tuple(items))
+
+
+def _normalize_label(label: str) -> str:
+    """Flatten a hyphenated label like "fix-message-id-reliability" into
+    "fix message id reliability".
+
+    `_ITEM_EXTRACTION_INSTRUCTIONS` asks for "a few words naming the item,"
+    but the LLM sometimes echoes a hyphenated, git-branch-shaped slug from
+    the transcript instead (project channels are full of literal branch
+    names) rather than phrasing it in words -- observed live, inconsistently
+    even across two recap calls for the same underlying work: one call's
+    labels for it came back hyphenated, another's came back as plain words.
+    A label meant to stay exactly as given (e.g. "F4", reused verbatim per
+    the same instructions) is never hyphenated in the first place, so a
+    blanket replace here can't clash with that case."""
+    return label.replace("-", " ")
 
 
 def _parse_keywords(raw: object) -> tuple[str, ...]:
@@ -631,22 +647,26 @@ _LLM_COUNT_NOTE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A whole standalone paragraph the LLM sometimes narrates as a full sentence
+# A full sentence the LLM sometimes narrates as its own declarative aside
 # instead of the parenthetical `_LLM_COUNT_NOTE_RE` shape -- observed live
-# right after a detailed recap's own deterministic "**channel -- N
-# additional open items:** ..." paragraph: "There are 7 more open items for
-# swingbird." (with a count that didn't even match our real one) and "There
-# are 8 additional open swingbird items beyond the three described above."
-# Since it's declarative prose, not a trailing parenthetical tacked onto an
-# item's own paragraph, `_LLM_COUNT_NOTE_RE` (anchored on a `(...)` at the
-# end of a paragraph) never matches it -- it needs its own pattern, matched
-# against a whole paragraph rather than stripped from the end of one, and
-# dropped outright the same way a stray bare "**channel**:" prefix is (see
-# `stray_bare_prefixes` below) since there's no other content in the
-# paragraph worth keeping.
+# both as a whole standalone paragraph right after a detailed recap's own
+# deterministic "**channel -- N additional open items:** ..." paragraph
+# ("There are 7 more open items for swingbird." -- with a count that didn't
+# even match our real one -- and "There are 8 additional open swingbird
+# items beyond the three described above.") and, in concise mode, tacked
+# onto the *end* of the primary item's own paragraph, right before our own
+# correct parenthetical note ("...push or pull that branch and integrate/
+# live-test it. There are 10 additional open items. (9 additional open
+# items.)"). Since it's declarative prose, not a trailing parenthetical,
+# `_LLM_COUNT_NOTE_RE` (anchored on a `(...)` at the end of a paragraph)
+# never matches it. Anchored on a sentence boundary (start of paragraph or
+# right after a ".", "!", or "?") rather than the whole paragraph, so
+# `.sub()` below can drop it -- and everything after it, via the trailing
+# `.*` -- whether it's the paragraph's only content or trails real content
+# that came before it.
 _LLM_COUNT_SENTENCE_RE = re.compile(
-    r"there\s+(?:is|are)\s+(?:(?:\+?\d+|no|zero)\s+)?(?:more|additional|"
-    r"other|remaining)\s+(?:open\s+)?(?:\S+\s+)?items?\b.*",
+    r"(?:^|(?<=[.!?]\s))there\s+(?:is|are)\s+(?:(?:\+?\d+|no|zero)\s+)?"
+    r"(?:more|additional|other|remaining)\s+(?:open\s+)?(?:\S+\s+)?items?\b.*",
     re.IGNORECASE,
 )
 
@@ -745,12 +765,19 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
     Observed live: the LLM also sometimes narrates the count as a whole
     extra sentence-paragraph on its own -- "There are 7 more open items for
     swingbird." right after our own correct fold-note paragraph, with a
-    count that didn't even agree with ours. `_LLM_COUNT_NOTE_RE` only
-    matches a trailing `(...)` on an existing paragraph, not a freestanding
-    sentence, so `_LLM_COUNT_SENTENCE_RE` checks each paragraph as a whole
-    and drops it outright when it's nothing but this narration -- same
-    "stray paragraph, no other content worth keeping" treatment as the bare
-    "**channel**:" case above.
+    count that didn't even agree with ours -- and, separately, in concise
+    mode, tacked onto the *end* of the primary item's own paragraph, right
+    before our own correct parenthetical note ("...it. There are 10
+    additional open items. (9 additional open items.)"). `_LLM_COUNT_NOTE_RE`
+    only matches a trailing `(...)` on an existing paragraph, not a
+    freestanding sentence, so `_LLM_COUNT_SENTENCE_RE` is applied as a
+    `.sub()` instead of a whole-paragraph `fullmatch` -- it strips the
+    sentence and everything after it (its trailing `.*`) wherever it starts
+    a sentence within the paragraph, leaving any real content that came
+    before it intact. A paragraph that turns out to be nothing but this
+    narration (no real content before it) becomes empty and is dropped
+    outright, same "stray paragraph, no other content worth keeping"
+    treatment as the bare "**channel**:" case above.
     """
     additional: dict[str, list[str]] = {}
     for item in items:
@@ -765,10 +792,11 @@ def _append_item_counts(text: str, items: tuple[RecapItem, ...], detail: str) ->
         cleaned = _LLM_COUNT_NOTE_RE.sub("", paragraph)
         if cleaned != paragraph:
             changed = True
-        if cleaned.strip() in stray_bare_prefixes:
+        without_sentence = _LLM_COUNT_SENTENCE_RE.sub("", cleaned).rstrip()
+        if without_sentence != cleaned:
             changed = True
-            continue
-        if _LLM_COUNT_SENTENCE_RE.fullmatch(cleaned.strip()):
+        cleaned = without_sentence
+        if not cleaned.strip() or cleaned.strip() in stray_bare_prefixes:
             changed = True
             continue
         extra_paragraph = None
