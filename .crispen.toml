@@ -1,7 +1,8 @@
 provider = "moonshot"
-model = "kimi-k2.6"
+model = "kimi-k2.7-code"
 max_function_length = 75
 max_file_lines = 1000
+max_duplicate_seq_len = 20
 file_limiter_reexports = "imported"
 file_limiter_patch_update = "rewrite"
 disabled_refactors = ["tuple_dataclass"]

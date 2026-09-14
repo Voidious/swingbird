@@ -1,0 +1,77 @@
+[llm]
+provider = "openai"
+model = "gpt-5.6-luna"
+# provider = "moonshot"
+# model = "kimi-k2.6"
+# Optional overrides, e.g. for a provider not in swingbird's built-in list
+# (moonshot, openai) or a self-hosted OpenAI-compatible endpoint:
+# base_url = "https://api.example.com/v1"
+# api_key_env = "MY_PROVIDER_API_KEY"
+
+[relay]
+url = "wss://relay.example.com"
+private_key_env = "SWINGBIRD_PRIVATE_KEY"
+
+[owner]
+pubkey = "3aa56890a2f6ca87d91c1dee08b10513ff1887d354fadb4c0b44d7999f4d6f2f"
+name = "Voidious"
+
+# The Buzz profile for this daemon's own identity: display name, and
+# optionally a bio and an avatar. Updated on startup if the identity's
+# current profile doesn't already match. Override in a local .swingbird.toml
+# if you want this deployment to show up under different values.
+[identity]
+name = "swingbird"
+# description = "TPM agent for swingbird-dev"
+
+# Optional. Only the "emoji" style is supported so far: a colored circular
+# background (any hex color) with one emoji centered on it, matching Buzz
+# Desktop's own "Emoji" avatar style exactly.
+# [identity.avatar]
+# style = "emoji"
+# emoji = "🐦"
+# color = "#3399FF"
+
+# Optional. How long (seconds) to wait for a reply to a relayed instruction
+# before giving up on summarizing it back to you. Defaults to 180 if omitted.
+# Keep this short if you might ever run swingbird as a voice assistant --
+# a reply arriving minutes later, out of nowhere, would be startling.
+# [dispatch]
+# reply_wait_seconds = 180
+
+# Optional. A project channel is dropped from a "recap everything" request
+# once it has no messages within this many days -- naming a channel
+# explicitly ("recap swingbird") uses the same time window but is never
+# dropped from the reply, just shown as having no recent activity.
+# Defaults to 30 if omitted. max_messages_per_channel caps how many
+# messages a single channel's recap will page through to fill that window
+# (a single `buzz messages get` call maxes out at 200 regardless of
+# --limit, so a chatty channel needs multiple paged calls); defaults to
+# 1000 if omitted. max_detailed_items caps how many open items a "detailed
+# recap" narrates per project before folding the rest into a count;
+# defaults to 3 if omitted.
+# [recap]
+# stale_after_days = 30
+# max_messages_per_channel = 1000
+# max_detailed_items = 3
+
+# Define your own projects below -- each [[channels]] block is one project.
+# `name` is the project name you'll say in conversation ("recap swingbird",
+# "tell swingbird to..."), independent of the channel's own Buzz display
+# name (which might be "swingbird-dev" or anything else). `goal` is
+# optional free text used only when a concise recap has no open item for
+# that project, to add a "next up: ..." sentence.
+#
+# This is commented out on purpose: a checkout with no real channels
+# defined fails to start with a clear error instead of silently running
+# against someone else's project. Put your real entries in a gitignored
+# `.swingbird.toml` next to this file (see config.py's module docstring).
+# Note that a `channels` key there replaces this section's list outright --
+# it doesn't merge per-entry -- so include every project you want active.
+#
+# [[channels]]
+# id = "<buzz channel UUID>"
+# name = "swingbird"
+# write = true
+# agents = ["Sonnet"]
+# goal = "Building out the initial version"

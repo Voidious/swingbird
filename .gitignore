@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local swingbird config override (not committed)
+.swingbird.toml
+
+# Swingbird audit log (local, append-only, grows unbounded)
+audit.jsonl

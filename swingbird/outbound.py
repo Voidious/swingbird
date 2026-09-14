@@ -1,0 +1,209 @@
+"""Outbound relay posting via the buzz CLI.
+
+The daemon owns its own Nostr identity (BUZZ_PRIVATE_KEY in its own
+environment) and posts through the `buzz` CLI subprocess rather than
+talking to the relay directly for writes (§4.2, §7, open question #2).
+The persistent WebSocket client (inbound.py) handles live reads.
+`run_buzz_cli` is also reused by history.py for one-shot historical
+reads (recap doesn't need a live subscription), so both modules share
+one place that knows how to invoke and parse `buzz` CLI output.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from typing import Any
+
+# Matches an `@` that `buzz messages send` would try to resolve as a member
+# mention: at start-of-string or after whitespace, immediately followed by a
+# name character. Mirrors buzz-cli's own `extract_at_names` matcher (see
+# buzz-sdk/src/mentions.rs) so this catches exactly what would otherwise
+# error out.
+_STRAY_MENTION_RE = re.compile(r"(?:^|(?<=\s))@(?=[A-Za-z0-9._-])")
+
+
+class RelayError(Exception):
+    """Raised when a buzz-cli invocation fails or returns something unusable."""
+
+
+def _escape_stray_mentions(content: str) -> str:
+    """Defang `@word` tokens in free-form (LLM-generated) content.
+
+    `buzz messages send` treats any `@word` in `content` as an attempted
+    member mention and hard-fails (non-retryable) if it doesn't resolve to
+    exactly one channel member -- and recap/chit-chat/reply-summary text can
+    easily contain an incidental `@word` (quoting another channel's mention,
+    or a name that isn't a member of the DM it's being posted into). None of
+    that text is ever meant to notify anyone, so a zero-width space is
+    inserted right after the `@` to break the match while leaving the text
+    visually unchanged.
+    """
+    zero_width_space = "\u200b"
+    return _STRAY_MENTION_RE.sub("@" + zero_width_space, content)
+
+
+def run_buzz_cli(args: list[str], stdin: str | None = None) -> Any:
+    try:
+        result = subprocess.run(
+            ["buzz", *args],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RelayError("buzz CLI not found on PATH") from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RelayError(f"buzz {' '.join(args)} failed: {detail}")
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RelayError(
+            f"buzz {' '.join(args)} returned unparseable output: {result.stdout!r}"
+        ) from exc
+
+
+def open_dm(pubkey: str) -> str:
+    """Open (or resurface) a DM conversation with `pubkey`; return its channel id."""
+    return run_buzz_cli(["dms", "open", "--pubkey", pubkey])["dm_id"]
+
+
+def join_channel(channel_id: str) -> None:
+    """Join `channel_id`; a no-op if the identity is already a member.
+
+    The relay accepts a join for an open channel unconditionally and
+    silently no-ops a join for a channel the identity already belongs to,
+    so the only way this raises `RelayError` is a real problem: notably a
+    private channel the identity isn't already in ("restricted: channel is
+    private"). Callers (see `daemon.py`'s `_join_project_channels`) treat
+    that as an expected, reportable condition rather than a crash.
+    """
+    run_buzz_cli(["channels", "join", "--channel", channel_id])
+
+
+def set_presence(status: str) -> None:
+    """Publish the daemon's own presence (kind:20001) so its availability dot
+    in Buzz Desktop reflects whether it's actually up, not just deployed."""
+    run_buzz_cli(["users", "set-presence", "--status", status])
+
+
+def get_own_profile() -> dict[str, Any]:
+    """Return the current identity's Buzz profile (`display_name`, `about`,
+    `picture`, ...), or `{}` if it has never set one (`buzz users get` with
+    no `--pubkey` returns the caller's own profile)."""
+    profiles = run_buzz_cli(["users", "get"])
+    return profiles[0] if profiles else {}
+
+
+def update_profile(
+    *, name: str | None = None, about: str | None = None, avatar: str | None = None
+) -> None:
+    """Update whichever of the current identity's profile fields are given,
+    in one `buzz users set-profile` call."""
+    args = ["users", "set-profile"]
+    if name is not None:
+        args += ["--name", name]
+    if about is not None:
+        args += ["--about", about]
+    if avatar is not None:
+        args += ["--avatar", avatar]
+    run_buzz_cli(args)
+
+
+def send_message(
+    channel_id: str,
+    content: str,
+    reply_to: str | None = None,
+    mentions: list[str] | None = None,
+) -> str:
+    """Post `content` into `channel_id`; return the new event id.
+
+    `content` goes over stdin (`--content -`) rather than argv, so
+    arbitrary message text never has to survive shell-style quoting.
+
+    `mentions` are pubkeys passed as explicit `--mention` flags, which
+    notify their owner even if `content`'s `@name` text can't be resolved
+    against the channel's membership (e.g. the owner posting into their
+    own DM, then having that instruction relayed into a project channel
+    they aren't a member of).
+
+    When `mentions` is empty, `content` is free-form (recap/chit-chat/reply
+    -summary text with no intended live mention) and any stray `@word` in
+    it is defanged via `_escape_stray_mentions` -- see that function for
+    why. Callers that build an intentional `@name` mention (`relay_dispatch`)
+    always pass `mentions`, so they're unaffected.
+    """
+    if not mentions:
+        content = _escape_stray_mentions(content)
+    args = ["messages", "send", "--channel", channel_id, "--content", "-"]
+    if reply_to is not None:
+        args += ["--reply-to", reply_to]
+    for pubkey in mentions or ():
+        args += ["--mention", pubkey]
+    return run_buzz_cli(args, stdin=content)["event_id"]
+
+
+def message_link(channel_id: str, event_id: str) -> str:
+    """Return a `buzz://` deep link to one specific message.
+
+    Matches what Buzz Desktop puts on the clipboard for "copy link to
+    message" -- pasting one back into Buzz renders a rich preview that
+    jumps straight to it. Any DM that references or creates a specific
+    Buzz message (a recap item's source, a just-relayed dispatch, a
+    working agent's reply) carries one of these rather than just naming
+    the message in prose, so the user can always jump to it.
+    """
+    return f"buzz://message?channel={channel_id}&id={event_id}"
+
+
+def append_paragraph_link(text: str, prefix: str, link: str) -> str:
+    """Append `link` on its own line to the one paragraph in `text` (split
+    on blank lines, matching `recap.py`/`recap_detail.py`'s own per-item
+    paragraph format) that starts with `prefix`; return `text` unchanged if
+    no paragraph matches -- never guessed onto the wrong one."""
+    paragraphs = text.split("\n\n")
+    for i, paragraph in enumerate(paragraphs):
+        if paragraph.startswith(prefix):
+            paragraphs[i] = f"{paragraph}\n{link}"
+            return "\n\n".join(paragraphs)
+    return text
+
+
+def relay_dispatch(
+    channel_id: str,
+    instruction: str,
+    requested_by_name: str,
+    requested_by_pubkey: str,
+    target_agent: str | None = None,
+    reply_to: str | None = None,
+) -> str:
+    """Post `instruction` into `channel_id`, attributed to the requester.
+
+    Per §5: a dispatched instruction must make clear it's relaying the
+    user's own directive, not the TPM agent's own initiative, so the
+    receiving coding agent treats it as an actual instruction. The
+    attribution is a real `@mention` (via `requested_by_pubkey`), not just
+    name text, so the requester is notified and easy to follow back to --
+    and so a working agent's own reply is more likely to @mention them
+    back -- even in a project channel the requester never joined.
+
+    Buzz agents only react to @mentions by default, so when a
+    `target_agent` was identified the relayed message leads with an
+    `@name` mention -- otherwise it's relayed but nothing in the channel
+    is guaranteed to ever look at it.
+
+    `reply_to`, when given (a recap follow-up whose item resolved a
+    `source_event_id`), threads the relayed message to whatever it was
+    grounded in instead of posting disconnected from it. `None` for a
+    fresh dispatch, which has no such message to thread to.
+    """
+    prefix = f"@{target_agent} " if target_agent else ""
+    content = f"{prefix}Relaying instruction from @{requested_by_name}: {instruction}"
+    return send_message(
+        channel_id, content, reply_to=reply_to, mentions=[requested_by_pubkey]
+    )

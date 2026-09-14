@@ -1,6 +1,4 @@
-def main():
-    print("Hello from swingbird!")
-
+from swingbird.daemon import main
 
 if __name__ == "__main__":
     main()
