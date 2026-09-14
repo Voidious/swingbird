@@ -45,3 +45,45 @@ def test_build_recap_backfills_a_missing_item_when_its_channel_has_others(
         "**backend -- F2:** second item.\n\n"
         "**backend -- F3:** third item"
     )
+
+
+def test_build_recap_backfills_a_missing_item_next_to_its_own_channel(monkeypatch):
+    # Live bug: a missing primary item's fallback paragraph was always
+    # appended at the very end of the whole "text", so a missing item for
+    # an earlier channel landed *after* a later channel's own paragraph
+    # once that one had already been narrated -- breaking the "grouped by
+    # channel" contract (_FORMAT_GUARD/_DETAILED_FORMAT_GUARD) instead of
+    # just restating the missing item. It should land right after its own
+    # channel's last existing paragraph instead.
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F1:** first item.\n\n**frontend -- G1:** unrelated fix.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F1",
+                "summary": "first item",
+                "instruction": "do the first thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F2",
+                "summary": "second item",
+                "instruction": "do the second thing",
+            },
+            {
+                "channel": "frontend",
+                "label": "G1",
+                "summary": "unrelated fix",
+                "instruction": "do the other thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, CONFIG, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F1:** first item.\n\n"
+        "**backend -- F2:** second item\n\n"
+        "**frontend -- G1:** unrelated fix."
+    )

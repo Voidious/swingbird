@@ -535,8 +535,20 @@ def _ensure_channel_paragraphs(
     to the old per-channel check there. Matches the same per-item approach
     `recap_detail._backfill_missing_paragraphs` already uses for the "tell
     me more" elaboration case.
+
+    Inserts each fallback right after that item's own channel's last
+    existing paragraph (or at the very end if the channel has none yet),
+    rather than always at the end of the whole `text` -- observed live: a
+    fallback for an earlier channel, added after a later channel's
+    paragraph was already in `text`, landed after that later channel's
+    paragraph too, breaking `_FORMAT_GUARD`/`_DETAILED_FORMAT_GUARD`'s
+    "grouped by channel" contract instead of merely restating the missing
+    item. Keeping every channel's paragraphs contiguous also keeps
+    `_append_item_counts`'s own "last primary item's own paragraph" lookup
+    correct for that channel regardless of which other channels come after
+    it in `text`.
     """
-    paragraphs = text.split("\n\n")
+    paragraphs = text.split("\n\n") if text.strip() else []
     missing_items = [
         item
         for item in items
@@ -548,11 +560,16 @@ def _ensure_channel_paragraphs(
     ]
     if not missing_items:
         return text
-    fallback = "\n\n".join(
-        f"{_item_paragraph_prefix(item.channel, item.label, detail)} {item.summary}"
-        for item in missing_items
-    )
-    return f"{text}\n\n{fallback}" if text.strip() else fallback
+    for item in missing_items:
+        fallback = (
+            f"{_item_paragraph_prefix(item.channel, item.label, detail)} {item.summary}"
+        )
+        insert_at = len(paragraphs)
+        for i, paragraph in enumerate(paragraphs):
+            if paragraph.startswith(f"**{item.channel}"):
+                insert_at = i + 1
+        paragraphs.insert(insert_at, fallback)
+    return "\n\n".join(paragraphs)
 
 
 def _parse_recap(
@@ -595,7 +612,9 @@ def _parse_recap(
 
 def _normalize_label(label: str) -> str:
     """Flatten a hyphenated label like "fix-message-id-reliability" into
-    "fix message id reliability".
+    "fix message id reliability" -- but only when the whole label is a
+    single hyphen-joined slug (no spaces of its own), never a normal phrase
+    that merely contains a hyphenated word.
 
     `_item_extraction_instructions` asks for "a few words naming the item,"
     but the LLM sometimes echoes a hyphenated, git-branch-shaped slug from
@@ -605,7 +624,26 @@ def _normalize_label(label: str) -> str:
     labels for it came back hyphenated, another's came back as plain words.
     A label meant to stay exactly as given (e.g. "F4", reused verbatim per
     the same instructions) is never hyphenated in the first place, so a
-    blanket replace here can't clash with that case."""
+    blanket replace here can't clash with that case.
+
+    A blanket `.replace("-", " ")` over-corrected this: observed live, a
+    label like "Integrate recap follow-up reliability" -- already plain
+    words, just with one legitimately hyphenated compound word in it -- came
+    back from this function as "Integrate recap follow up reliability",
+    while the LLM's own "text" narration kept writing the paragraph header
+    with the hyphen intact (`"**swingbird -- Integrate recap follow-up
+    reliability:**"`), since nothing renormalizes that copy. The two no
+    longer matched byte-for-byte, so `_ensure_channel_paragraphs` treated
+    the already-narrated item as missing and appended a duplicate fallback
+    paragraph for it -- one that, being appended unconditionally at the end
+    of "text", also landed after a later channel's own paragraph, breaking
+    the "grouped by channel" contract. Restricting the flatten to labels
+    with no spaces at all keeps the slug case (never has spaces) working
+    exactly as before while leaving any label that's already phrased in
+    words -- hyphenated compound word or not -- untouched, so it stays
+    identical to whatever the LLM wrote for it in "text"."""
+    if " " in label:
+        return label
     return label.replace("-", " ")
 
 
