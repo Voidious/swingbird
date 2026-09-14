@@ -99,11 +99,12 @@ _DETAILED_FORMAT_GUARD = (
     "recap does. Never merge multiple channels' content together either."
 )
 
+
 # Two-phase in a single call: extraction first, prose second, and -- as of
 # this version -- extraction is fully described and *capless* before any
 # per-channel display limit is mentioned anywhere in the prompt. An earlier
 # version put "text"'s own "give up to N items" framing in the prompt's
-# opening sentence and only appended _ITEM_EXTRACTION_INSTRUCTIONS (with its
+# opening sentence and only appended _item_extraction_instructions (with its
 # own "include every item, not just one") afterward. Observed live
 # (`max_detailed_items` set to 1, a channel with several genuinely open
 # items): the model treated "up to N" as the task's overall scope rather
@@ -143,7 +144,42 @@ _DETAILED_FORMAT_GUARD = (
 # recognizing *that two messages are about the same item* in the first
 # place, which has to happen before _RESOLUTION_GUARD's rule can even
 # apply.
-_ITEM_EXTRACTION_INSTRUCTIONS = """
+def _item_extraction_instructions(detail: str) -> str:
+    """Build the "items" extraction instructions shared by both system
+    prompts, appending an extra paragraph in detailed mode asking each
+    item's own "summary"/"instruction" to carry the same 2-4-sentences'
+    worth of concrete detail the detailed "text" narration below asks for
+    its own (primary) items -- not just the fixed one-clause/one-line
+    version this instruction set otherwise asks for regardless of mode.
+
+    Without this, `RecapItem.summary`/`instruction` came out at the same
+    fixed detail level in concise and detailed recaps alike, since this
+    instruction text used to be a single module-level constant shared
+    verbatim by both prompts. That's fine for the *primary* item(s) a
+    recap actually narrates -- "text" is written fresh by the LLM at the
+    right level either way -- but `recap_list.render_items` builds "the
+    other items" directly from `summary`/`instruction` with no LLM call of
+    its own (see that module's docstring for why), so those items stayed
+    stuck at the concise level even in a detailed recap. Asking for more
+    detail here, still grounded in the transcript the same way, fixes that
+    without a second LLM call.
+    """
+    detailed_note = (
+        """
+
+Since this is a detailed recap, write each item's "summary" and \
+"instruction" with the same richness the detailed narration below gives \
+its own items -- 2-4 sentences' worth of concrete detail (what was tried, \
+why, what's blocking it, relevant numbers or file/function names, when \
+the transcript has them), not just a one-clause/one-line version. This \
+keeps a plain listing of this item (e.g. "what are the other items") at \
+the same detail level as the recap that surfaced it, since that listing \
+never re-elaborates beyond what's extracted here."""
+        if detail == "detailed"
+        else ""
+    )
+    return (
+        """
 
 Extract every channel's current open/actionable item(s) into "items" --
 every one of them, with no cap on how many -- before writing anything
@@ -206,10 +242,13 @@ every item is grounded independently. "keywords" is the one exception: it
 doesn't need to be grounded in the transcript's own wording -- ground it in
 the item's own label/summary/instruction instead, listing other natural
 ways someone might refer to that same item later."""
+        + detailed_note
+    )
+
 
 # Placed after both "items" and "text" are fully described, so "described
 # above" always means what it says regardless of which recap mode built the
-# rest of the prompt (see _ITEM_EXTRACTION_INSTRUCTIONS's own comment for
+# rest of the prompt (see _item_extraction_instructions's own comment for
 # why that ordering matters).
 _RESPONSE_SHAPE_INSTRUCTIONS = """
 
@@ -221,7 +260,7 @@ you should actually produce them in, not just how the response is shaped:
 recap text described above>"}"""
 
 _CONCISE_SYSTEM_PROMPT = f"""You are a TPM agent's recap assistant.\
-{_ITEM_EXTRACTION_INSTRUCTIONS}
+{_item_extraction_instructions("concise")}
 
 For each project channel, narrate in "text" only its one most-recent, \
 immediately-actionable item: current status in one clause, then a \
@@ -255,12 +294,12 @@ def _detailed_system_prompt(max_items: int) -> str:
     A function instead of a module-level constant only because `max_items`
     is configurable and has to reach the LLM's own instructions, not just
     `_parse_recap`'s bookkeeping. `max_items` only ever bounds the "text"
-    paragraph below -- see _ITEM_EXTRACTION_INSTRUCTIONS's own comment for
-    why it's never mentioned any earlier in this prompt, where extraction
-    is described.
+    paragraph below -- see `_item_extraction_instructions`'s own docstring
+    for why it's never mentioned any earlier in this prompt, where
+    extraction is described.
     """
     return f"""You are a TPM agent's recap assistant.\
-{_ITEM_EXTRACTION_INSTRUCTIONS}
+{_item_extraction_instructions("detailed")}
 
 For each project channel, narrate in "text" up to {max_items} of its \
 most-recent, immediately-actionable items, in the priority order you \
@@ -424,7 +463,7 @@ class RecapItem:
     conditions -- nothing single message grounds the item; never guessed.
 
     `keywords` are alternate phrases the LLM thought of at extraction time
-    for referring to this same item later (see `_ITEM_EXTRACTION_INSTRUCTIONS`) --
+    for referring to this same item later (see `_item_extraction_instructions`) --
     unlike every other field here, they're deliberately *not* required to be
     grounded in the transcript's literal wording, since their whole job is
     covering synonyms/categories the transcript never used. `resolve_
@@ -515,7 +554,7 @@ def _ensure_channel_paragraphs(
     primary item(s) came back in `items` but never got a paragraph in
     `text` at all.
 
-    `_ITEM_EXTRACTION_INSTRUCTIONS` has the LLM extract `items` before
+    `_item_extraction_instructions` has the LLM extract `items` before
     writing `text`, so `items` can be correctly grounded for a channel even
     when the LLM's own narration skips that channel entirely -- observed
     live on a global, multi-channel recap: the busiest channel (most items,
@@ -571,7 +610,7 @@ def _parse_recap(
             continue
         channel = item.get("channel", "")
         # The LLM lists a channel's items in priority order (see
-        # _ITEM_EXTRACTION_INSTRUCTIONS) -- the first max_items_per_channel seen for a
+        # _item_extraction_instructions) -- the first max_items_per_channel seen for a
         # channel are the ones "text" itself narrates, everything after is
         # one of the "additional" items (see RecapItem.is_primary).
         channel_counts[channel] = channel_counts.get(channel, 0) + 1
@@ -597,7 +636,7 @@ def _normalize_label(label: str) -> str:
     """Flatten a hyphenated label like "fix-message-id-reliability" into
     "fix message id reliability".
 
-    `_ITEM_EXTRACTION_INSTRUCTIONS` asks for "a few words naming the item,"
+    `_item_extraction_instructions` asks for "a few words naming the item,"
     but the LLM sometimes echoes a hyphenated, git-branch-shaped slug from
     the transcript instead (project channels are full of literal branch
     names) rather than phrasing it in words -- observed live, inconsistently
@@ -844,7 +883,7 @@ def _append_source_links(
     unconditionally since it only ever elaborates on already-selected items.
 
     Only ever a primary item -- those are the only ones `text` actually
-    narrates (see `_ITEM_EXTRACTION_INSTRUCTIONS`); a non-primary item is just
+    narrates (see `_item_extraction_instructions`); a non-primary item is just
     counted by `_append_item_counts`, never described, so there's no
     content of its own for a link to attach to.
 
@@ -905,7 +944,7 @@ def _build_transcript(
 
     Each message is tagged with a short per-channel local id ("m1", "m2",
     ...) rather than its real (64-char) event id -- cheap for the LLM to
-    copy back verbatim in `source_id` (see `_ITEM_EXTRACTION_INSTRUCTIONS`) without
+    copy back verbatim in `source_id` (see `_item_extraction_instructions`) without
     risking a garbled hex string. Both maps only get an entry for messages
     that actually carry an `"id"` -- real `buzz messages get` events always
     do; this just means a message without one can't be cited as a source,

@@ -399,6 +399,15 @@ def test_build_recap_detailed_prompt_reflects_configured_max_items(monkeypatch):
     assert "up to 6" in _system_prompt(fake)
 
 
+def test_detailed_prompt_asks_for_richer_item_summaries_than_concise():
+    # recap_list.render_items builds "the other items" straight from each
+    # RecapItem's stored summary/instruction with no LLM call of its own,
+    # so those fields need to already carry detailed-mode richness -- the
+    # detailed prompt must ask for it, and the concise one must not.
+    assert "same richness" in _detailed_system_prompt(1)
+    assert "same richness" not in _CONCISE_SYSTEM_PROMPT
+
+
 def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
     monkeypatch.setattr(
         recap,
