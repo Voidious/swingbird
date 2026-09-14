@@ -161,3 +161,49 @@ def test_build_recap_drops_llm_narrated_count_sentence_naming_the_channel(
         "**backend -- F4:** prose covering the first item.\n\n"
         "**backend -- 1 additional open item:** F5"
     )
+
+
+def test_build_recap_drops_llm_narrated_has_sentence_after_real_fold_paragraph(
+    monkeypatch,
+):
+    # Observed live: right after our own correct "**backend -- 1 additional
+    # open item:** F5" fold paragraph (the real one `_append_item_counts`
+    # itself generates -- not an LLM invention, even though it happens to
+    # share that paragraph's exact "**channel -- N additional open items:**"
+    # shape), the LLM separately narrated its own leftover "has"-phrased
+    # sentence -- "backend has 1 additional open item beyond these one." --
+    # which `_LLM_COUNT_SENTENCE_RE` didn't catch yet, since it only matched
+    # a "there is/are" subject, not "<channel> has/have".
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=1),
+    )
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "backend has 1 additional open item beyond this one.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "primary",
+                "instruction": "do the primary thing",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "secondary",
+                "instruction": "do the secondary thing",
+            },
+        ],
+    )
+
+    result = build_recap(llm, config, detail="detailed")
+
+    assert result.text == (
+        "**backend -- F4:** prose covering the first item.\n\n"
+        "**backend -- 1 additional open item:** F5"
+    )
