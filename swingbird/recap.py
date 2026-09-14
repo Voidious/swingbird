@@ -507,40 +507,44 @@ def build_recap(
 def _ensure_channel_paragraphs(
     text: str, items: tuple[RecapItem, ...], detail: str
 ) -> str:
-    """Append a deterministic fallback paragraph for any channel whose
-    primary item(s) came back in `items` but never got a paragraph in
-    `text` at all.
+    """Append a deterministic fallback paragraph for any primary item that
+    never got its own paragraph in `text`.
 
     `_item_extraction_instructions` has the LLM extract `items` before
     writing `text`, so `items` can be correctly grounded for a channel even
-    when the LLM's own narration skips that channel entirely -- observed
-    live on a global, multi-channel recap: the busiest channel (most items,
-    most competing content) was left out of `text` two times out of three,
-    while `items` still had its entries. This is the same "attention
-    degrades across a long single generation" failure `_backfill_missing_
-    sources` already addresses for a single item's citation, just at the
-    coarser "did this channel get a paragraph at all" level -- and, like
-    that backfill, it's a deterministic patch rather than a second LLM
-    call, since the content to render (`item.summary`) is already grounded.
+    when the LLM's own narration skips it, or part of it, entirely --
+    observed live on a global, multi-channel recap: the busiest channel
+    (most items, most competing content) was left out of `text` two times
+    out of three, while `items` still had its entries. This is the same
+    "attention degrades across a long single generation" failure
+    `_backfill_missing_sources` already addresses for a single item's
+    citation, just at the "did this item get its own paragraph" level --
+    and, like that backfill, it's a deterministic patch rather than a
+    second LLM call, since the content to render (`item.summary`) is
+    already grounded.
 
-    Only fires for a channel that's missing outright -- a channel `_append_
-    item_counts` can already find a paragraph for (even a stray or
-    malformed one) is left alone here. Checks for the same `"**{channel}"`
-    prefix `_append_item_counts`/`_append_source_links` match against, so a
-    fallback paragraph this adds is itself indistinguishable from an
-    LLM-written one to those two passes that run after it.
+    Checks each primary item's own paragraph prefix (`_item_paragraph_
+    prefix`), not just whether the channel has any paragraph at all --
+    observed live in detailed mode (`max_detailed_items` > 1): a channel
+    with several primary items can get a paragraph for some of them but not
+    all, and a channel-level check would wrongly treat the whole channel as
+    covered by the ones that did land, silently dropping the rest along
+    with the "N additional open items" fold note that's anchored to the
+    last primary item's own paragraph (`_append_item_counts`). A concise
+    recap only ever has one primary item per channel, so this is equivalent
+    to the old per-channel check there. Matches the same per-item approach
+    `recap_detail._backfill_missing_paragraphs` already uses for the "tell
+    me more" elaboration case.
     """
     paragraphs = text.split("\n\n")
-    channels_with_items = {item.channel for item in items if item.is_primary}
-    channels_present = {
-        channel
-        for channel in channels_with_items
-        if any(p.startswith(f"**{channel}") for p in paragraphs)
-    }
     missing_items = [
         item
         for item in items
-        if item.is_primary and item.channel not in channels_present
+        if item.is_primary
+        and not any(
+            p.startswith(_item_paragraph_prefix(item.channel, item.label, detail))
+            for p in paragraphs
+        )
     ]
     if not missing_items:
         return text
