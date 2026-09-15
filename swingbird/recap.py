@@ -644,9 +644,6 @@ def _parse_recap(
     content_map: dict[str, dict[str, str]],
     max_items_per_channel: int,
 ) -> Recap:
-    text = response.get("text")
-    if not isinstance(text, str):
-        raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
     items = []
     channel_counts: dict[str, int] = {}
     for item in response.get("items") or []:
@@ -673,6 +670,28 @@ def _parse_recap(
                 keywords=_parse_keywords(item.get("keywords")),
             )
         )
+    text = response.get("text")
+    if not isinstance(text, str):
+        # Observed live: a detailed recap with several channels' worth of
+        # items came back with "items" fully populated but "text" missing
+        # entirely, rather than malformed/truncated JSON (see llm.py's own
+        # truncation handling for that separate failure mode) -- the same
+        # "attention degrades across a long single generation" pattern
+        # _ensure_channel_paragraphs already works around for a single
+        # missing channel paragraph, just total instead of partial this
+        # time. "items" is already fully grounded independent of "text" (it
+        # comes first in both the extraction instructions and the response
+        # shape -- see _RESPONSE_SHAPE_INSTRUCTIONS), so when at least one
+        # item parsed, an empty "text" is used instead of failing outright:
+        # _ensure_channel_paragraphs then reconstructs every primary item's
+        # own fallback paragraph from scratch, the same as it already does
+        # per-item. Only raise when there's truly nothing to build a recap
+        # from -- no grounded items either.
+        if not items:
+            raise RecapError(
+                f"LLM response is missing recap text: {json.dumps(response)}"
+            )
+        text = ""
     return Recap(text=text, items=tuple(items))
 
 

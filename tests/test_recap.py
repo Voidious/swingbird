@@ -4,7 +4,6 @@ import pytest
 
 from swingbird import recap
 from swingbird.config import ChannelConfig, Config, OwnerConfig, RecapConfig
-from swingbird.llm import LLMClient
 from swingbird.recap import _CONCISE_SYSTEM_PROMPT, RecapError, RecapItem, build_recap
 from tests.test_recap_build_behavior import (
     CONFIG,
@@ -13,17 +12,11 @@ from tests.test_recap_build_behavior import (
     NOW,
     RELAY_CONFIG,
     STALE,
-    FakeOpenAI,
     _llm,
     _system_prompt,
 )
+from tests.test_recap_build_edge_cases import _raw_llm
 from tests.test_recap_build_helpers import _build_recap_empty_channel_with_item
-
-
-def _raw_llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
-    """For responses that don't match the normal {"text": ...} shape."""
-    fake = FakeOpenAI(content)
-    return LLMClient(LLM_CONFIG, client=fake), fake
 
 
 @pytest.fixture(autouse=True)
