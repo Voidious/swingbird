@@ -191,6 +191,23 @@ def resolve_reference(
     than one match is acceptable is the caller's policy to enforce, not this
     function's (see module docstring).
 
+    Before any of that, an exact (case-insensitive) match of `reference`
+    against one candidate's whole `label` resolves immediately on its own,
+    without running the bidirectional/word-level matching below at all --
+    live bug: giving the exact, full label of one item could still come
+    back ambiguous, because that fuzzy matching is bidirectional
+    (`_matches_text`'s "does the label contain the reference" half). A full
+    label is long enough to often *contain* an unrelated item's shorter
+    label as a plain substring (e.g. the full title of one item literally
+    contains another item's own "F4"-style label as a fragment), so the
+    fuzzy pass matched both instead of recognizing that one candidate was
+    named exactly. An exact match is never a false positive the way a
+    substring can be, so it's checked first and, when unique, short-circuits
+    straight to that one item. Multiple candidates sharing the literal same
+    label (e.g. duplicate labels across channels with no channel narrowing
+    available) fall through to the fuzzy pass below unchanged -- that's
+    genuine ambiguity by identity, not something this shortcut can resolve.
+
     The match (`_matches_text`) is bidirectional (does `reference` contain
     the label, or does the label contain `reference`) since a bare label
     like "F4" needs the former and a reference that also names the channel
@@ -327,6 +344,9 @@ def resolve_reference(
         if not candidates:
             raise RecapActionError("no items in the last recap")
         return ResolvedReference(list(candidates), degraded=False)
+    exact = [item for item in candidates if normalized == item.label.lower()]
+    if len(exact) == 1:
+        return ResolvedReference(exact, degraded=False)
     match_words = [
         w for w in words if w not in _GENERIC_WORDS and w not in _PLURAL_INTENT_WORDS
     ]
