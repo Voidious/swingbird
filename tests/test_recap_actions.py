@@ -205,6 +205,61 @@ def test_resolve_reference_exact_label_match_is_case_insensitive():
     assert resolved.degraded is False
 
 
+def test_resolve_reference_exact_label_match_with_leftover_channel_qualifier():
+    # Live bug (2026-09-15): the router left the channel name in the
+    # reference text even after separately reporting `channel="swingbird"`,
+    # so "swingbird Recap list split fixes" didn't literally equal any
+    # label. It then fell through to the fuzzy pass, where nearly every
+    # swingbird dev-work item's label/keywords mention "recap" (since this
+    # project *is* the recap system), producing several matches instead of
+    # recognizing the reference named one item's title exactly once the
+    # channel qualifier is set aside.
+    target = RecapItem(
+        channel="swingbird",
+        label="Recap list split fixes",
+        summary="s",
+        instruction="i",
+    )
+    decoy_one = RecapItem(
+        channel="swingbird",
+        label="Detailed recap revamp",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+    decoy_two = RecapItem(
+        channel="swingbird",
+        label="Recap relay command",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (target, decoy_one, decoy_two),
+        "swingbird Recap list split fixes",
+        channel="swingbird",
+    )
+
+    assert resolved.items == [target]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_exact_match_qualifier_strip_keeps_internal_stopwords():
+    # The channel-qualifier strip only trims stopwords left dangling at the
+    # edges after the channel name is removed -- a label that legitimately
+    # contains one internally (e.g. "wait for CI") must still match
+    # verbatim once the channel qualifier itself is gone.
+    decoy = RecapItem(
+        channel="crispen", label="wait for CI", summary="s", instruction="i"
+    )
+
+    resolved = resolve_reference((decoy,), "crispen wait for CI", channel="crispen")
+
+    assert resolved.items == [decoy]
+    assert resolved.degraded is False
+
+
 def test_resolve_reference_multiple_exact_label_matches_still_fall_through():
     # Two different items can legitimately share the exact same label text
     # (e.g. the same label recurring in two channels with no channel
