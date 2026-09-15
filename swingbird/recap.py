@@ -19,6 +19,7 @@ double the cost for no benefit.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, replace
 
@@ -553,6 +554,10 @@ def build_recap(
         llm.complete_json(messages), id_map, content_map, max_items_per_channel
     )
     recap = Recap(
+        text=_dedupe_item_paragraphs(recap.text, recap.items, detail),
+        items=recap.items,
+    )
+    recap = Recap(
         text=recap.text,
         items=_backfill_missing_sources(llm, recap.items, id_map, content_map),
     )
@@ -568,6 +573,82 @@ def build_recap(
         items=recap.items,
     )
     return recap
+
+
+_DETAILED_PARAGRAPH_HEADER_RE = re.compile(
+    r"^\*\*(?P<channel>[^*\n]+?) -- (?P<label>[^*\n]+?):\*\*"
+)
+
+
+def _add_if_unique(seen: set, key) -> bool:
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
+def _dedupe_item_paragraphs(
+    text: str, items: tuple[RecapItem, ...], detail: str
+) -> str:
+    """Drop a later detailed-recap paragraph that restates an earlier one's
+    same item under a differently-punctuated label.
+
+    `_item_extraction_instructions` asks the LLM to fold every restatement
+    of the same underlying work into one "items" entry before writing
+    "text" at all -- but that's a prompt request, not an enforced
+    constraint, and it governs "items", not the free-form "text" prose
+    written from it. Observed live: a detailed recap wrote two separate
+    paragraphs for the very same status update, headed "**swingbird --
+    recap-close:**" and "**swingbird -- recap close:**", differing only by
+    a hyphen vs a space in the label. `_parse_recap` already applies this
+    same normalize-and-compare logic to dedupe "items" itself (see its own
+    docstring for that half of the fix), but "text" is the LLM's own
+    verbatim wording, not reconstructed from "items" -- so a duplicate
+    paragraph there isn't guaranteed to disappear just because "items" no
+    longer has a matching duplicate entry.
+
+    Rewrites the surviving paragraph's header to its matching item's own
+    canonical prefix (`_item_paragraph_prefix`, built from the already-
+    normalized `item.label`), not just whichever raw spelling the LLM wrote
+    -- otherwise the paragraph that survives dedup could keep a hyphenated
+    header like "**swingbird -- recap-close:**" while `item.label` was
+    normalized to "recap close", and `_ensure_channel_paragraphs`'s own
+    exact-prefix match would then treat the item as still missing and
+    append a second, fallback paragraph for it right back. A paragraph
+    whose header doesn't match any known item (e.g. a "no open item"
+    paragraph, or the LLM naming a channel/label "items" doesn't have) is
+    still deduped by its own normalized header but otherwise left as
+    written, since there's no canonical form to rewrite it to.
+
+    Never touches a concise recap's "**channel**:" paragraphs (no label to
+    compare) or a detailed "no open item" paragraph in that same shape --
+    only the per-item header `_DETAILED_FORMAT_GUARD` actually asks for.
+    """
+    if detail != "detailed":
+        return text
+    canonical: dict[tuple[str, str], str] = {}
+    for item in items:
+        key = (item.channel.strip().casefold(), item.label.strip().casefold())
+        canonical.setdefault(
+            key, _item_paragraph_prefix(item.channel, item.label, detail)
+        )
+    paragraphs = text.split("\n\n")
+    seen: set[tuple[str, str]] = set()
+    kept = []
+    for paragraph in paragraphs:
+        match = _DETAILED_PARAGRAPH_HEADER_RE.match(paragraph)
+        if match:
+            key = (
+                _normalize_label(match.group("channel")).strip().casefold(),
+                _normalize_label(match.group("label")).strip().casefold(),
+            )
+            if not _add_if_unique(seen, key):
+                continue
+            prefix = canonical.get(key)
+            if prefix is not None:
+                paragraph = prefix + paragraph[match.end() :]
+        kept.append(paragraph)
+    return "\n\n".join(kept)
 
 
 def _ensure_channel_paragraphs(
@@ -646,10 +727,31 @@ def _parse_recap(
 ) -> Recap:
     items = []
     channel_counts: dict[str, int] = {}
+    seen_labels: dict[str, set[str]] = {}
     for item in response.get("items") or []:
         if not isinstance(item, dict) or not item.get("instruction"):
             continue
         channel = item.get("channel", "")
+        label = _normalize_label(item.get("label", ""))
+        # _item_extraction_instructions asks the LLM to fold every
+        # restatement of the same underlying work into one "items" entry,
+        # but that's a prompt request, not an enforced constraint --
+        # observed live, a detailed recap still came back with two entries
+        # for the same status update, one labeled "recap-close" and the
+        # other "recap close". _normalize_label already treats those as
+        # the same label (hyphenated slug vs plain words), so reusing it
+        # here to key a per-channel "already added" set is a deterministic
+        # backstop for exactly the failure the prompt guard was meant to
+        # prevent, without discarding a second, genuinely distinct item
+        # that happens to be unlabeled (an empty label never dedupes
+        # against another empty one). Checked before this entry can
+        # consume a `channel_counts`/`is_primary` slot, so a duplicate
+        # never bumps a later, real item out of "text".
+        label_key = label.strip().casefold()
+        if label_key:
+            channel_seen = seen_labels.setdefault(channel, set())
+            if not _add_if_unique(channel_seen, label_key):
+                continue
         # The LLM lists a channel's items in priority order (see
         # _item_extraction_instructions) -- the first max_items_per_channel seen for a
         # channel are the ones "text" itself narrates, everything after is
@@ -659,7 +761,7 @@ def _parse_recap(
         items.append(
             RecapItem(
                 channel=channel,
-                label=_normalize_label(item.get("label", "")),
+                label=label,
                 summary=item.get("summary", ""),
                 instruction=item.get("instruction", ""),
                 is_primary=is_primary,
