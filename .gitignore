@@ -222,3 +222,6 @@ __marimo__/
 
 # Swingbird audit log (local, append-only, grows unbounded)
 audit.jsonl
+
+# Swingbird closed-items log (local, append-only, grows unbounded)
+closed_items.jsonl
