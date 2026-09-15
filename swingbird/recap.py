@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, replace
 
 from swingbird import outbound
+from swingbird.closed_items import ClosedItem, ClosedItemStore
 from swingbird.config import ChannelConfig, Config
 from swingbird.history import fetch_messages_since
 from swingbird.llm import LLMClient, LLMError
@@ -72,6 +73,15 @@ _RESOLUTION_GUARD = (
     "the user's last instruction before that was, not any earlier "
     'resolved concern -- phrase status like "told to do X, interrupted '
     'before doing it," not the concern that preceded that instruction.'
+)
+
+_CLOSED_MARKER_GUARD = (
+    'A transcript message tagged "[closed]" describes work the user has '
+    "already marked closed (see the closed-items list below, when there is "
+    "one) -- never extract a new item grounded only in that message. Only "
+    "extract an item touching that same work if a different, un-tagged "
+    "message in the same transcript shows it was reopened or something "
+    "new is being asked, genuinely distinct from what was closed."
 )
 
 _FORMAT_GUARD = (
@@ -279,6 +289,7 @@ appended separately, not narrated by you. If a channel has no open \
 item, say so briefly, and if a goal is given for it, add one short \
 sentence naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
+{_CLOSED_MARKER_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
 transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
@@ -322,6 +333,7 @@ appended separately, not narrated by you. If a channel has no open item, \
 say so briefly, and if a goal is given for it, add one short sentence \
 naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_DETAILED_FORMAT_GUARD} \
+{_CLOSED_MARKER_GUARD} \
 Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
 not a transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
@@ -434,6 +446,38 @@ def _backfill_missing_sources(
     return tuple(result)
 
 
+def _format_closed_items_guard(closed: tuple[ClosedItem, ...]) -> str:
+    """Build the dynamic (per-call) system prompt addition listing every
+    closed item in scope for this recap (see `build_recap`'s `closed_items`
+    handling), so extraction never re-lists that work as open even when a
+    transcript message restates it -- mirrors `_RESOLUTION_GUARD`'s "a
+    later resolution supersedes an earlier open question" reasoning, just
+    anchored on a durable closed-items record instead of a within-
+    transcript resolution. Belt-and-suspenders alongside `_CLOSED_MARKER_
+    GUARD`'s `[closed]` transcript tag (`_build_transcript`) -- that tag
+    only fires when the exact message that grounded the closed item is
+    still in this recap's window, while this guard's prose covers every
+    closed item regardless, including one restated on a brand-new message.
+    A guard, not transcript surgery: stripping the original message out of
+    the transcript would risk losing context other, still-open items in
+    the same message need.
+
+    Empty (returns "") when there's nothing closed in scope, so a recap
+    with no closed items doesn't grow its prompt for no reason.
+    """
+    if not closed:
+        return ""
+    lines = [f"- {item.channel}: {item.label} -- {item.instruction}" for item in closed]
+    return (
+        "\n\nThe following work has already been marked closed by the "
+        "user and must never be listed as an open/actionable item again, "
+        "even if a transcript message restates or re-describes it -- only "
+        "include it if the transcript shows something genuinely new (the "
+        "work was reopened, or there's a new, distinct ask), not just a "
+        "restatement of what's below:\n" + "\n".join(lines)
+    )
+
+
 class RecapError(Exception):
     """Raised when a recap is requested for an unknown channel, or the LLM's
     response can't be trusted as a recap."""
@@ -450,6 +494,7 @@ def build_recap(
     config: Config,
     channel_names: list[str] | None = None,
     detail: str = "concise",
+    closed_items: ClosedItemStore | None = None,
 ) -> Recap:
     """Return a short, prioritized recap of recent channel activity.
 
@@ -463,13 +508,34 @@ def build_recap(
     `detail` selects "concise" (default, one actionable item per project)
     or "detailed" (up to `config.recap.max_detailed_items` per project,
     each with more detail -- anything else falls back to concise).
+
+    `closed_items` (see `closed_items.py`) supplies every item the user has
+    marked closed within `config.recap.closed_item_window_days`, scoped to
+    `channels` -- omitted (`None`) only by tests that don't care about
+    closing; `daemon.py` always passes the real store. The window is
+    floored at `config.recap.stale_after_days` (never narrower than the
+    recap's own message window) so a closed item still young enough for
+    its own restatement to appear in `transcript` can never fall outside
+    the guard meant to suppress it -- see `RecapConfig.closed_item_window_
+    days`'s own docstring.
     """
     channels = _select_channels(config, channel_names)
+    closed = (
+        ()
+        if closed_items is None
+        else closed_items.for_channels(
+            {channel.name for channel in channels},
+            since=time.time()
+            - max(config.recap.closed_item_window_days, config.recap.stale_after_days)
+            * 86400,
+        )
+    )
     transcript, id_map, content_map = _build_transcript(
         channels,
         stale_after_days=config.recap.stale_after_days,
         max_messages_per_channel=config.recap.max_messages_per_channel,
         explicit=channel_names is not None,
+        closed_ids_by_channel=_closed_ids_by_channel(closed),
     )
     max_items_per_channel = (
         config.recap.max_detailed_items if detail == "detailed" else 1
@@ -478,7 +544,7 @@ def build_recap(
         _detailed_system_prompt(max_items_per_channel)
         if detail == "detailed"
         else _CONCISE_SYSTEM_PROMPT
-    )
+    ) + _format_closed_items_guard(closed)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": transcript},
@@ -725,11 +791,25 @@ def _select_channels(config: Config, channel_names: list[str] | None):
     return selected
 
 
+def _closed_ids_by_channel(closed: tuple[ClosedItem, ...]) -> dict[str, set[str]]:
+    """Return `{channel_name: {source_event_id, ...}}` for every closed item
+    that was grounded in one specific message -- an item closed without a
+    `source_event_id` (see `RecapItem.source_event_id`) has no transcript
+    message to tag, so it's covered only by `_format_closed_items_guard`'s
+    prose, not this per-message marker (see `_build_transcript`)."""
+    by_channel: dict[str, set[str]] = {}
+    for item in closed:
+        if item.source_event_id is not None:
+            by_channel.setdefault(item.channel, set()).add(item.source_event_id)
+    return by_channel
+
+
 def _build_transcript(
     channels: list[ChannelConfig],
     stale_after_days: int,
     max_messages_per_channel: int,
     explicit: bool,
+    closed_ids_by_channel: dict[str, set[str]],
 ) -> tuple[str, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     """Return the transcript text and `{channel_name: {tag: event_id}}` /
     `{channel_name: {tag: content}}` maps.
@@ -743,6 +823,13 @@ def _build_transcript(
     never a crash. The content map exists alongside the id map so a
     resolved `source_id` can carry the message's own text forward too (see
     `RecapItem.source_content`), not just its event id.
+
+    A message whose own id is in `closed_ids_by_channel` for its channel --
+    the same message that grounded a now-closed item -- gets a literal
+    "[closed]" suffix (see `_CLOSED_MARKER_GUARD`), a deterministic signal
+    alongside `_format_closed_items_guard`'s prose-only guard for the
+    common case where the closed item's own source message is still within
+    this recap's window.
     """
     cutoff = time.time() - stale_after_days * 86400
     sections = []
@@ -766,12 +853,16 @@ def _build_transcript(
         if channel.goal:
             header += f" (goal: {channel.goal})"
         if events:
+            closed_ids = closed_ids_by_channel.get(channel.name, set())
             lines = []
             tags = {}
             contents = {}
             for i, event in enumerate(events, start=1):
                 tag = f"m{i}"
-                lines.append(f"[{tag}] [{event['created_at']}] {event['content']}")
+                closed_suffix = " [closed]" if event.get("id") in closed_ids else ""
+                lines.append(
+                    f"[{tag}] [{event['created_at']}] {event['content']}{closed_suffix}"
+                )
                 if "id" in event:
                     tags[tag] = event["id"]
                     contents[tag] = event["content"]

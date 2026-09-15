@@ -156,7 +156,10 @@ agents = ["Sonnet"]
   and this is the safety valve stopping that from running away on an unusually chatty channel.
   `max_detailed_items` (default `3`) caps how many of a project's open items a detailed recap
   narrates before folding the rest into a count, the same way a concise recap always folds
-  everything past its one leading item.
+  everything past its one leading item. `closed_item_window_days` (default `90`) caps how far
+  back a closed item ("close F4") still gets sent to the LLM as "don't re-list this" context --
+  floored at `stale_after_days`, so it can never be narrower than the recap's own message window
+  (see [Closing an item](#closing-an-item) below).
 - **`[[channels]]`** -- one entry per project. `id` is the Buzz channel UUID; `name` is what
   you'll say in conversation ("recap backend", "tell backend to...") and is independent of the
   channel's own Buzz display name; `write` controls whether swingbird may dispatch instructions
@@ -198,14 +201,17 @@ Before starting the daemon, its own shell environment needs:
 - Your `[llm].api_key_env` variable (e.g. `MOONSHOT_API_KEY`).
 
 ```bash
-uv run python main.py --config swingbird.toml --audit-log audit.jsonl
+uv run python main.py --config swingbird.toml --audit-log audit.jsonl --closed-items closed_items.jsonl
 ```
 
-`--config` and `--audit-log` both default to `swingbird.toml` and `audit.jsonl` in the current
-directory. The audit log is a local, append-only JSON-lines record of every inbound message,
-proposed dispatch, and confirm/cancel decision -- independent of Buzz's own event log, and kept so
-you can see why swingbird proposed what it proposed, including proposals that got cancelled and
-never became a real Buzz message.
+`--config`, `--audit-log`, and `--closed-items` default to `swingbird.toml`, `audit.jsonl`, and
+`closed_items.jsonl` in the current directory. The audit log is a local, append-only JSON-lines
+record of every inbound message, proposed dispatch, and confirm/cancel decision -- independent of
+Buzz's own event log, and kept so you can see why swingbird proposed what it proposed, including
+proposals that got cancelled and never became a real Buzz message. The closed-items file is a
+separate append-only JSON-lines record of every item you've closed (see
+[Closing an item](#closing-an-item)) -- unlike the audit log, it's read back on every recap, so
+don't delete it unless you want previously-closed items to start reappearing.
 
 ## Usage
 
@@ -223,14 +229,34 @@ command.
 | "tell me more about F4" | Asks the LLM to elaborate on that recap item beyond its stored summary, using its original source thread -- no relay, nothing to confirm. |
 | "what are the other items?" | Lists a recap's folded/additional items at the same concise or detailed level the recap itself used -- no LLM call, just a formatted read of what's already stored. |
 | "for backend F4, couldn't we just cache that instead?" | Forwards your own question or comment about that recap item to its agent, close to verbatim (resolving a vague "it"/"that" using the item's context first) -- same confirm/cancel flow as a fresh dispatch. |
-| "confirm" / "do it" / "yes" | Sends the most recently proposed instruction. |
-| "cancel" / "never mind" | Discards the pending proposal without sending anything. |
+| "close F4" / "mark the duplicate extractor fix as done" | Proposes marking that recap item (and any other item grounded on the same message) as closed, so it stops appearing as open work in future recaps -- see [Closing an item](#closing-an-item). Nothing is closed until you confirm. |
+| "confirm" / "do it" / "yes" | Sends the most recently proposed instruction, or, for a close proposal, persists the close. |
+| "cancel" / "never mind" | Discards the pending proposal without sending or closing anything. |
 | anything else | swingbird says it's outside what it handles, and suggests asking for a recap or a dispatch instead. |
 
 If swingbird can't tell which channel, agent, or recap item a request means, it asks you to
 clarify rather than guessing -- answering that follow-up resolves the original request. Once you
 confirm a dispatch, swingbird waits (up to `[dispatch].reply_wait_seconds`) for the target agent's
 reply, then summarizes it back into your DM.
+
+### Closing an item
+
+A recap is fully stateless -- every call re-extracts open items fresh from recent channel
+activity, so there's no queryable to-do list to check an item off of. "Close F4" (or any other
+reference a recap follow-up understands -- see the table above) instead records a durable
+snapshot of the item in the closed-items file (`--closed-items`, see [Running](#running)), and
+every future recap consults that record to avoid re-listing the same work as open, even if a
+later message restates it.
+
+Since one message can ground more than one recap item, closing one proposes closing every item
+from the same recap that shares its source message, and lists all of them before asking you to
+confirm -- so closing "F4" for a message that also grounds F5 won't silently close F5 too without
+telling you. Nothing is closed until you confirm.
+
+A closed item stops being suppressed once it falls outside `[recap].closed_item_window_days`, on
+the (rare) assumption that a restatement that old is unlikely to still be the same open thread of
+work. If it turns out to still be the same work, closing it again picks up right where you left
+off.
 
 ## Development
 

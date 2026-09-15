@@ -61,6 +61,12 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
   `RecapItem` has a `source_event_id`, the relayed message threads to it
   (`Intent.reply_to` -> `DispatchProposal.reply_to` -> `relay_dispatch`); a fresh dispatch has
   no such message and always posts top-level.
+- A `recap_close` intent ("close F4") never relays or posts anything to a project channel --
+  it only persists a snapshot to `closed_items.py`'s append-only file, and only after a
+  deterministic yes/no confirmation (`recap_close.py`'s `PendingCloseStore`, resolved in
+  `daemon._process` before the message reaches the router). Deliberately a separate
+  confirmation path from `pending_actions.PendingActionStore`'s dispatch confirm/cancel --
+  don't merge them, since one writes to Buzz and the other never does.
 - On any ambiguity (unresolvable channel/agent, multiple pending proposals for a bare
   "confirm"), the router/store asks the user rather than guessing. Don't add
   best-guess fallbacks here -- guessing wrong means dispatching to the wrong channel. The same
@@ -80,7 +86,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `avatar.py` | Builds the `data:image/svg+xml,...` URI for an "Emoji" style Buzz avatar, matching Buzz Desktop's own encoding. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
-| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_list / recap_relay / chit-chat). |
+| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_list / recap_relay / recap_close / chit-chat). |
 | `pending_actions.py` | Confirm/cancel state machine for proposed dispatches. |
 | `history.py` | One-shot fetch of recent channel messages (via `outbound.run_buzz_cli`), for recaps. |
 | `recap.py` | LLM-summarizes recent channel activity into a short recap, plus structured per-channel `RecapItem`s. |
@@ -89,7 +95,9 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `recap_list.py` | Enumerates a recap's additional/open items at the recap's own level of detail, for `recap_list` ("what are the other items") -- no LLM call, unlike `recap_detail.py`. |
 | `dispatch_phrasing.py` | Narrows/rewrites a recap item's own instruction into a directive, for `recap_action`. |
 | `recap_relay.py` | Forwards the user's own question/comment about a recap item to its agent near-verbatim, resolving ambiguous references (e.g. "it") against the item's context, for `recap_relay`. |
-| `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |
+| `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay`/`recap_close` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |
+| `recap_close.py` | Pending-close store and deterministic yes/no resolution for "close F4", for `recap_close` -- confirmed outside the router's own dispatch confirm/cancel path, since closing never relays anything. |
+| `closed_items.py` | Durable, append-only record of items marked closed, consulted by `recap.py`'s `build_recap` on every future recap so closed work stops being listed as open. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |

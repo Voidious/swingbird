@@ -419,3 +419,128 @@ def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
     build_recap(llm, CONFIG, channel_names=["backend"], detail="bogus")
 
     assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT
+
+
+def _user_content(fake) -> str:
+    return fake.chat.completions.calls[0]["messages"][1]["content"]
+
+
+def _closed_item(**overrides):
+    from swingbird.recap import RecapItem
+
+    fields = {
+        "channel": "backend",
+        "label": "F1",
+        "summary": "old bug",
+        "instruction": "Fix the old bug.",
+        "source_event_id": None,
+        "keywords": (),
+    }
+    fields.update(overrides)
+    return RecapItem(**fields)
+
+
+def _setup_empty_closed_items_recap(monkeypatch, recap):
+    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    return _llm()
+
+
+def _setup_closed_items_recap(monkeypatch, tmp_path, recap):
+    from swingbird.closed_items import ClosedItemStore
+
+    llm, fake = _setup_empty_closed_items_recap(monkeypatch, recap)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    return llm, fake, closed_items
+
+
+def test_build_recap_omits_closed_items_guard_when_nothing_is_closed(
+    tmp_path, monkeypatch
+):
+    llm, fake, closed_items = _setup_closed_items_recap(monkeypatch, tmp_path, recap)
+
+    build_recap(llm, CONFIG, closed_items=closed_items)
+
+    assert _system_prompt(fake) == _CONCISE_SYSTEM_PROMPT
+    assert "already been marked closed" not in _system_prompt(fake)
+
+
+def test_build_recap_appends_closed_items_guard_when_something_is_closed(
+    tmp_path, monkeypatch
+):
+    llm, fake, closed_items = _setup_closed_items_recap(monkeypatch, tmp_path, recap)
+    closed_items.close(_closed_item())
+
+    build_recap(llm, CONFIG, closed_items=closed_items)
+
+    system_content = _system_prompt(fake)
+    assert "already been marked closed" in system_content
+    assert "backend: F1 -- Fix the old bug." in system_content
+
+
+def test_build_recap_closed_items_guard_scoped_to_recapped_channels(
+    tmp_path, monkeypatch
+):
+    llm, fake, closed_items = _setup_closed_items_recap(monkeypatch, tmp_path, recap)
+    closed_items.close(_closed_item(channel="frontend", label="F2"))
+
+    build_recap(llm, CONFIG, channel_names=["backend"], closed_items=closed_items)
+
+    assert "already been marked closed" not in _system_prompt(fake)
+
+
+def test_build_recap_tags_the_closed_items_source_message_in_the_transcript(
+    tmp_path, monkeypatch
+):
+    from swingbird.closed_items import ClosedItemStore
+
+    monkeypatch.setattr(
+        recap,
+        "fetch_messages_since",
+        lambda channel_id, since_ts, max_messages=None: [
+            {"id": "evt-1", "created_at": 1000, "content": "fixed the old bug"},
+            {"id": "evt-2", "created_at": 1001, "content": "something unrelated"},
+        ],
+    )
+    llm, fake = _llm()
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item(source_event_id="evt-1"))
+
+    build_recap(llm, CONFIG, channel_names=["backend"], closed_items=closed_items)
+
+    transcript = _user_content(fake)
+    assert "fixed the old bug [closed]" in transcript
+    assert "something unrelated [closed]" not in transcript
+    assert "something unrelated" in transcript
+
+
+def test_build_recap_closed_items_window_is_floored_at_stale_after_days(
+    tmp_path, monkeypatch
+):
+    """A `closed_item_window_days` shorter than the recap's own
+    `stale_after_days` message window must never let a still-young closed
+    item (one whose restatement could still appear in the transcript being
+    recapped) fall outside the closed-items guard -- see
+    `RecapConfig.closed_item_window_days`'s own docstring."""
+    from swingbird.closed_items import ClosedItemStore
+
+    llm, fake = _setup_empty_closed_items_recap(monkeypatch, recap)
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(stale_after_days=100, closed_item_window_days=30),
+    )
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    monkeypatch.setattr(
+        recap.time, "time", lambda: NOW
+    )  # pin "now" for a deterministic closed_at
+    closed_items.close(_closed_item())
+    # closed_at is NOW; move the clock forward 60 days so the item is
+    # older than closed_item_window_days (30) but still within
+    # stale_after_days (100) -- only the floor keeps it in scope.
+    monkeypatch.setattr(recap.time, "time", lambda: NOW + 60 * 86400)
+
+    build_recap(llm, config, closed_items=closed_items)
+
+    assert "already been marked closed" in _system_prompt(fake)

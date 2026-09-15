@@ -42,6 +42,7 @@ VALID_INTENTS = (
     "recap_detail",
     "recap_list",
     "recap_relay",
+    "recap_close",
     "chit_chat",
 )
 
@@ -116,6 +117,15 @@ Classify the user's message into exactly one of these intents:
   paraphrase, and don't fold the item reference into it (e.g. for "for
   dripbird F4, couldn't we just pre-compile it?", "item_reference" is "F4"
   or "dripbird F4" and "message" is "couldn't we just pre-compile it?").
+- recap_close: telling the agent to mark a *recap* item as closed/done, so
+  it stops being surfaced as open work in future recaps -- e.g. "close
+  F4", "mark the duplicate extractor fix as done", "that's already fixed,
+  you can close it". This never relays or dispatches anything -- unlike
+  recap_action (which proceeds with the recap's own next-step instruction
+  by sending it somewhere), recap_close only records that the item itself
+  is finished. Same "message" handling as recap_action: put the user's own
+  reference to *which* item(s) into "message", preserved as closely to
+  their own wording as possible, and don't restate the item's content.
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:
@@ -150,13 +160,13 @@ _OPEN_RECAP_NOTE = """
 Conversation state: this thread already has an open recap -- a structured
 recap with per-channel items was given earlier in this conversation, and the
 user can still reference it. Prefer recap_detail, recap_list, recap_action,
-or recap_relay over a plain recap or a plain dispatch when the wording could
-describe either (e.g. "tell me more about the open items for dripbird",
-"what's the status on F4", "go ahead with the duplicate extractor fix",
-"what are the other items", "what else is there", "for dripbird F4,
-couldn't we just pre-compile it?") -- treat these as referring back to what
-that recap already surfaced, not as a request to regenerate a fresh one or
-post a fresh, unrelated dispatch. Only classify as recap when the user is
+recap_close, or recap_relay over a plain recap or a plain dispatch when the
+wording could describe either (e.g. "tell me more about the open items for
+dripbird", "what's the status on F4", "go ahead with the duplicate extractor
+fix", "close F4", "what are the other items", "what else is there", "for
+dripbird F4, couldn't we just pre-compile it?") -- treat these as referring
+back to what that recap already surfaced, not as a request to regenerate a
+fresh one or post a fresh, unrelated dispatch. Only classify as recap when the user is
 clearly asking for a new or refreshed summary instead (e.g. "give me an
 update", "what's changed since then", naming a channel that wasn't part of
 the open recap).
@@ -178,9 +188,9 @@ _NO_OPEN_RECAP_NOTE = """
 
 Conversation state: this thread has no open recap right now -- nothing has
 been recapped yet, or too much has happened since for one to still apply.
-recap_detail, recap_list, recap_action, and recap_relay all require an
-existing recap to reference, so don't classify as any of those here; a
-message asking about a channel's status is a plain recap instead, and a
+recap_detail, recap_list, recap_action, recap_close, and recap_relay all
+require an existing recap to reference, so don't classify as any of those
+here; a message asking about a channel's status is a plain recap instead, and a
 message meant for a channel/agent is a plain dispatch instead."""
 
 # Mirrors _OPEN_RECAP_NOTE/_NO_OPEN_RECAP_NOTE's own reasoning, for the same

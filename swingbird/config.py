@@ -119,6 +119,7 @@ class DispatchConfig:
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_MAX_MESSAGES_PER_CHANNEL = 1000
 DEFAULT_MAX_DETAILED_ITEMS = 3
+DEFAULT_CLOSED_ITEM_WINDOW_DAYS = 90
 
 
 @dataclass(frozen=True)
@@ -135,11 +136,22 @@ class RecapConfig:
     "detailed" recap narrates in its own text before folding the rest into
     a count, same as a concise recap always does for everything past its
     one leading item -- see recap.py's `RecapItem.is_primary`.
+
+    `closed_item_window_days` bounds how far back a closed item (see
+    `closed_items.py`) still gets sent to the LLM as "don't re-list this"
+    context -- an ever-growing, unbounded closed-items list would keep
+    costing tokens on every future recap forever, for items old enough that
+    a restatement is vanishingly unlikely anyway. `recap.py`'s `build_recap`
+    floors the effective window at `stale_after_days`, so shrinking this
+    below the recap's own message window can never make a just-closed item
+    (one still young enough for its restatement to appear in the transcript
+    being recapped) fall outside the guard that's supposed to suppress it.
     """
 
     stale_after_days: int = DEFAULT_STALE_AFTER_DAYS
     max_messages_per_channel: int = DEFAULT_MAX_MESSAGES_PER_CHANNEL
     max_detailed_items: int = DEFAULT_MAX_DETAILED_ITEMS
+    closed_item_window_days: int = DEFAULT_CLOSED_ITEM_WINDOW_DAYS
 
 
 @dataclass(frozen=True)
@@ -300,10 +312,20 @@ def _parse_recap(raw: dict) -> RecapConfig:
         or max_detailed_items <= 0
     ):
         raise ConfigError("[recap].max_detailed_items must be a positive integer")
+    closed_item_window_days = section.get(
+        "closed_item_window_days", DEFAULT_CLOSED_ITEM_WINDOW_DAYS
+    )
+    if (
+        isinstance(closed_item_window_days, bool)
+        or not isinstance(closed_item_window_days, int)
+        or closed_item_window_days <= 0
+    ):
+        raise ConfigError("[recap].closed_item_window_days must be a positive integer")
     return RecapConfig(
         stale_after_days=days,
         max_messages_per_channel=max_messages,
         max_detailed_items=max_detailed_items,
+        closed_item_window_days=closed_item_window_days,
     )
 
 

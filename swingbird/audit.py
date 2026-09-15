@@ -70,6 +70,25 @@ class AuditLog:
             ],
         )
 
+    def log_closed_items(self, thread_id: str, items: tuple[Any, ...]) -> None:
+        """Records every `RecapItem` a close confirmation actually closed
+        -- `ClosedItemStore` (closed_items.py) is the durable record
+        consulted by future recaps, but this audit entry is what ties a
+        close decision back to the thread/reply that made it, same as
+        `log_decision` does for a dispatch confirm/cancel."""
+        self._write(
+            "closed_items",
+            thread_id,
+            items=[
+                {
+                    "channel": item.channel,
+                    "label": item.label,
+                    "source_event_id": item.source_event_id,
+                }
+                for item in items
+            ],
+        )
+
     def log_decision(
         self,
         thread_id: str | None,

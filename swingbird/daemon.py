@@ -67,6 +67,7 @@ from dataclasses import replace
 from swingbird import outbound
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
+from swingbird.closed_items import ClosedItemStore
 from swingbird.config import Config, load_config
 from swingbird.dispatch_phrasing import rephrase_for_dispatch
 from swingbird.history import (
@@ -91,6 +92,7 @@ from swingbird.recap_actions import (
     ResolvedReference,
     resolve_reference,
 )
+from swingbird.recap_close import PendingClose, PendingCloseStore, resolve_close_reply
 from swingbird.recap_detail import elaborate
 from swingbird.recap_disambiguation import (
     AmbiguousRecapReference,
@@ -106,6 +108,7 @@ from swingbird.router import Intent, IntentRouter, RouterError
 
 DEFAULT_CONFIG_PATH = "swingbird.toml"
 DEFAULT_AUDIT_LOG_PATH = "audit.jsonl"
+DEFAULT_CLOSED_ITEMS_PATH = "closed_items.jsonl"
 # How much DM history to give recap_detail's elaboration as "the recap
 # conversation so far" -- generous enough to cover the recap and this
 # follow-up (plus a bit of prior back-and-forth) without pulling in an
@@ -141,9 +144,11 @@ class Daemon:
         store: PendingActionStore,
         llm: LLMClient,
         audit: AuditLog,
+        closed_items: ClosedItemStore,
         dm_id: str | None = None,
         recap_store: RecapActionStore | None = None,
         disambiguation: DisambiguationStore | None = None,
+        pending_close: PendingCloseStore | None = None,
         own_pubkey: str | None = None,
     ) -> None:
         self._config = config
@@ -152,6 +157,9 @@ class Daemon:
         self._store = store
         self._llm = llm
         self._audit = audit
+        # Persistent record of items the user has marked closed, so a
+        # future recap stops re-surfacing them -- see closed_items.py.
+        self._closed_items = closed_items
         # The last recap's structured items per thread, so a follow-up DM
         # ("go ahead with F4") can resolve "F4" back to a real channel and
         # instruction -- see recap_actions.py.
@@ -163,6 +171,12 @@ class Daemon:
         # recap_disambiguation.py.
         self._disambiguation = (
             disambiguation if disambiguation is not None else DisambiguationStore()
+        )
+        # An open "close these items?" confirmation per thread, resolved by
+        # a deterministic yes/no before the message ever reaches the router
+        # -- see recap_close.py.
+        self._pending_close = (
+            pending_close if pending_close is not None else PendingCloseStore()
         )
         # Resolved fresh in run() via outbound.open_dm(); only events posted
         # in this channel are ever routed as a command (see module
@@ -416,6 +430,13 @@ class Daemon:
                 )
                 if resumed is not None:
                     return resumed
+            pending_close = self._pending_close.get(thread_id)
+            if pending_close is not None:
+                resumed = self._resume_pending_close(
+                    pending_close, event["content"], thread_id
+                )
+                if resumed is not None:
+                    return resumed
             open_recap_items = self._recap_store.get(thread_id)
             has_open_recap = open_recap_items is not None
             has_pending_dispatch = self._store.get(thread_id) is not None
@@ -445,7 +466,33 @@ class Daemon:
         self._disambiguation.clear(thread_id)
         if pending.kind == "recap_action":
             return self._apply_recap_action(item, pending.intent, thread_id)
+        if pending.kind == "recap_close":
+            return self._propose_close(item, pending.intent, thread_id)
         return self._apply_recap_relay(item, pending.intent, thread_id)
+
+    def _resume_pending_close(
+        self, pending: PendingClose, text: str, thread_id: str
+    ) -> str | None:
+        """Answer an open "close these items?" confirmation (see
+        `recap_close.py`) if `text` resolves as a deterministic yes/no;
+        `None` otherwise, so `_process` falls through to normal intent
+        routing for anything that isn't answering it -- same idiom as
+        `_resume_disambiguation`, kept as its own check rather than folded
+        into that one since closing never touches the pending-dispatch
+        confirm/cancel machinery at all (see `recap_close.py`'s module
+        docstring)."""
+        answer = resolve_close_reply(text)
+        if answer is None:
+            return None
+        self._pending_close.clear(thread_id)
+        if not answer:
+            return "Cancelled -- nothing was closed."
+        for item in pending.items:
+            self._closed_items.close(item)
+        self._audit.log_closed_items(thread_id, pending.items)
+        labels = ", ".join(f"{item.channel}/{item.label}" for item in pending.items)
+        noun = "item" if len(pending.items) == 1 else "items"
+        return f"Closed {noun}: {labels}."
 
     def _act(self, intent: Intent, thread_id: str, event_id: str) -> str:
         if intent.kind == "recap":
@@ -455,6 +502,7 @@ class Daemon:
                 self._config,
                 channel_names=channel_names,
                 detail=intent.detail,
+                closed_items=self._closed_items,
             )
             self._audit.log_recap_built(thread_id, built_recap.items)
             self._recap_store.set(thread_id, built_recap.items, channel=intent.channel)
@@ -482,6 +530,8 @@ class Daemon:
             return self._recap_list(intent, thread_id)
         if intent.kind == "recap_relay":
             return self._recap_relay(intent, thread_id)
+        if intent.kind == "recap_close":
+            return self._recap_close(intent, thread_id)
         return _CHIT_CHAT_REPLY
 
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
@@ -540,6 +590,48 @@ class Daemon:
             reply_to=item.source_event_id,
         )
         return self._dispatch_or_ask(dispatch_intent, thread_id)
+
+    def _recap_close(self, intent: Intent, thread_id: str) -> str:
+        item = self._resolve_or_store_single_recap_item(
+            thread_id, intent, "recap_close", intent.message
+        )
+        return self._propose_close(item, intent, thread_id)
+
+    def _propose_close(self, item: RecapItem, intent: Intent, thread_id: str) -> str:
+        """Propose closing `item`, batched with every other item from the
+        same recap sharing its `source_event_id` -- "all the work items
+        grounded on this message," per Voidious's simplification (see
+        recap_close.py's module docstring). Asks for a deterministic
+        yes/no confirmation (`_resume_pending_close`) before persisting
+        anything, mirroring the confirm-before-write invariant `pending_
+        actions.py` enforces for a dispatch, without reusing that store --
+        closing never relays anything, so there's nothing to confirm
+        through the dispatch confirm/cancel path.
+
+        Batching by `source_event_id` rather than just closing `item` alone
+        means a reference that resolves to one item can silently pull in
+        others the user never mentioned -- listing every item in the
+        proposal (not just a count) is what lets the user catch and cancel
+        that before anything is persisted.
+        """
+        self._audit.log_recap_reference(thread_id, "recap_close", intent.message, item)
+        items = self._recap_store.get(thread_id) or ()
+        if item.source_event_id is not None:
+            batch = tuple(i for i in items if i.source_event_id == item.source_event_id)
+        else:
+            batch = (item,)
+        self._pending_close.set(thread_id, PendingClose(batch))
+        labels = ", ".join(f"{i.channel}/{i.label}" for i in batch)
+        if len(batch) == 1:
+            return (
+                f"Close {labels} -- it won't be shown as open in future "
+                "recaps? Confirm to close, or cancel."
+            )
+        return (
+            f"That message covers {len(batch)} items: {labels}. Close all "
+            "of them -- none will be shown as open in future recaps? "
+            "Confirm to close, or cancel."
+        )
 
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
         resolved = self._resolve_recap_items(thread_id, intent.message, intent.channel)
@@ -773,7 +865,9 @@ def _reply_target_ids(event: dict) -> list[str]:
     return [tag[1] for tag in event.get("tags", []) if len(tag) >= 2 and tag[0] == "e"]
 
 
-def build_daemon(config_path: str, audit_log_path: str) -> Daemon:
+def build_daemon(
+    config_path: str, audit_log_path: str, closed_items_path: str
+) -> Daemon:
     """Load config and wire up a `Daemon`, reading the relay key from env."""
     config = load_config(config_path)
     private_key = _read_private_key(config.relay.private_key_env)
@@ -781,7 +875,10 @@ def build_daemon(config_path: str, audit_log_path: str) -> Daemon:
     llm = LLMClient(config.llm)
     router = IntentRouter(llm, config, audit=audit)
     inbound = InboundClient(config.relay.url, private_key)
-    return Daemon(config, inbound, router, PendingActionStore(), llm, audit)
+    closed_items = ClosedItemStore(closed_items_path)
+    return Daemon(
+        config, inbound, router, PendingActionStore(), llm, audit, closed_items
+    )
 
 
 def _read_private_key(env_var: str) -> str:
@@ -795,7 +892,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the swingbird TPM agent daemon.")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--audit-log", default=DEFAULT_AUDIT_LOG_PATH)
+    parser.add_argument("--closed-items", default=DEFAULT_CLOSED_ITEMS_PATH)
     args = parser.parse_args()
 
-    daemon = build_daemon(args.config, args.audit_log)
+    daemon = build_daemon(args.config, args.audit_log, args.closed_items)
     asyncio.run(daemon.run())
