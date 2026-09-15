@@ -994,7 +994,12 @@ def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):
 def test_recap_close_proposes_closing_the_matched_item(tmp_path, monkeypatch):
     sent = _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -1012,7 +1017,12 @@ def test_recap_close_proposes_closing_the_matched_item(tmp_path, monkeypatch):
 def test_recap_close_stores_a_pending_close(tmp_path, monkeypatch):
     _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
     bot = _daemon(tmp_path, llm, recap_store=recap_store)
 
     asyncio.run(bot._handle_event(_event()))
@@ -1024,7 +1034,12 @@ def test_recap_close_stores_a_pending_close(tmp_path, monkeypatch):
 def test_recap_close_logs_the_resolved_reference(tmp_path, monkeypatch):
     _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
 
     recap_reference = _run_event_and_get_recap_reference(
         tmp_path, llm, recap_store, _event
@@ -1040,7 +1055,12 @@ def test_recap_close_batches_every_item_sharing_the_source_event(tmp_path, monke
     )
     grounded = dataclasses.replace(F4_ITEM, source_event_id="src-evt")
     recap_store = _recap_store_with("dm-chan", grounded, sibling)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -1063,7 +1083,12 @@ def test_recap_close_batch_excludes_items_from_other_source_events(
         F4_ITEM, label="F5", source_event_id="other-evt", is_primary=False
     )
     recap_store = _recap_store_with("dm-chan", grounded, unrelated)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
 
     (args, _) = _handle_event_and_get_first_sent(
         tmp_path, llm, sent, recap_store=recap_store
@@ -1076,7 +1101,12 @@ def test_recap_close_batch_excludes_items_from_other_source_events(
 def test_recap_close_without_a_source_event_closes_just_itself(tmp_path, monkeypatch):
     _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
     bot = _daemon(tmp_path, llm, recap_store=recap_store)
 
     asyncio.run(bot._handle_event(_event()))
@@ -1097,57 +1127,50 @@ def test_recap_close_without_a_recent_recap_replies_helpfully(tmp_path, monkeypa
             "ask for a recap first."
         ),
     )
+    # Nothing to select against -- the selection LLM call is never made.
+    assert len(llm.calls) == 1
 
 
-def test_recap_close_ambiguous_reference_stores_a_pending_disambiguation(
+def test_recap_close_all_items_for_one_channel_closes_every_match(
     tmp_path, monkeypatch
 ):
+    """ "Close all swingbird items" (bullet 1/3 of Voidious's request) should
+    close every matched item in one confirmation, not ask "which did you
+    mean" the way a single-item recap_action/recap_relay reference would --
+    see recap_close_selection.py."""
     sent = _sent(monkeypatch)
     recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
-    llm = FakeLLM(json_response={"intent": "recap_close", "message": "all"})
-    disambiguation = DisambiguationStore()
-
-    _handle_event_and_get_first_sent(
-        tmp_path, llm, sent, recap_store=recap_store, disambiguation=disambiguation
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "all"},
+            {"indices": [1, 2]},
+        ]
     )
-
-    pending = disambiguation.get("dm-chan")
-    assert pending.kind == "recap_close"
-    assert pending.candidates == (F4_ITEM, F5_ITEM)
-
-
-def test_disambiguation_reply_resumes_recap_close(tmp_path, monkeypatch):
-    sent = _sent(monkeypatch)
-    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
-    disambiguation = DisambiguationStore()
-    disambiguation.set(
-        "dm-chan",
-        PendingDisambiguation(
-            "recap_close",
-            (F4_ITEM, F5_ITEM),
-            Intent(kind="recap_close", message="all"),
-        ),
-    )
-    llm = FakeLLM(json_response={"intent": "chit_chat"})
 
     (args, _) = _handle_event_and_get_first_sent(
-        tmp_path,
-        llm,
-        sent,
-        event=_event(content="1"),
-        recap_store=recap_store,
-        disambiguation=disambiguation,
+        tmp_path, llm, sent, recap_store=recap_store
     )
 
-    assert args == (
-        "dm-chan",
-        (
-            "Close backend/F4 -- it won't be shown as open in future "
-            "recaps? Confirm to close, or cancel."
-        ),
+    assert args[1].startswith("That request covers 2 items:")
+    assert "backend/F4" in args[1]
+    assert "frontend/F5" in args[1]
+
+
+def test_recap_close_no_match_becomes_a_reply(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F9"},
+            {"indices": []},
+        ]
     )
-    assert disambiguation.get("dm-chan") is None
-    assert llm.calls == []
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
 
 
 def _pending_close_bot(tmp_path, recap_store, closed_items=None):

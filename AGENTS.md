@@ -97,6 +97,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `recap_relay.py` | Forwards the user's own question/comment about a recap item to its agent near-verbatim, resolving ambiguous references (e.g. "it") against the item's context, for `recap_relay`. |
 | `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay`/`recap_close` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |
 | `recap_close.py` | Pending-close store and deterministic yes/no resolution for "close F4", for `recap_close` -- confirmed outside the router's own dispatch confirm/cancel path, since closing never relays anything. |
+| `recap_close_selection.py` | LLM-backed selection of which recap items a close request refers to -- one item, every (non-)additional item for a project, every project, an explicit list, or a combination, across the thread's whole recap store. |
 | `closed_items.py` | Durable, append-only record of items marked closed, consulted by `recap.py`'s `build_recap` on every future recap so closed work stops being listed as open. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |

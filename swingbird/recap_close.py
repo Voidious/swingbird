@@ -1,12 +1,17 @@
 """Pending-close store and deterministic yes/no resolution for "close F4" /
-"mark the duplicate extractor fix as done" (swingbird-dev, 2026-09-14/15).
+"mark the duplicate extractor fix as done" / "close all swingbird items"
+(swingbird-dev, 2026-09-14/15).
 
-A `recap_close` intent from the router (see `router.py`) resolves to one
-`RecapItem` the same way `recap_action`/`recap_relay` do (`daemon.
-_resolve_or_store_single_recap_item`), then `daemon._propose_close` expands
-that to every item sharing the same `source_event_id` -- "all the work items
-grounded on this message" -- and asks the user to confirm closing the whole
-batch before persisting anything (see `closed_items.py`).
+A `recap_close` intent from the router (see `router.py`) resolves to a set
+of `RecapItem`s via `recap_close_selection.select_items_to_close` (an
+LLM-backed selection over every item the thread's last recap holds, so it
+can support a single item, every item for one project, every project's
+worth in one request, or an explicit cross-project list -- see that
+module's docstring), then `daemon._propose_close` also expands a single
+explicitly-selected item to every other item sharing its `source_event_id`
+-- "all the work items grounded on this message" -- and asks the user to
+confirm closing the whole batch before persisting anything (see
+`closed_items.py`).
 
 That confirmation deliberately isn't routed back through the router's own
 `confirm`/`cancel` intents or `pending_actions.PendingActionStore` -- closing

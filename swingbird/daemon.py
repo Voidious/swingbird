@@ -93,6 +93,7 @@ from swingbird.recap_actions import (
     resolve_reference,
 )
 from swingbird.recap_close import PendingClose, PendingCloseStore, resolve_close_reply
+from swingbird.recap_close_selection import select_items_to_close
 from swingbird.recap_detail import elaborate
 from swingbird.recap_disambiguation import (
     AmbiguousRecapReference,
@@ -466,8 +467,6 @@ class Daemon:
         self._disambiguation.clear(thread_id)
         if pending.kind == "recap_action":
             return self._apply_recap_action(item, pending.intent, thread_id)
-        if pending.kind == "recap_close":
-            return self._propose_close(item, pending.intent, thread_id)
         return self._apply_recap_relay(item, pending.intent, thread_id)
 
     def _resume_pending_close(
@@ -591,35 +590,57 @@ class Daemon:
         )
         return self._dispatch_or_ask(dispatch_intent, thread_id)
 
+    def _require_recap_items(self, thread_id: str) -> tuple[RecapItem, ...]:
+        """Return this thread's stored recap items, or raise the same
+        "ask for a recap first" error both `_recap_close` and
+        `_resolve_recap_items` need when nothing's been recapped yet."""
+        items = self._recap_store.get(thread_id)
+        if not items:
+            raise RecapActionError(
+                "I don't have a recent recap to reference here -- ask for a "
+                "recap first."
+            )
+        return items
+
     def _recap_close(self, intent: Intent, thread_id: str) -> str:
-        item = self._resolve_or_store_single_recap_item(
-            thread_id, intent, "recap_close", intent.message
-        )
-        return self._propose_close(item, intent, thread_id)
+        items = self._require_recap_items(thread_id)
+        selected = select_items_to_close(self._llm, items, intent.message)
+        for item in selected:
+            self._audit.log_recap_reference(
+                thread_id, "recap_close", intent.message, item
+            )
+        return self._propose_close(selected, intent, thread_id)
 
-    def _propose_close(self, item: RecapItem, intent: Intent, thread_id: str) -> str:
-        """Propose closing `item`, batched with every other item from the
-        same recap sharing its `source_event_id` -- "all the work items
-        grounded on this message," per Voidious's simplification (see
-        recap_close.py's module docstring). Asks for a deterministic
-        yes/no confirmation (`_resume_pending_close`) before persisting
-        anything, mirroring the confirm-before-write invariant `pending_
-        actions.py` enforces for a dispatch, without reusing that store --
-        closing never relays anything, so there's nothing to confirm
-        through the dispatch confirm/cancel path.
+    def _propose_close(
+        self, items: tuple[RecapItem, ...], intent: Intent, thread_id: str
+    ) -> str:
+        """Propose closing `items` (see `recap_close_selection.py` for how
+        a close request resolves to this set). A single explicitly-selected
+        item is still expanded to every item from the same recap sharing
+        its `source_event_id` -- "all the work items grounded on this
+        message," per Voidious's original simplification (see
+        recap_close.py's module docstring) -- but an explicit multi-item
+        selection is used as-is: the request already named its own scope
+        (e.g. "all swingbird items", "F4 and F7"), so there's nothing left
+        to infer from a shared source message.
 
-        Batching by `source_event_id` rather than just closing `item` alone
-        means a reference that resolves to one item can silently pull in
-        others the user never mentioned -- listing every item in the
-        proposal (not just a count) is what lets the user catch and cancel
-        that before anything is persisted.
+        Either way, this asks for a deterministic yes/no confirmation
+        (`_resume_pending_close`) before persisting anything, mirroring the
+        confirm-before-write invariant `pending_actions.py` enforces for a
+        dispatch, without reusing that store -- closing never relays
+        anything, so there's nothing to confirm through the dispatch
+        confirm/cancel path. Listing every item in the proposal (not just a
+        count) is what lets the user catch and cancel a wrongly-scoped
+        selection before anything is persisted.
         """
-        self._audit.log_recap_reference(thread_id, "recap_close", intent.message, item)
-        items = self._recap_store.get(thread_id) or ()
-        if item.source_event_id is not None:
-            batch = tuple(i for i in items if i.source_event_id == item.source_event_id)
-        else:
-            batch = (item,)
+        batch = items
+        expanded_from_source = False
+        if len(items) == 1 and items[0].source_event_id is not None:
+            all_items = self._recap_store.get(thread_id) or ()
+            batch = tuple(
+                i for i in all_items if i.source_event_id == items[0].source_event_id
+            )
+            expanded_from_source = len(batch) > 1
         self._pending_close.set(thread_id, PendingClose(batch))
         labels = ", ".join(f"{i.channel}/{i.label}" for i in batch)
         if len(batch) == 1:
@@ -627,8 +648,9 @@ class Daemon:
                 f"Close {labels} -- it won't be shown as open in future "
                 "recaps? Confirm to close, or cancel."
             )
+        scope = "message" if expanded_from_source else "request"
         return (
-            f"That message covers {len(batch)} items: {labels}. Close all "
+            f"That {scope} covers {len(batch)} items: {labels}. Close all "
             "of them -- none will be shown as open in future recaps? "
             "Confirm to close, or cancel."
         )
@@ -723,12 +745,7 @@ class Daemon:
         `.degraded` -- see recap_actions.py's module docstring) narrows
         `.items` further to exactly one.
         """
-        items = self._recap_store.get(thread_id)
-        if not items:
-            raise RecapActionError(
-                "I don't have a recent recap to reference here -- ask for a "
-                "recap first."
-            )
+        items = self._require_recap_items(thread_id)
         if channel is None:
             channel = self._recap_store.channel_for(thread_id)
         return resolve_reference(items, reference, channel)

@@ -229,7 +229,7 @@ command.
 | "tell me more about F4" | Asks the LLM to elaborate on that recap item beyond its stored summary, using its original source thread -- no relay, nothing to confirm. |
 | "what are the other items?" | Lists a recap's folded/additional items at the same concise or detailed level the recap itself used -- no LLM call, just a formatted read of what's already stored. |
 | "for backend F4, couldn't we just cache that instead?" | Forwards your own question or comment about that recap item to its agent, close to verbatim (resolving a vague "it"/"that" using the item's context first) -- same confirm/cancel flow as a fresh dispatch. |
-| "close F4" / "mark the duplicate extractor fix as done" | Proposes marking that recap item (and any other item grounded on the same message) as closed, so it stops appearing as open work in future recaps -- see [Closing an item](#closing-an-item). Nothing is closed until you confirm. |
+| "close F4" / "close all swingbird items" / "close the additional dripbird items" / "close F4 and F7" | Proposes marking the matching item(s) as closed, so they stop appearing as open work in future recaps -- see [Closing an item](#closing-an-item). Nothing is closed until you confirm. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction, or, for a close proposal, persists the close. |
 | "cancel" / "never mind" | Discards the pending proposal without sending or closing anything. |
 | anything else | swingbird says it's outside what it handles, and suggests asking for a recap or a dispatch instead. |
@@ -248,10 +248,14 @@ snapshot of the item in the closed-items file (`--closed-items`, see [Running](#
 every future recap consults that record to avoid re-listing the same work as open, even if a
 later message restates it.
 
-Since one message can ground more than one recap item, closing one proposes closing every item
-from the same recap that shares its source message, and lists all of them before asking you to
-confirm -- so closing "F4" for a message that also grounds F5 won't silently close F5 too without
-telling you. Nothing is closed until you confirm.
+A close request can name more than one item: every item for a project, just its additional/open
+items, every project's items in the current recap, an explicit list ("F4 and F7", or "F4 for
+swingbird and F2 for dripbird"), or a combination of these in one request ("all swingbird items
+including additional"). Since one message can also ground more than one recap item, closing a
+single named item still proposes closing every other item from the same recap that shares its
+source message. Either way, every item selected is listed before asking you to confirm -- so a
+close request never silently closes something you didn't ask for without telling you first.
+Nothing is closed until you confirm.
 
 A closed item stops being suppressed once it falls outside `[recap].closed_item_window_days`, on
 the (rare) assumption that a restatement that old is unlikely to still be the same open thread of
