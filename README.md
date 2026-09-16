@@ -230,6 +230,7 @@ command.
 | "what are the other items?" | Lists a recap's folded/additional items at the same concise or detailed level the recap itself used -- no LLM call, just a formatted read of what's already stored. |
 | "for backend F4, couldn't we just cache that instead?" | Forwards your own question or comment about that recap item to its agent, close to verbatim (resolving a vague "it"/"that" using the item's context first) -- same confirm/cancel flow as a fresh dispatch. |
 | "close F4" / "close all swingbird items" / "close the additional dripbird items" / "close F4 and F7" | Proposes marking the matching item(s) as closed, so they stop appearing as open work in future recaps -- see [Closing an item](#closing-an-item). Nothing is closed until you confirm. |
+| "reset the closed items for dripbird" / "reset all closed items" | Clears the closed-item record for one named project, or every project, so anything closed reappears as open work in future recaps -- see [Resetting closed items](#resetting-closed-items). Written immediately, no confirmation needed. |
 | "confirm" / "do it" / "yes" | Sends the most recently proposed instruction, or, for a close proposal, persists the close. |
 | "cancel" / "never mind" | Discards the pending proposal without sending or closing anything. |
 | anything else | swingbird says it's outside what it handles, and suggests asking for a recap or a dispatch instead. |
@@ -261,6 +262,18 @@ A closed item stops being suppressed once it falls outside `[recap].closed_item_
 the (rare) assumption that a restatement that old is unlikely to still be the same open thread of
 work. If it turns out to still be the same work, closing it again picks up right where you left
 off.
+
+### Resetting closed items
+
+A close made in error would otherwise mean living with it until `[recap].closed_item_window_days`
+elapses, or editing `closed_items.jsonl` by hand -- "reset the closed items for dripbird" (or "reset
+all closed items" to name no project) is the fail-safe: it clears the closed-item record for that
+one project, or for every project, and every future recap goes back to surfacing that work as open.
+
+Unlike closing an item, a reset writes immediately with no confirm/cancel step. Closing risks
+silently hiding real open work forever if the selection is wrong -- that's what its confirmation
+guards against. A reset's worst case is the opposite and mild: an already-finished item briefly
+reappears in one recap, and closing it again picks up right where you left off.
 
 ## Development
 
