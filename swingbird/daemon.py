@@ -616,17 +616,26 @@ class Daemon:
     def _propose_close(
         self, items: tuple[RecapItem, ...], intent: Intent, thread_id: str
     ) -> str:
-        """Propose closing `items` (see `recap_close_selection.py` for how
-        a close request resolves to this set). A single explicitly-selected
-        item is still expanded to every item from the same recap sharing
-        its `source_event_id` -- "all the work items grounded on this
-        message," per Voidious's original simplification (see
-        recap_close.py's module docstring) -- but an explicit multi-item
-        selection is used as-is: the request already named its own scope
-        (e.g. "all swingbird items", "F4 and F7"), so there's nothing left
-        to infer from a shared source message.
+        """Propose closing `items` exactly as `recap_close_selection.py`
+        selected them -- one item, a project's worth, an explicit list, or
+        any combination its scoping grammar supports.
 
-        Either way, this asks for a deterministic yes/no confirmation
+        This used to also expand a single explicitly-selected item to every
+        other item sharing its `source_event_id` ("all the work items
+        grounded on this message"), from when close resolution reused
+        `recap_actions.resolve_reference`'s single-item-only matching and
+        that expansion was the only way to catch "did you mean everything
+        this message covers." Now that `select_items_to_close` already
+        resolves the full requested scope itself -- including an exact
+        label match "regardless of project" per its own system prompt --
+        that expansion only second-guesses an already-precise selection: a
+        recap message routinely covers more than one unrelated item for the
+        same project (e.g. two independent PRIMARY items), and grounding by
+        message silently re-added the sibling no matter how exactly the
+        user named just one of them. Trusting the selection as final is
+        what makes "close X, not Y" actually close just X.
+
+        This asks for a deterministic yes/no confirmation
         (`_resume_pending_close`) before persisting anything, mirroring the
         confirm-before-write invariant `pending_actions.py` enforces for a
         dispatch, without reusing that store -- closing never relays
@@ -635,24 +644,15 @@ class Daemon:
         count) is what lets the user catch and cancel a wrongly-scoped
         selection before anything is persisted.
         """
-        batch = items
-        expanded_from_source = False
-        if len(items) == 1 and items[0].source_event_id is not None:
-            all_items = self._recap_store.get(thread_id) or ()
-            batch = tuple(
-                i for i in all_items if i.source_event_id == items[0].source_event_id
-            )
-            expanded_from_source = len(batch) > 1
-        self._pending_close.set(thread_id, PendingClose(batch))
-        labels = ", ".join(f"{i.channel}/{i.label}" for i in batch)
-        if len(batch) == 1:
+        self._pending_close.set(thread_id, PendingClose(items))
+        labels = ", ".join(f"{i.channel}/{i.label}" for i in items)
+        if len(items) == 1:
             return (
                 f"Close {labels} -- it won't be shown as open in future "
                 "recaps? Confirm to close, or cancel."
             )
-        scope = "message" if expanded_from_source else "request"
         return (
-            f"That {scope} covers {len(batch)} items: {labels}. Close all "
+            f"That request covers {len(items)} items: {labels}. Close all "
             "of them -- none will be shown as open in future recaps? "
             "Confirm to close, or cancel."
         )

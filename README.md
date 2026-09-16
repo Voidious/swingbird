@@ -252,11 +252,11 @@ later message restates it.
 A close request can name more than one item: every item for a project, just its additional/open
 items, every project's items in the current recap, an explicit list ("F4 and F7", or "F4 for
 swingbird and F2 for dripbird"), or a combination of these in one request ("all swingbird items
-including additional"). Since one message can also ground more than one recap item, closing a
-single named item still proposes closing every other item from the same recap that shares its
-source message. Either way, every item selected is listed before asking you to confirm -- so a
-close request never silently closes something you didn't ask for without telling you first.
-Nothing is closed until you confirm.
+including additional"). Naming one item closes only that item, even if the same recap message
+also covers another, unrelated item for the same project -- an exact label match is never
+silently widened to a neighbor you didn't name. Every item selected is listed before asking you
+to confirm -- so a close request never silently closes something you didn't ask for without
+telling you first. Nothing is closed until you confirm.
 
 A closed item stops being suppressed once it falls outside `[recap].closed_item_window_days`, on
 the (rare) assumption that a restatement that old is unlikely to still be the same open thread of

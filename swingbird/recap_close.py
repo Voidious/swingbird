@@ -7,11 +7,11 @@ of `RecapItem`s via `recap_close_selection.select_items_to_close` (an
 LLM-backed selection over every item the thread's last recap holds, so it
 can support a single item, every item for one project, every project's
 worth in one request, or an explicit cross-project list -- see that
-module's docstring), then `daemon._propose_close` also expands a single
-explicitly-selected item to every other item sharing its `source_event_id`
--- "all the work items grounded on this message" -- and asks the user to
-confirm closing the whole batch before persisting anything (see
-`closed_items.py`).
+module's docstring), then `daemon._propose_close` asks the user to confirm
+closing that exact batch before persisting anything (see `closed_items.py`).
+Deliberately no further expansion beyond what was selected -- see
+`_propose_close`'s docstring for why grounding by a shared source message
+used to do this and was removed.
 
 That confirmation deliberately isn't routed back through the router's own
 `confirm`/`cancel` intents or `pending_actions.PendingActionStore` -- closing

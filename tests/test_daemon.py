@@ -1048,7 +1048,16 @@ def test_recap_close_logs_the_resolved_reference(tmp_path, monkeypatch):
     _assert_recap_reference(recap_reference)
 
 
-def test_recap_close_batches_every_item_sharing_the_source_event(tmp_path, monkeypatch):
+def test_recap_close_a_single_selection_ignores_a_sibling_sharing_its_source_event(
+    tmp_path, monkeypatch
+):
+    """A recap message can cover more than one unrelated item for the same
+    project (e.g. two independent PRIMARY items) -- selecting one of them
+    by an exact label match must close only that item, never re-add the
+    sibling just because they were grounded on the same message. This is
+    the regression Voidious hit: no phrasing of "close dripbird F6 lint
+    residue" could close just that item, since it kept getting batched with
+    the unrelated "Merge 0.3.3 branch" item grounded on the same message."""
     sent = _sent(monkeypatch)
     sibling = dataclasses.replace(
         F4_ITEM, label="F5", source_event_id="src-evt", is_primary=False
@@ -1066,36 +1075,10 @@ def test_recap_close_batches_every_item_sharing_the_source_event(tmp_path, monke
         tmp_path, llm, sent, recap_store=recap_store
     )
 
-    assert args[1].startswith("That message covers 2 items:")
-    assert "backend/F4" in args[1]
-    assert "backend/F5" in args[1]
-
-
-def test_recap_close_batch_excludes_items_from_other_source_events(
-    tmp_path, monkeypatch
-):
-    """Only items grounded on the *same* message are batched -- an
-    unrelated item that happens to share a channel/thread but was grounded
-    elsewhere must never be silently swept into the same close."""
-    sent = _sent(monkeypatch)
-    grounded = dataclasses.replace(F4_ITEM, source_event_id="src-evt")
-    unrelated = dataclasses.replace(
-        F4_ITEM, label="F5", source_event_id="other-evt", is_primary=False
+    assert args[1] == (
+        "Close backend/F4 -- it won't be shown as open in future recaps? "
+        "Confirm to close, or cancel."
     )
-    recap_store = _recap_store_with("dm-chan", grounded, unrelated)
-    llm = FakeLLM(
-        json_response=[
-            {"intent": "recap_close", "message": "F4"},
-            {"indices": [1]},
-        ]
-    )
-
-    (args, _) = _handle_event_and_get_first_sent(
-        tmp_path, llm, sent, recap_store=recap_store
-    )
-
-    assert "Close backend/F4" in args[1]
-    assert "F5" not in args[1]
 
 
 def test_recap_close_without_a_source_event_closes_just_itself(tmp_path, monkeypatch):
