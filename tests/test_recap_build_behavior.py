@@ -544,3 +544,93 @@ def test_build_recap_closed_items_window_is_floored_at_stale_after_days(
     build_recap(llm, config, closed_items=closed_items)
 
     assert "already been marked closed" in _system_prompt(fake)
+
+
+def test_build_recap_drops_extracted_item_matching_a_closed_item_exactly(
+    tmp_path, monkeypatch
+):
+    # Observed live (swingbird-dev, 2026-09-16): a recap re-extracted an
+    # item under the exact label the close flow had already recorded for
+    # it, despite `_format_closed_items_guard`'s prose naming that label
+    # explicitly -- the prompt guard alone isn't an enforced constraint.
+    # `_parse_recap`'s closed-label filter is the deterministic backstop.
+    from swingbird.closed_items import ClosedItemStore
+
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: F1 still needs doing.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F1",
+                "summary": "old bug",
+                "instruction": "Fix the old bug.",
+            }
+        ],
+    )
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item())
+
+    result = build_recap(llm, CONFIG, closed_items=closed_items)
+
+    assert result.items == ()
+
+
+def test_build_recap_drops_closed_item_match_regardless_of_case_or_hyphenation(
+    tmp_path, monkeypatch
+):
+    # _normalize_label already treats "recap-close" and "Recap Close" as
+    # the same label (hyphenated slug vs plain words, see its own
+    # docstring) -- the closed-item filter reuses that same normalization,
+    # so it isn't defeated just because the LLM re-spelled the label
+    # slightly differently the second time around.
+    from swingbird.closed_items import ClosedItemStore
+
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: still needs doing.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "recap-close",
+                "summary": "still open?",
+                "instruction": "Do the thing.",
+            }
+        ],
+    )
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item(label="Recap Close"))
+
+    result = build_recap(llm, CONFIG, closed_items=closed_items)
+
+    assert result.items == ()
+
+
+def test_build_recap_closed_item_filter_is_scoped_to_its_own_channel(
+    tmp_path, monkeypatch
+):
+    # A closed item's label is only ever a coincidence across two
+    # different projects' own work -- the filter keys on (channel, label),
+    # not label alone, so a genuinely unrelated item in another channel
+    # that happens to share a label is never dropped.
+    from swingbird.closed_items import ClosedItemStore
+
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**frontend**: F1 still open.",
+        items=[
+            {
+                "channel": "frontend",
+                "label": "F1",
+                "summary": "new work",
+                "instruction": "Do the new thing.",
+            }
+        ],
+    )
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item())  # channel="backend", label="F1"
+
+    result = build_recap(llm, CONFIG, closed_items=closed_items)
+
+    assert [item.label for item in result.items] == ["F1"]
+    assert result.items[0].channel == "frontend"

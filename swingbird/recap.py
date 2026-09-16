@@ -462,7 +462,10 @@ def _format_closed_items_guard(closed: tuple[ClosedItem, ...]) -> str:
     closed item regardless, including one restated on a brand-new message.
     A guard, not transcript surgery: stripping the original message out of
     the transcript would risk losing context other, still-open items in
-    the same message need.
+    the same message need. `_parse_recap`'s own closed-label filter is a
+    third, deterministic layer for the narrower case an exact label match
+    can catch outright -- see that function for why this prose guard alone
+    isn't always enough.
 
     Empty (returns "") when there's nothing closed in scope, so a recap
     with no closed items doesn't grow its prompt for no reason.
@@ -552,7 +555,7 @@ def build_recap(
         {"role": "user", "content": transcript},
     ]
     recap = _parse_recap(
-        llm.complete_json(messages), id_map, content_map, max_items_per_channel
+        llm.complete_json(messages), id_map, content_map, max_items_per_channel, closed
     )
     recap = Recap(
         text=_dedupe_item_paragraphs(recap.text, recap.items, detail),
@@ -720,12 +723,40 @@ def _ensure_channel_paragraphs(
     return "\n\n".join(paragraphs)
 
 
+def _closed_label_keys(closed: tuple[ClosedItem, ...]) -> set[tuple[str, str]]:
+    """Return `{(channel, normalized label)}` for every closed item with a
+    non-empty label, so `_parse_recap` can drop an extracted item that
+    exactly matches one instead of trusting the LLM to honor
+    `_format_closed_items_guard`'s prose.
+
+    `_format_closed_items_guard` asks the LLM to never re-list a closed
+    item, but that's a prompt request, not an enforced constraint --
+    observed live, the LLM re-extracted an item under the *exact* label
+    the close flow itself recorded, despite the guard naming that label
+    explicitly. Same "instruction gets skipped under attention
+    degradation" failure class as `_parse_recap`'s own per-channel
+    label-dedup backstop, so it gets the same deterministic treatment: an
+    exact (channel, normalized label) match against something already
+    closed is dropped before it can consume a slot. Anything short of an
+    exact label match (a paraphrase, a reopened item under a new label)
+    still relies on the prose guard -- there's no reliable label to key a
+    deterministic check off of there.
+    """
+    return {
+        (item.channel, key)
+        for item in closed
+        if (key := _normalize_label(item.label).strip().casefold())
+    }
+
+
 def _parse_recap(
     response: dict,
     id_map: dict[str, dict[str, str]],
     content_map: dict[str, dict[str, str]],
     max_items_per_channel: int,
+    closed: tuple[ClosedItem, ...] = (),
 ) -> Recap:
+    closed_keys = _closed_label_keys(closed)
     items = []
     channel_counts: dict[str, int] = {}
     seen_labels: dict[str, set[str]] = {}
@@ -750,6 +781,8 @@ def _parse_recap(
         # never bumps a later, real item out of "text".
         label_key = label.strip().casefold()
         if label_key:
+            if (channel, label_key) in closed_keys:
+                continue
             channel_seen = seen_labels.setdefault(channel, set())
             if not _add_if_unique(channel_seen, label_key):
                 continue
