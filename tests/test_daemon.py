@@ -280,9 +280,9 @@ def test_handle_event_does_not_block_the_event_loop_during_a_slow_llm_call(
 
 
 def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -296,9 +296,9 @@ def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch)
 
 
 def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -326,9 +326,9 @@ def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
 
 
 def test_recap_logs_every_extracted_item(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -955,9 +955,9 @@ def test_cancel_clears_a_pending_disambiguation(tmp_path, monkeypatch):
 
 
 def test_fresh_recap_clears_a_stale_pending_disambiguation(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent, recap_store, disambiguation, _ = _setup_recap_action_disambiguation(
         monkeypatch
     )
@@ -1649,9 +1649,9 @@ def test_recap_detail_falls_back_to_the_recaps_own_scoped_channel(
 def test_recap_stores_the_scoped_channel_for_a_named_channel_recap(
     tmp_path, monkeypatch
 ):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -1669,9 +1669,9 @@ def test_recap_stores_the_scoped_channel_for_a_named_channel_recap(
 def test_recap_stores_no_scoped_channel_for_an_all_channels_recap(
     tmp_path, monkeypatch
 ):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -1775,9 +1775,9 @@ def test_recap_detail_without_a_recent_recap_replies_helpfully(tmp_path, monkeyp
 
 
 def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap, recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[

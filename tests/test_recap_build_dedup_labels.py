@@ -1,4 +1,4 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, _llm
 
@@ -9,7 +9,7 @@ def test_build_recap_dedupes_items_with_the_same_normalized_label(monkeypatch):
     # other "recap close" (plain words) -- _normalize_label already treats
     # those as identical, but nothing had previously used that to collapse
     # a duplicate "items" entry.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "recap",
         items=[
@@ -44,7 +44,7 @@ def test_build_recap_dedupes_items_with_the_same_normalized_label(monkeypatch):
 
 
 def test_build_recap_never_dedupes_items_with_empty_labels(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "recap",
         items=[

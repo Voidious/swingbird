@@ -1,4 +1,4 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, _llm
 
@@ -8,7 +8,7 @@ def test_build_recap_dedupes_duplicate_detailed_paragraphs(monkeypatch):
     # -- "text" is the LLM's own free-form prose, not reconstructed from
     # "items", so a duplicate paragraph there isn't guaranteed to disappear
     # just because "items" no longer has a matching duplicate entry.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- recap-close:** first paragraph.\n\n"
         "**backend -- recap close:** second, restated paragraph.",
@@ -33,7 +33,7 @@ def test_build_recap_dedupes_detailed_paragraphs_with_no_matching_item(monkeypat
     # gets deduped by its own normalized header -- there's just no
     # canonical item prefix to rewrite the survivor to, so it's kept as
     # the LLM wrote it.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** first paragraph.\n\n"
         "**backend -- f4:** second, restated paragraph.",
@@ -46,7 +46,7 @@ def test_build_recap_dedupes_detailed_paragraphs_with_no_matching_item(monkeypat
 
 
 def test_build_recap_does_not_dedupe_detailed_paragraphs_in_concise_mode(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     text = (
         "**backend -- recap-close:** first paragraph.\n\n"
         "**backend -- recap close:** second, restated paragraph."

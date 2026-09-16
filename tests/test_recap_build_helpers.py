@@ -1,10 +1,10 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, _llm
 
 
 def _build_recap_empty_channel_with_item(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[

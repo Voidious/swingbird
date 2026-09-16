@@ -1,13 +1,13 @@
 import json
 
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, FRESH, _llm_sequence
 
 
 def test_build_recap_ignores_malformed_backfill_groundings(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [{"created_at": FRESH, "content": "first", "id": "evt-a"}]

@@ -25,8 +25,7 @@ from dataclasses import dataclass, replace
 
 from swingbird import outbound
 from swingbird.closed_items import ClosedItem, ClosedItemStore
-from swingbird.config import ChannelConfig, Config
-from swingbird.history import fetch_messages_since
+from swingbird.config import Config
 from swingbird.llm import LLMClient, LLMError
 
 from .recap_counts import (
@@ -34,6 +33,8 @@ from .recap_counts import (
     _append_item_counts,
     _item_paragraph_prefix,
 )
+from .recap_tags import _resolve_tag
+from .recap_transcript import _build_transcript
 
 _LAUNDERING_GUARD = (
     "Never describe work that is drafted, proposed, or awaiting the user's "
@@ -884,22 +885,6 @@ def _append_source_links(
     return text
 
 
-def _resolve_tag(
-    mapping: dict[str, dict[str, str]], channel: str, tag: object
-) -> str | None:
-    """Resolve an LLM-cited `tag` (e.g. "m3") against `mapping` for `channel`.
-
-    Never trusts the LLM's tag blindly -- a missing tag, an empty string, an
-    unknown channel, or a tag that doesn't match any message actually shown
-    for that channel all resolve to `None` (a plain dict miss, in the latter
-    three cases) rather than a guess. Shared by both `RecapItem.
-    source_event_id` and `source_content`, resolved from the same tag against
-    two parallel maps built in `_build_transcript`."""
-    if not isinstance(tag, str):
-        return None
-    return mapping.get(channel, {}).get(tag)
-
-
 def _select_channels(config: Config, channel_names: list[str] | None):
     if channel_names is None:
         return config.channels
@@ -923,78 +908,3 @@ def _closed_ids_by_channel(closed: tuple[ClosedItem, ...]) -> dict[str, set[str]
         if item.source_event_id is not None:
             by_channel.setdefault(item.channel, set()).add(item.source_event_id)
     return by_channel
-
-
-def _build_transcript(
-    channels: list[ChannelConfig],
-    stale_after_days: int,
-    max_messages_per_channel: int,
-    explicit: bool,
-    closed_ids_by_channel: dict[str, set[str]],
-) -> tuple[str, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    """Return the transcript text and `{channel_name: {tag: event_id}}` /
-    `{channel_name: {tag: content}}` maps.
-
-    Each message is tagged with a short per-channel local id ("m1", "m2",
-    ...) rather than its real (64-char) event id -- cheap for the LLM to
-    copy back verbatim in `source_id` (see `_item_extraction_instructions`) without
-    risking a garbled hex string. Both maps only get an entry for messages
-    that actually carry an `"id"` -- real `buzz messages get` events always
-    do; this just means a message without one can't be cited as a source,
-    never a crash. The content map exists alongside the id map so a
-    resolved `source_id` can carry the message's own text forward too (see
-    `RecapItem.source_content`), not just its event id.
-
-    A message whose own id is in `closed_ids_by_channel` for its channel --
-    the same message that grounded a now-closed item -- gets a literal
-    "[closed]" suffix (see `_CLOSED_MARKER_GUARD`), a deterministic signal
-    alongside `_format_closed_items_guard`'s prose-only guard for the
-    common case where the closed item's own source message is still within
-    this recap's window.
-    """
-    cutoff = time.time() - stale_after_days * 86400
-    sections = []
-    id_map: dict[str, dict[str, str]] = {}
-    content_map: dict[str, dict[str, str]] = {}
-    for channel in channels:
-        # Same time-windowed fetch either way, paging past the relay's
-        # 200-per-call cap as needed (see history.fetch_messages_since) so
-        # a chatty channel can't push a still-relevant item out of the
-        # window. Only whether an empty result is skipped differs: a
-        # channel the user didn't name is silently dropped from an
-        # all-channels recap, but one named explicitly still gets a
-        # paragraph below ("(no recent activity)") since silence isn't a
-        # useful answer to a question about a specific project.
-        events = fetch_messages_since(
-            channel.id, cutoff, max_messages=max_messages_per_channel
-        )
-        if not events and not explicit:
-            continue
-        header = f"## {channel.name}"
-        if channel.goal:
-            header += f" (goal: {channel.goal})"
-        if events:
-            closed_ids = closed_ids_by_channel.get(channel.name, set())
-            lines = []
-            tags = {}
-            contents = {}
-            for i, event in enumerate(events, start=1):
-                tag = f"m{i}"
-                closed_suffix = " [closed]" if event.get("id") in closed_ids else ""
-                lines.append(
-                    f"[{tag}] [{event['created_at']}] {event['content']}{closed_suffix}"
-                )
-                if "id" in event:
-                    tags[tag] = event["id"]
-                    contents[tag] = event["content"]
-            body = "\n".join(lines)
-            if tags:
-                id_map[channel.name] = tags
-                content_map[channel.name] = contents
-        else:
-            body = "(no recent activity)"
-        sections.append(f"{header}\n{body}")
-    transcript = (
-        "\n\n".join(sections) if sections else "(no channels with recent activity)"
-    )
-    return transcript, id_map, content_map

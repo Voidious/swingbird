@@ -1,6 +1,6 @@
 import json
 
-from swingbird import recap
+from swingbird import recap, recap_transcript
 from swingbird.config import (
     ChannelConfig,
     Config,
@@ -112,7 +112,7 @@ def _system_prompt(fake) -> str:
 
 def _setup_detailed_recap(monkeypatch, config):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
@@ -130,7 +130,7 @@ def test_build_recap_appends_a_link_per_shown_item_in_detailed_mode(monkeypatch)
         recap=RecapConfig(max_detailed_items=2),
     )
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [
@@ -182,7 +182,7 @@ def test_build_recap_detailed_mode_shows_up_to_configured_items_as_primary(
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=2),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "**backend -- F5:** prose covering the second item.",
@@ -230,7 +230,7 @@ def test_build_recap_strips_llm_narrated_plus_prefixed_count(monkeypatch):
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item. (+1 more open item.)",
         items=[
@@ -265,7 +265,7 @@ def test_build_recap_names_multiple_additional_items_in_detailed_mode(monkeypatc
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.",
         items=[
@@ -316,7 +316,7 @@ def test_build_recap_drops_stray_standalone_count_paragraph_in_detailed_mode(
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=2),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "**backend -- F5:** prose covering the second item.\n\n"
@@ -353,7 +353,7 @@ def test_build_recap_drops_stray_standalone_count_paragraph_in_detailed_mode(
 
 
 def test_build_recap_concise_mode_only_shows_one_item_as_primary(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text.",
         items=[
@@ -410,7 +410,7 @@ def test_detailed_prompt_asks_for_richer_item_summaries_than_concise():
 
 def test_build_recap_unknown_detail_falls_back_to_concise(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
@@ -441,7 +441,7 @@ def _closed_item(**overrides):
 
 
 def _setup_empty_closed_items_recap(monkeypatch, recap):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     return _llm()
 
 
@@ -494,7 +494,7 @@ def test_build_recap_tags_the_closed_items_source_message_in_the_transcript(
     from swingbird.closed_items import ClosedItemStore
 
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [
             {"id": "evt-1", "created_at": 1000, "content": "fixed the old bug"},

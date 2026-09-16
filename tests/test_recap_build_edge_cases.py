@@ -1,6 +1,6 @@
 import json
 
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.llm import LLMClient
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, LLM_CONFIG, FakeOpenAI
@@ -17,7 +17,7 @@ def test_build_recap_reconstructs_text_when_only_text_is_missing(monkeypatch):
     # missing from the response entirely (not malformed JSON, not an empty
     # string -- genuinely absent), which used to fail the whole recap even
     # though there was enough already-grounded content to build one from.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _raw_llm(
         json.dumps(
             {
