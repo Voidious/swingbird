@@ -97,6 +97,36 @@ class ClosedItemStore:
             and (channel_names is None or item.channel in channel_names)
         )
 
+    def reset(self, channel: str | None) -> int:
+        """Clear closed items, scoped to `channel` when given (`None` means
+        every channel) -- the fail-safe Voidious asked for so a wrongly-
+        closed item doesn't require hand-editing this file on disk
+        (swingbird-dev, 2026-09-16). Returns how many items were cleared.
+
+        Unlike every other operation on this store, this genuinely discards
+        history rather than just narrowing what's sent to the LLM (see the
+        class docstring's "holds every closed item forever" reasoning) --
+        that's the point: this exists specifically to undo a close mistake,
+        not to shrink future visibility. Rewrites the whole file from the
+        surviving in-memory items rather than appending a "reset" marker of
+        some kind, since there's nothing downstream that needs to
+        reconstruct what used to be there -- a cleared item simply goes
+        back to being open, exactly as if it had never been closed.
+        """
+        kept = [
+            item
+            for item in self._items
+            if channel is not None and item.channel != channel
+        ]
+        cleared = len(self._items) - len(kept)
+        if cleared == 0:
+            return 0
+        self._items = kept
+        with self._path.open("w", encoding="utf-8") as f:
+            for item in kept:
+                f.write(json.dumps(_serialize(item)) + "\n")
+        return cleared
+
 
 def _load(path: Path) -> list[ClosedItem]:
     if not path.exists():

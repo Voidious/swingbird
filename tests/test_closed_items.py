@@ -158,3 +158,52 @@ def test_for_channels_includes_items_closed_at_or_after_since(tmp_path):
     closed = store.close(ITEM)
 
     assert store.for_channels(None, since=closed.closed_at) == (closed,)
+
+
+def test_reset_scoped_to_channel_clears_only_that_channel(tmp_path):
+    store = _populate_closed_item_store(tmp_path)
+
+    cleared = store.reset("dripbird")
+
+    assert cleared == 1
+    assert [item.channel for item in store.for_channels(None, since=0)] == ["swingbird"]
+
+
+def test_reset_none_clears_every_channel(tmp_path):
+    store = _populate_closed_item_store(tmp_path)
+
+    cleared = store.reset(None)
+
+    assert cleared == 2
+    assert store.for_channels(None, since=0) == ()
+
+
+def _make_store_with_one_closed_item(tmp_path):
+    path = tmp_path / "closed_items.jsonl"
+    store = ClosedItemStore(path)
+    store.close(ITEM)
+    return store, path
+
+
+def test_reset_rewrites_the_file_on_disk(tmp_path):
+    store, path = _make_store_with_one_closed_item(tmp_path)
+    store.close(
+        RecapItem(channel="swingbird", label="F5", summary="s", instruction="i")
+    )
+
+    store.reset("dripbird")
+
+    reloaded = ClosedItemStore(path)
+    assert [item.channel for item in reloaded.for_channels(None, since=0)] == [
+        "swingbird"
+    ]
+
+
+def test_reset_with_nothing_to_clear_returns_zero_and_leaves_file_untouched(tmp_path):
+    store, path = _make_store_with_one_closed_item(tmp_path)
+    before = path.read_text()
+
+    cleared = store.reset("swingbird")
+
+    assert cleared == 0
+    assert path.read_text() == before

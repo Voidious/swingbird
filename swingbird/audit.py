@@ -89,6 +89,15 @@ class AuditLog:
             ],
         )
 
+    def log_closed_items_reset(
+        self, thread_id: str, channel: str | None, count: int
+    ) -> None:
+        """Records a `reset_closed` clear of previously closed items (see
+        `ClosedItemStore.reset`) -- `channel` is `None` for an
+        all-projects reset, mirroring how `Intent.channel` itself
+        distinguishes the two scopes."""
+        self._write("closed_items_reset", thread_id, channel=channel, count=count)
+
     def log_decision(
         self,
         thread_id: str | None,

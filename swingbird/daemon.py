@@ -531,6 +531,8 @@ class Daemon:
             return self._recap_relay(intent, thread_id)
         if intent.kind == "recap_close":
             return self._recap_close(intent, thread_id)
+        if intent.kind == "reset_closed":
+            return self._reset_closed(intent, thread_id)
         return _CHIT_CHAT_REPLY
 
     def _recap_action(self, intent: Intent, thread_id: str) -> str:
@@ -654,6 +656,34 @@ class Daemon:
             "of them -- none will be shown as open in future recaps? "
             "Confirm to close, or cancel."
         )
+
+    def _reset_closed(self, intent: Intent, thread_id: str) -> str:
+        """Clear previously closed items (see `ClosedItemStore.reset`), so
+        future recaps surface them as open work again -- Voidious's
+        requested fail-safe for a close made in error.
+
+        No confirm-before-write step here, unlike `_recap_close`/
+        `_propose_close`: closing an item risks silently hiding real,
+        still-open work forever if the selection is wrong, which is exactly
+        what that confirmation guards against (see `recap_close.py`'s
+        module docstring). A reset's worst case is the opposite and far
+        milder -- an already-finished item briefly reappears in one future
+        recap -- and it's trivially self-correcting: just close it again.
+        That asymmetry is why this writes immediately instead of going
+        through `PendingCloseStore` or a store of its own.
+        """
+        if (
+            intent.channel is not None
+            and self._config.channel_by_name(intent.channel) is None
+        ):
+            raise RecapActionError(f"unknown project channel: {intent.channel!r}")
+        count = self._closed_items.reset(intent.channel)
+        self._audit.log_closed_items_reset(thread_id, intent.channel, count)
+        scope = intent.channel or "all projects"
+        if count == 0:
+            return f"Nothing to reset -- no closed items for {scope}."
+        noun = "item" if count == 1 else "items"
+        return f"Reset {count} closed {noun} for {scope}."
 
     def _recap_detail(self, intent: Intent, thread_id: str) -> str:
         resolved = self._resolve_recap_items(thread_id, intent.message, intent.channel)

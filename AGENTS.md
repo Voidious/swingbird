@@ -86,7 +86,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `avatar.py` | Builds the `data:image/svg+xml,...` URI for an "Emoji" style Buzz avatar, matching Buzz Desktop's own encoding. |
 | `nostr_crypto.py` | NIP-01 key parsing / signing / verification, used only by the direct WebSocket path. |
 | `llm.py` | Thin OpenAI-compatible client wrapper (`LLMClient`); config-driven base URL/key/model so swapping providers is a config change. |
-| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_list / recap_relay / recap_close / chit-chat). |
+| `router.py` | LLM call that classifies an inbound DM into an intent (recap / dispatch / confirm / cancel / recap_action / recap_detail / recap_list / recap_relay / recap_close / reset_closed / chit-chat). |
 | `pending_actions.py` | Confirm/cancel state machine for proposed dispatches. |
 | `history.py` | One-shot fetch of recent channel messages (via `outbound.run_buzz_cli`), for recaps. |
 | `recap.py` | LLM-summarizes recent channel activity into a short recap, plus structured per-channel `RecapItem`s. |
@@ -98,7 +98,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `recap_disambiguation.py` | Remembers an open "which did you mean" question per thread when a `recap_action`/`recap_relay`/`recap_close` reference matches more than one item, so the next DM can answer it (by number or label) instead of being misrouted as a new command. |
 | `recap_close.py` | Pending-close store and deterministic yes/no resolution for "close F4", for `recap_close` -- confirmed outside the router's own dispatch confirm/cancel path, since closing never relays anything. |
 | `recap_close_selection.py` | LLM-backed selection of which recap items a close request refers to -- one item, every (non-)additional item for a project, every project, an explicit list, or a combination, across the thread's whole recap store. |
-| `closed_items.py` | Durable, append-only record of items marked closed, consulted by `recap.py`'s `build_recap` on every future recap so closed work stops being listed as open. |
+| `closed_items.py` | Durable, append-only record of items marked closed, consulted by `recap.py`'s `build_recap` on every future recap so closed work stops being listed as open. Its `reset` method (for the `reset_closed` intent) is the one place this store's history is intentionally discarded rather than just narrowed -- see its own docstring. |
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |

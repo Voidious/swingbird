@@ -155,6 +155,28 @@ def test_log_closed_items_writes_channel_label_and_source(tmp_path):
     ]
 
 
+def test_log_closed_items_reset_with_channel_writes_channel_and_count(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_closed_items_reset("thread-1", "dripbird", 3)
+
+    (record,) = _read_records(path)
+    assert record["kind"] == "closed_items_reset"
+    assert record["thread_id"] == "thread-1"
+    assert record["channel"] == "dripbird"
+    assert record["count"] == 3
+
+
+def test_log_closed_items_reset_without_channel_writes_null(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_closed_items_reset("thread-1", None, 0)
+
+    (record,) = _read_records(path)
+    assert record["channel"] is None
+    assert record["count"] == 0
+
+
 def test_appends_records_across_calls(tmp_path):
     path = tmp_path / "audit.jsonl"
     audit = AuditLog(path)

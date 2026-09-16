@@ -43,6 +43,7 @@ VALID_INTENTS = (
     "recap_list",
     "recap_relay",
     "recap_close",
+    "reset_closed",
     "chit_chat",
 )
 
@@ -126,6 +127,18 @@ Classify the user's message into exactly one of these intents:
   is finished. Same "message" handling as recap_action: put the user's own
   reference to *which* item(s) into "message", preserved as closely to
   their own wording as possible, and don't restate the item's content.
+- reset_closed: telling the agent to clear/forget previously closed
+  items, so they can be surfaced as open work again in future recaps --
+  e.g. "reset the closed items for dripbird", "clear all closed items for
+  swingbird", "undo closing everything", "reset closed work items". Set
+  "channel" to the named project when the request names exactly one
+  channel from the list below; leave it null when the request means every
+  project (e.g. "reset all closed items", "clear everything that's
+  closed"). Unlike every other recap_* intent above, this never needs an
+  open recap to reference -- it operates on the durable closed-items
+  record directly, so classify it here regardless of the conversation-
+  state note below. Don't confuse it with recap_close, which marks
+  something *newly* closed -- the opposite direction.
 - chit_chat: anything else, out of scope for this agent.
 
 Known project channels and their agents:

@@ -1173,6 +1173,78 @@ def test_recap_close_no_match_becomes_a_reply(tmp_path, monkeypatch):
     assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
 
 
+def test_reset_closed_with_channel_clears_only_that_channel(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    closed_items.close(F5_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Reset 1 closed item for backend.")
+    assert [i.channel for i in closed_items.for_channels(None, since=0)] == ["frontend"]
+
+
+def test_reset_closed_without_channel_clears_every_project(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    closed_items.close(F5_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": None})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Reset 2 closed items for all projects.")
+    assert closed_items.for_channels(None, since=0) == ()
+
+
+def test_reset_closed_with_nothing_to_clear_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Nothing to reset -- no closed items for backend.")
+
+
+def test_reset_closed_unknown_channel_becomes_a_reply(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "nope"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args == (
+        "dm-chan",
+        "Couldn't do that: unknown project channel: 'nope'",
+    )
+
+
+def test_reset_closed_logs_channel_and_count(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+    bot = _daemon(tmp_path, llm, closed_items=closed_items)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    records = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    (record,) = [r for r in records if r["kind"] == "closed_items_reset"]
+    assert record["thread_id"] == "dm-chan"
+    assert record["channel"] == "backend"
+    assert record["count"] == 1
+
+
 def _pending_close_bot(tmp_path, recap_store, closed_items=None):
     pending_close = PendingCloseStore()
     pending_close.set("dm-chan", PendingClose((F4_ITEM,)))

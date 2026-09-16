@@ -195,6 +195,22 @@ def test_route_recap_close_extracts_reference_verbatim():
     assert intent == Intent(kind="recap_close", message="F4")
 
 
+def test_route_reset_closed_with_named_channel():
+    router, _ = _router(json.dumps({"intent": "reset_closed", "channel": "backend"}))
+
+    intent = router.route("reset the closed items for backend")
+
+    assert intent == Intent(kind="reset_closed", channel="backend")
+
+
+def test_route_reset_closed_without_channel_leaves_it_null():
+    router, _ = _router(json.dumps({"intent": "reset_closed", "channel": None}))
+
+    intent = router.route("reset all closed items")
+
+    assert intent == Intent(kind="reset_closed", channel=None)
+
+
 def test_route_open_recap_note_mentions_recap_close():
     router, fake = _router('{"intent": "recap_close", "message": "F4"}')
 
