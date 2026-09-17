@@ -546,6 +546,14 @@ def test_build_recap_closed_items_window_is_floored_at_stale_after_days(
     assert "already been marked closed" in _system_prompt(fake)
 
 
+def _build_recap_with_closed_item(tmp_path, llm, config):
+    from swingbird.closed_items import ClosedItemStore
+
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item())
+    return build_recap(llm, config, closed_items=closed_items)
+
+
 def test_build_recap_drops_extracted_item_matching_a_closed_item_exactly(
     tmp_path, monkeypatch
 ):
@@ -554,7 +562,6 @@ def test_build_recap_drops_extracted_item_matching_a_closed_item_exactly(
     # it, despite `_format_closed_items_guard`'s prose naming that label
     # explicitly -- the prompt guard alone isn't an enforced constraint.
     # `_parse_recap`'s closed-label filter is the deterministic backstop.
-    from swingbird.closed_items import ClosedItemStore
 
     monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
@@ -568,10 +575,7 @@ def test_build_recap_drops_extracted_item_matching_a_closed_item_exactly(
             }
         ],
     )
-    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
-    closed_items.close(_closed_item())
-
-    result = build_recap(llm, CONFIG, closed_items=closed_items)
+    result = _build_recap_with_closed_item(tmp_path, llm, CONFIG)
 
     assert result.items == ()
 
@@ -613,7 +617,6 @@ def test_build_recap_closed_item_filter_is_scoped_to_its_own_channel(
     # different projects' own work -- the filter keys on (channel, label),
     # not label alone, so a genuinely unrelated item in another channel
     # that happens to share a label is never dropped.
-    from swingbird.closed_items import ClosedItemStore
 
     monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
@@ -627,10 +630,131 @@ def test_build_recap_closed_item_filter_is_scoped_to_its_own_channel(
             }
         ],
     )
-    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
-    closed_items.close(_closed_item())  # channel="backend", label="F1"
-
-    result = build_recap(llm, CONFIG, closed_items=closed_items)
+    result = _build_recap_with_closed_item(tmp_path, llm, CONFIG)
 
     assert [item.label for item in result.items] == ["F1"]
     assert result.items[0].channel == "frontend"
+
+
+def _run_recap_with_closed_item(tmp_path, llm, config):
+    result = _build_recap_with_closed_item(tmp_path, llm, config)
+
+    assert [item.label for item in result.items] == ["F2"]
+    return result
+
+
+def test_build_recap_keeps_concise_text_when_closed_match_is_not_the_lead_item(
+    tmp_path, monkeypatch
+):
+    # `closed_lead_channels` (see `_strip_closed_paragraphs`) only flags a
+    # channel when its very first extracted item was the one closed --
+    # when the closed match is a later, non-primary item instead, the lead
+    # paragraph is about the surviving primary item all along and must be
+    # left alone.
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: F2 still needs doing.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F2",
+                "summary": "new bug needing a fix",
+                "instruction": "Fix the new bug.",
+            },
+            {
+                "channel": "backend",
+                "label": "F1",
+                "summary": "old bug",
+                "instruction": "Fix the old bug.",
+            },
+        ],
+    )
+    result = _run_recap_with_closed_item(tmp_path, llm, CONFIG)
+    assert result.text == "**backend**: F2 still needs doing."
+
+
+def test_build_recap_replaces_stale_closed_paragraph_in_concise_text(
+    tmp_path, monkeypatch
+):
+    # A closed item's own extracted "items" entry gets dropped by
+    # `_closed_label_keys`, promoting the next surviving item to primary --
+    # but concise "text" is the LLM's own free-form prose, so its lead
+    # "**channel**:" paragraph can still narrate the closed item's own
+    # status verbatim, the same failure class the label filter was built
+    # for, just one layer up. Without `_strip_closed_paragraphs`,
+    # `_ensure_channel_paragraphs`'s channel-prefix-only check would treat
+    # this stale paragraph as already covering the promoted item and never
+    # replace it -- the recap would keep describing the closed work as
+    # current even though `result.items[0]` is correctly the promoted one.
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend**: F1 still needs doing.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F1",
+                "summary": "old bug",
+                "instruction": "Fix the old bug.",
+            },
+            {
+                "channel": "backend",
+                "label": "F2",
+                "summary": "new bug needing a fix",
+                "instruction": "Fix the new bug.",
+            },
+        ],
+    )
+    result = _run_recap_with_closed_item(tmp_path, llm, CONFIG)
+    assert result.items[0].is_primary is True
+    assert "F1" not in result.text
+    assert result.text == "**backend**: new bug needing a fix"
+
+
+def test_build_recap_drops_stale_closed_paragraph_in_detailed_text(
+    tmp_path, monkeypatch
+):
+    # Same stale-paragraph risk as the concise case above, but detailed
+    # mode's "**channel -- label:**" header lets the closed item's own
+    # paragraph be matched and dropped directly by label, rather than
+    # relying on "first extracted item for the channel" as a stand-in.
+    # Without this, `_dedupe_item_paragraphs` would leave the orphaned
+    # closed-item paragraph standing untouched (it only rewrites/dedupes
+    # paragraphs matching a *known* item) while `_ensure_channel_paragraphs`
+    # appended a second, fallback paragraph for the promoted item right
+    # next to it -- two paragraphs for one channel.
+    from swingbird.closed_items import ClosedItemStore
+
+    config = Config(
+        llm=LLM_CONFIG,
+        relay=RELAY_CONFIG,
+        channels=CONFIG.channels,
+        owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
+        recap=RecapConfig(max_detailed_items=2),
+    )
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
+    llm, _ = _llm(
+        "**backend -- F4:** stale prose about the closed item.",
+        items=[
+            {
+                "channel": "backend",
+                "label": "F4",
+                "summary": "old bug",
+                "instruction": "Fix the old bug.",
+            },
+            {
+                "channel": "backend",
+                "label": "F5",
+                "summary": "new bug needing a fix",
+                "instruction": "Fix the new bug.",
+            },
+        ],
+    )
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(_closed_item(label="F4"))
+
+    result = build_recap(llm, config, detail="detailed", closed_items=closed_items)
+
+    assert [item.label for item in result.items] == ["F5"]
+    assert result.items[0].is_primary is True
+    assert "F4" not in result.text
+    assert result.text == "**backend -- F5:** new bug needing a fix"
