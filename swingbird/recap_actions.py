@@ -173,6 +173,31 @@ def _matches_text(candidate: str, normalized: str, words: list[str]) -> bool:
     )
 
 
+def _strip_channel_qualifier(normalized: str, channel: str) -> str:
+    """Remove a whole-word occurrence of `channel` from `normalized`, plus
+    any stopwords left dangling at the result's edges, for the exact-match
+    check in `resolve_reference` -- the router routinely leaves the channel
+    name in the reference text even once it's narrowed `channels_named` to
+    that one channel (e.g. "swingbird Recap list split fixes" for an item
+    labeled just "Recap list split fixes"), so a plain `normalized ==
+    item.label.lower()` check alone still misses an otherwise-exact title.
+
+    Only a whole word is removed (`\\b`-bounded), not a bare substring, so
+    this can't mangle a label or channel name that merely contains another
+    as a fragment. Stopwords are trimmed only from the edges of what's left,
+    never from the middle -- a label that legitimately contains one (e.g.
+    "wait for CI") must still match verbatim once the channel qualifier
+    itself is gone, and only the qualifier's own leftover connector words
+    (e.g. "for" in "F4 for dripbird") are noise here."""
+    stripped = re.sub(rf"\b{re.escape(channel.lower())}\b", " ", normalized)
+    tokens = stripped.split()
+    while tokens and tokens[0] in _STOPWORDS:
+        tokens.pop(0)
+    while tokens and tokens[-1] in _STOPWORDS:
+        tokens.pop()
+    return " ".join(tokens)
+
+
 def resolve_reference(
     items: tuple[RecapItem, ...],
     reference: str | None,
@@ -190,6 +215,40 @@ def resolve_reference(
     returned -- zero matches raises rather than guessing, but whether more
     than one match is acceptable is the caller's policy to enforce, not this
     function's (see module docstring).
+
+    Before any of that, an exact (case-insensitive) match of `reference`
+    against one candidate's whole `label` resolves immediately on its own,
+    without running the bidirectional/word-level matching below at all --
+    live bug: giving the exact, full label of one item could still come
+    back ambiguous, because that fuzzy matching is bidirectional
+    (`_matches_text`'s "does the label contain the reference" half). A full
+    label is long enough to often *contain* an unrelated item's shorter
+    label as a plain substring (e.g. the full title of one item literally
+    contains another item's own "F4"-style label as a fragment), so the
+    fuzzy pass matched both instead of recognizing that one candidate was
+    named exactly. An exact match is never a false positive the way a
+    substring can be, so it's checked first and, when unique, short-circuits
+    straight to that one item. Multiple candidates sharing the literal same
+    label (e.g. duplicate labels across channels with no channel narrowing
+    available) fall through to the fuzzy pass below unchanged -- that's
+    genuine ambiguity by identity, not something this shortcut can resolve.
+
+    If no candidate's raw label matches the whole `reference` verbatim, but
+    exactly one channel was identified, a second exact attempt strips that
+    channel's own name out of `reference` (plus any stopwords left dangling
+    at the edges once it's gone -- see `_strip_channel_qualifier`) and
+    retries the same whole-label equality check. Live bug: the router
+    routinely leaves the channel name in the reference text even after
+    already reporting it separately as `channel` (e.g. "swingbird Recap
+    list split fixes" for an item labeled just "Recap list split fixes"),
+    so the plain check above still missed a reference that was, in every
+    way that matters, an exact title -- and fell through to the fuzzy pass,
+    where a project's own dev-work items (nearly all of which mention
+    "recap" somewhere, since this *is* the recap system) matched several
+    candidates at once via shared words. Stripping the channel name is safe
+    precisely because it only removes a whole word that `channels_named`
+    already confirmed is the channel's own name, never a fragment of the
+    label itself.
 
     The match (`_matches_text`) is bidirectional (does `reference` contain
     the label, or does the label contain `reference`) since a bare label
@@ -327,6 +386,13 @@ def resolve_reference(
         if not candidates:
             raise RecapActionError("no items in the last recap")
         return ResolvedReference(list(candidates), degraded=False)
+    exact = [item for item in candidates if normalized == item.label.lower()]
+    if not exact and len(channels_named) == 1:
+        (only_channel,) = channels_named
+        qualified = _strip_channel_qualifier(normalized, only_channel)
+        exact = [item for item in candidates if qualified == item.label.lower()]
+    if len(exact) == 1:
+        return ResolvedReference(exact, degraded=False)
     match_words = [
         w for w in words if w not in _GENERIC_WORDS and w not in _PLURAL_INTENT_WORDS
     ]
@@ -350,6 +416,12 @@ def resolve_reference(
                 return ResolvedReference(primary, degraded=False)
         if len(candidates) == 1:
             return ResolvedReference(candidates, degraded=plural_intent)
+    return _finalize_resolution(matches, reference)
+
+
+def _finalize_resolution(
+    matches: list[RecapItem], reference: str | None
+) -> ResolvedReference:
     if not matches:
         raise RecapActionError(f"no recap item matches {reference!r}")
     return ResolvedReference(matches, degraded=False)

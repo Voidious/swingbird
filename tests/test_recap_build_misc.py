@@ -1,4 +1,4 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, _llm
 
@@ -13,7 +13,7 @@ def test_build_recap_backfills_a_missing_item_when_its_channel_has_others(
     # primary items narrated in "text". This also broke the "N additional
     # open items" fold note downstream, since it anchors to the last
     # primary item's own paragraph, which never existed.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F1:** first item.\n\n**backend -- F2:** second item.",
         items=[
@@ -55,7 +55,7 @@ def test_build_recap_backfills_a_missing_item_next_to_its_own_channel(monkeypatc
     # channel" contract (_FORMAT_GUARD/_DETAILED_FORMAT_GUARD) instead of
     # just restating the missing item. It should land right after its own
     # channel's last existing paragraph instead.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F1:** first item.\n\n**frontend -- G1:** unrelated fix.",
         items=[

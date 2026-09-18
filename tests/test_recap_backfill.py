@@ -2,14 +2,14 @@ import json
 
 import openai
 
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, FRESH, _llm, _llm_sequence
 
 
 def _two_message_backend(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [

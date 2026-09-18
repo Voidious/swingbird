@@ -1,4 +1,4 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.config import Config, OwnerConfig, RecapConfig
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, LLM_CONFIG, RELAY_CONFIG, _llm
@@ -11,7 +11,7 @@ def test_build_recap_strips_llm_narrated_omitted_note(monkeypatch):
     # of describing what's left over. The original regex only accepted a
     # trailing "remain(s/ing)?", so this phrasing sailed through unstripped
     # and stacked next to our own real note.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**swingbird**: primary item text. (Additional open items omitted.)",
         items=[
@@ -55,7 +55,7 @@ def test_build_recap_drops_llm_narrated_count_sentence_in_detailed_mode(
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "There are 7 more open items for backend.",
@@ -94,7 +94,7 @@ def test_build_recap_strips_llm_narrated_count_sentence_trailing_real_content(
     # `fullmatch` against a whole paragraph, so this mid-paragraph case
     # sailed through unstripped, leaving both the bogus and the real count
     # stacked at the end of the same paragraph.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**swingbird**: primary item text. There are 10 additional open items.",
         items=[
@@ -134,7 +134,7 @@ def test_build_recap_drops_llm_narrated_count_sentence_naming_the_channel(
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "There are 1 additional open backend items beyond the one described "
@@ -180,7 +180,7 @@ def test_build_recap_drops_llm_narrated_bare_prefix_count_sentence(monkeypatch):
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "**backend:** 1 additional open item is listed above.",
@@ -226,7 +226,7 @@ def test_build_recap_drops_llm_narrated_has_sentence_after_real_fold_paragraph(
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
         recap=RecapConfig(max_detailed_items=1),
     )
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** prose covering the first item.\n\n"
         "backend has 1 additional open item beyond this one.",

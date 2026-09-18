@@ -18,13 +18,12 @@ double the cost for no benefit.
 
 from __future__ import annotations
 
-import json
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 from swingbird import outbound
-from swingbird.config import ChannelConfig, Config
-from swingbird.history import fetch_messages_since
+from swingbird.closed_items import ClosedItem, ClosedItemStore
+from swingbird.config import Config
 from swingbird.llm import LLMClient, LLMError
 
 from .recap_counts import (
@@ -32,6 +31,15 @@ from .recap_counts import (
     _append_item_counts,
     _item_paragraph_prefix,
 )
+from .recap_paragraphs import _DETAILED_PARAGRAPH_HEADER_RE, _normalize_label
+from .recap_parse import (
+    Recap,
+    RecapError,  # fmt: skip
+    _add_if_unique,
+    _parse_recap,
+)
+from .recap_tags import _resolve_tag
+from .recap_transcript import _build_transcript
 
 _LAUNDERING_GUARD = (
     "Never describe work that is drafted, proposed, or awaiting the user's "
@@ -72,6 +80,15 @@ _RESOLUTION_GUARD = (
     "the user's last instruction before that was, not any earlier "
     'resolved concern -- phrase status like "told to do X, interrupted '
     'before doing it," not the concern that preceded that instruction.'
+)
+
+_CLOSED_MARKER_GUARD = (
+    'A transcript message tagged "[closed]" describes work the user has '
+    "already marked closed (see the closed-items list below, when there is "
+    "one) -- never extract a new item grounded only in that message. Only "
+    "extract an item touching that same work if a different, un-tagged "
+    "message in the same transcript shows it was reopened or something "
+    "new is being asked, genuinely distinct from what was closed."
 )
 
 _FORMAT_GUARD = (
@@ -279,6 +296,7 @@ appended separately, not narrated by you. If a channel has no open \
 item, say so briefly, and if a goal is given for it, add one short \
 sentence naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_FORMAT_GUARD} \
+{_CLOSED_MARKER_GUARD} \
 Skip routine chatter. Be concise -- 1-2 sentences per channel, not a \
 transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
@@ -322,6 +340,7 @@ appended separately, not narrated by you. If a channel has no open item, \
 say so briefly, and if a goal is given for it, add one short sentence \
 naming that goal as what's next for the project. \
 {_LAUNDERING_GUARD} {_QUESTION_GUARD} {_RESOLUTION_GUARD} {_DETAILED_FORMAT_GUARD} \
+{_CLOSED_MARKER_GUARD} \
 Skip routine chatter. Be thorough but concise -- 2-4 sentences per item, \
 not a transcript.{_RESPONSE_SHAPE_INSTRUCTIONS}"""
 
@@ -434,15 +453,39 @@ def _backfill_missing_sources(
     return tuple(result)
 
 
-class RecapError(Exception):
-    """Raised when a recap is requested for an unknown channel, or the LLM's
-    response can't be trusted as a recap."""
+def _format_closed_items_guard(closed: tuple[ClosedItem, ...]) -> str:
+    """Build the dynamic (per-call) system prompt addition listing every
+    closed item in scope for this recap (see `build_recap`'s `closed_items`
+    handling), so extraction never re-lists that work as open even when a
+    transcript message restates it -- mirrors `_RESOLUTION_GUARD`'s "a
+    later resolution supersedes an earlier open question" reasoning, just
+    anchored on a durable closed-items record instead of a within-
+    transcript resolution. Belt-and-suspenders alongside `_CLOSED_MARKER_
+    GUARD`'s `[closed]` transcript tag (`_build_transcript`) -- that tag
+    only fires when the exact message that grounded the closed item is
+    still in this recap's window, while this guard's prose covers every
+    closed item regardless, including one restated on a brand-new message.
+    A guard, not transcript surgery: stripping the original message out of
+    the transcript would risk losing context other, still-open items in
+    the same message need. `_parse_recap`'s own closed-label filter is a
+    third, deterministic layer for the narrower case an exact label match
+    can catch outright -- see that function for why this prose guard alone
+    isn't always enough.
 
-
-@dataclass(frozen=True)
-class Recap:
-    text: str
-    items: tuple[RecapItem, ...] = ()
+    Empty (returns "") when there's nothing closed in scope, so a recap
+    with no closed items doesn't grow its prompt for no reason.
+    """
+    if not closed:
+        return ""
+    lines = [f"- {item.channel}: {item.label} -- {item.instruction}" for item in closed]
+    return (
+        "\n\nThe following work has already been marked closed by the "
+        "user and must never be listed as an open/actionable item again, "
+        "even if a transcript message restates or re-describes it -- only "
+        "include it if the transcript shows something genuinely new (the "
+        "work was reopened, or there's a new, distinct ask), not just a "
+        "restatement of what's below:\n" + "\n".join(lines)
+    )
 
 
 def build_recap(
@@ -450,6 +493,7 @@ def build_recap(
     config: Config,
     channel_names: list[str] | None = None,
     detail: str = "concise",
+    closed_items: ClosedItemStore | None = None,
 ) -> Recap:
     """Return a short, prioritized recap of recent channel activity.
 
@@ -463,13 +507,34 @@ def build_recap(
     `detail` selects "concise" (default, one actionable item per project)
     or "detailed" (up to `config.recap.max_detailed_items` per project,
     each with more detail -- anything else falls back to concise).
+
+    `closed_items` (see `closed_items.py`) supplies every item the user has
+    marked closed within `config.recap.closed_item_window_days`, scoped to
+    `channels` -- omitted (`None`) only by tests that don't care about
+    closing; `daemon.py` always passes the real store. The window is
+    floored at `config.recap.stale_after_days` (never narrower than the
+    recap's own message window) so a closed item still young enough for
+    its own restatement to appear in `transcript` can never fall outside
+    the guard meant to suppress it -- see `RecapConfig.closed_item_window_
+    days`'s own docstring.
     """
     channels = _select_channels(config, channel_names)
+    closed = (
+        ()
+        if closed_items is None
+        else closed_items.for_channels(
+            {channel.name for channel in channels},
+            since=time.time()
+            - max(config.recap.closed_item_window_days, config.recap.stale_after_days)
+            * 86400,
+        )
+    )
     transcript, id_map, content_map = _build_transcript(
         channels,
         stale_after_days=config.recap.stale_after_days,
         max_messages_per_channel=config.recap.max_messages_per_channel,
         explicit=channel_names is not None,
+        closed_ids_by_channel=_closed_ids_by_channel(closed),
     )
     max_items_per_channel = (
         config.recap.max_detailed_items if detail == "detailed" else 1
@@ -478,13 +543,22 @@ def build_recap(
         _detailed_system_prompt(max_items_per_channel)
         if detail == "detailed"
         else _CONCISE_SYSTEM_PROMPT
-    )
+    ) + _format_closed_items_guard(closed)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": transcript},
     ]
     recap = _parse_recap(
-        llm.complete_json(messages), id_map, content_map, max_items_per_channel
+        llm.complete_json(messages),
+        id_map,
+        content_map,
+        max_items_per_channel,
+        closed,
+        detail,
+    )
+    recap = Recap(
+        text=_dedupe_item_paragraphs(recap.text, recap.items, detail),
+        items=recap.items,
     )
     recap = Recap(
         text=recap.text,
@@ -502,6 +576,70 @@ def build_recap(
         items=recap.items,
     )
     return recap
+
+
+def _dedupe_item_paragraphs(
+    text: str, items: tuple[RecapItem, ...], detail: str
+) -> str:
+    """Drop a later detailed-recap paragraph that restates an earlier one's
+    same item under a differently-punctuated label.
+
+    `_item_extraction_instructions` asks the LLM to fold every restatement
+    of the same underlying work into one "items" entry before writing
+    "text" at all -- but that's a prompt request, not an enforced
+    constraint, and it governs "items", not the free-form "text" prose
+    written from it. Observed live: a detailed recap wrote two separate
+    paragraphs for the very same status update, headed "**swingbird --
+    recap-close:**" and "**swingbird -- recap close:**", differing only by
+    a hyphen vs a space in the label. `_parse_recap` already applies this
+    same normalize-and-compare logic to dedupe "items" itself (see its own
+    docstring for that half of the fix), but "text" is the LLM's own
+    verbatim wording, not reconstructed from "items" -- so a duplicate
+    paragraph there isn't guaranteed to disappear just because "items" no
+    longer has a matching duplicate entry.
+
+    Rewrites the surviving paragraph's header to its matching item's own
+    canonical prefix (`_item_paragraph_prefix`, built from the already-
+    normalized `item.label`), not just whichever raw spelling the LLM wrote
+    -- otherwise the paragraph that survives dedup could keep a hyphenated
+    header like "**swingbird -- recap-close:**" while `item.label` was
+    normalized to "recap close", and `_ensure_channel_paragraphs`'s own
+    exact-prefix match would then treat the item as still missing and
+    append a second, fallback paragraph for it right back. A paragraph
+    whose header doesn't match any known item (e.g. a "no open item"
+    paragraph, or the LLM naming a channel/label "items" doesn't have) is
+    still deduped by its own normalized header but otherwise left as
+    written, since there's no canonical form to rewrite it to.
+
+    Never touches a concise recap's "**channel**:" paragraphs (no label to
+    compare) or a detailed "no open item" paragraph in that same shape --
+    only the per-item header `_DETAILED_FORMAT_GUARD` actually asks for.
+    """
+    if detail != "detailed":
+        return text
+    canonical: dict[tuple[str, str], str] = {}
+    for item in items:
+        key = (item.channel.strip().casefold(), item.label.strip().casefold())
+        canonical.setdefault(
+            key, _item_paragraph_prefix(item.channel, item.label, detail)
+        )
+    paragraphs = text.split("\n\n")
+    seen: set[tuple[str, str]] = set()
+    kept = []
+    for paragraph in paragraphs:
+        match = _DETAILED_PARAGRAPH_HEADER_RE.match(paragraph)
+        if match:
+            key = (
+                _normalize_label(match.group("channel")).strip().casefold(),
+                _normalize_label(match.group("label")).strip().casefold(),
+            )
+            if not _add_if_unique(seen, key):
+                continue
+            prefix = canonical.get(key)
+            if prefix is not None:
+                paragraph = prefix + paragraph[match.end() :]
+        kept.append(paragraph)
+    return "\n\n".join(kept)
 
 
 def _ensure_channel_paragraphs(
@@ -572,92 +710,6 @@ def _ensure_channel_paragraphs(
     return "\n\n".join(paragraphs)
 
 
-def _parse_recap(
-    response: dict,
-    id_map: dict[str, dict[str, str]],
-    content_map: dict[str, dict[str, str]],
-    max_items_per_channel: int,
-) -> Recap:
-    text = response.get("text")
-    if not isinstance(text, str):
-        raise RecapError(f"LLM response is missing recap text: {json.dumps(response)}")
-    items = []
-    channel_counts: dict[str, int] = {}
-    for item in response.get("items") or []:
-        if not isinstance(item, dict) or not item.get("instruction"):
-            continue
-        channel = item.get("channel", "")
-        # The LLM lists a channel's items in priority order (see
-        # _item_extraction_instructions) -- the first max_items_per_channel seen for a
-        # channel are the ones "text" itself narrates, everything after is
-        # one of the "additional" items (see RecapItem.is_primary).
-        channel_counts[channel] = channel_counts.get(channel, 0) + 1
-        is_primary = channel_counts[channel] <= max_items_per_channel
-        items.append(
-            RecapItem(
-                channel=channel,
-                label=_normalize_label(item.get("label", "")),
-                summary=item.get("summary", ""),
-                instruction=item.get("instruction", ""),
-                is_primary=is_primary,
-                source_event_id=_resolve_tag(id_map, channel, item.get("source_id")),
-                source_content=_resolve_tag(
-                    content_map, channel, item.get("source_id")
-                ),
-                keywords=_parse_keywords(item.get("keywords")),
-            )
-        )
-    return Recap(text=text, items=tuple(items))
-
-
-def _normalize_label(label: str) -> str:
-    """Flatten a hyphenated label like "fix-message-id-reliability" into
-    "fix message id reliability" -- but only when the whole label is a
-    single hyphen-joined slug (no spaces of its own), never a normal phrase
-    that merely contains a hyphenated word.
-
-    `_item_extraction_instructions` asks for "a few words naming the item,"
-    but the LLM sometimes echoes a hyphenated, git-branch-shaped slug from
-    the transcript instead (project channels are full of literal branch
-    names) rather than phrasing it in words -- observed live, inconsistently
-    even across two recap calls for the same underlying work: one call's
-    labels for it came back hyphenated, another's came back as plain words.
-    A label meant to stay exactly as given (e.g. "F4", reused verbatim per
-    the same instructions) is never hyphenated in the first place, so a
-    blanket replace here can't clash with that case.
-
-    A blanket `.replace("-", " ")` over-corrected this: observed live, a
-    label like "Integrate recap follow-up reliability" -- already plain
-    words, just with one legitimately hyphenated compound word in it -- came
-    back from this function as "Integrate recap follow up reliability",
-    while the LLM's own "text" narration kept writing the paragraph header
-    with the hyphen intact (`"**swingbird -- Integrate recap follow-up
-    reliability:**"`), since nothing renormalizes that copy. The two no
-    longer matched byte-for-byte, so `_ensure_channel_paragraphs` treated
-    the already-narrated item as missing and appended a duplicate fallback
-    paragraph for it -- one that, being appended unconditionally at the end
-    of "text", also landed after a later channel's own paragraph, breaking
-    the "grouped by channel" contract. Restricting the flatten to labels
-    with no spaces at all keeps the slug case (never has spaces) working
-    exactly as before while leaving any label that's already phrased in
-    words -- hyphenated compound word or not -- untouched, so it stays
-    identical to whatever the LLM wrote for it in "text"."""
-    if " " in label:
-        return label
-    return label.replace("-", " ")
-
-
-def _parse_keywords(raw: object) -> tuple[str, ...]:
-    """Coerce the LLM's "keywords" field into a tuple of non-empty strings,
-    silently dropping anything malformed (a non-list, or non-string/blank
-    entries) rather than raising -- keywords are a matching aid, not load-
-    bearing content, so a malformed entry should never fail the whole
-    recap."""
-    if not isinstance(raw, list):
-        return ()
-    return tuple(k.strip() for k in raw if isinstance(k, str) and k.strip())
-
-
 def _append_source_links(
     text: str, items: tuple[RecapItem, ...], config: Config, detail: str
 ) -> str:
@@ -697,22 +749,6 @@ def _append_source_links(
     return text
 
 
-def _resolve_tag(
-    mapping: dict[str, dict[str, str]], channel: str, tag: object
-) -> str | None:
-    """Resolve an LLM-cited `tag` (e.g. "m3") against `mapping` for `channel`.
-
-    Never trusts the LLM's tag blindly -- a missing tag, an empty string, an
-    unknown channel, or a tag that doesn't match any message actually shown
-    for that channel all resolve to `None` (a plain dict miss, in the latter
-    three cases) rather than a guess. Shared by both `RecapItem.
-    source_event_id` and `source_content`, resolved from the same tag against
-    two parallel maps built in `_build_transcript`."""
-    if not isinstance(tag, str):
-        return None
-    return mapping.get(channel, {}).get(tag)
-
-
 def _select_channels(config: Config, channel_names: list[str] | None):
     if channel_names is None:
         return config.channels
@@ -725,64 +761,14 @@ def _select_channels(config: Config, channel_names: list[str] | None):
     return selected
 
 
-def _build_transcript(
-    channels: list[ChannelConfig],
-    stale_after_days: int,
-    max_messages_per_channel: int,
-    explicit: bool,
-) -> tuple[str, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    """Return the transcript text and `{channel_name: {tag: event_id}}` /
-    `{channel_name: {tag: content}}` maps.
-
-    Each message is tagged with a short per-channel local id ("m1", "m2",
-    ...) rather than its real (64-char) event id -- cheap for the LLM to
-    copy back verbatim in `source_id` (see `_item_extraction_instructions`) without
-    risking a garbled hex string. Both maps only get an entry for messages
-    that actually carry an `"id"` -- real `buzz messages get` events always
-    do; this just means a message without one can't be cited as a source,
-    never a crash. The content map exists alongside the id map so a
-    resolved `source_id` can carry the message's own text forward too (see
-    `RecapItem.source_content`), not just its event id.
-    """
-    cutoff = time.time() - stale_after_days * 86400
-    sections = []
-    id_map: dict[str, dict[str, str]] = {}
-    content_map: dict[str, dict[str, str]] = {}
-    for channel in channels:
-        # Same time-windowed fetch either way, paging past the relay's
-        # 200-per-call cap as needed (see history.fetch_messages_since) so
-        # a chatty channel can't push a still-relevant item out of the
-        # window. Only whether an empty result is skipped differs: a
-        # channel the user didn't name is silently dropped from an
-        # all-channels recap, but one named explicitly still gets a
-        # paragraph below ("(no recent activity)") since silence isn't a
-        # useful answer to a question about a specific project.
-        events = fetch_messages_since(
-            channel.id, cutoff, max_messages=max_messages_per_channel
-        )
-        if not events and not explicit:
-            continue
-        header = f"## {channel.name}"
-        if channel.goal:
-            header += f" (goal: {channel.goal})"
-        if events:
-            lines = []
-            tags = {}
-            contents = {}
-            for i, event in enumerate(events, start=1):
-                tag = f"m{i}"
-                lines.append(f"[{tag}] [{event['created_at']}] {event['content']}")
-                if "id" in event:
-                    tags[tag] = event["id"]
-                    contents[tag] = event["content"]
-            body = "\n".join(lines)
-            if tags:
-                id_map[channel.name] = tags
-                content_map[channel.name] = contents
-        else:
-            body = "(no recent activity)"
-        sections.append(f"{header}\n{body}")
-    transcript = (
-        "\n\n".join(sections) if sections else "(no channels with recent activity)"
-    )
-    return transcript, id_map, content_map
+def _closed_ids_by_channel(closed: tuple[ClosedItem, ...]) -> dict[str, set[str]]:
+    """Return `{channel_name: {source_event_id, ...}}` for every closed item
+    that was grounded in one specific message -- an item closed without a
+    `source_event_id` (see `RecapItem.source_event_id`) has no transcript
+    message to tag, so it's covered only by `_format_closed_items_guard`'s
+    prose, not this per-message marker (see `_build_transcript`)."""
+    by_channel: dict[str, set[str]] = {}
+    for item in closed:
+        if item.source_event_id is not None:
+            by_channel.setdefault(item.channel, set()).add(item.source_event_id)
+    return by_channel

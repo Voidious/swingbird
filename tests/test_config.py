@@ -654,3 +654,26 @@ def test_recap_max_detailed_items_rejects_invalid_values(tmp_path, value):
         ConfigError, match="max_detailed_items must be a positive integer"
     ):
         load_config(write(tmp_path, text))
+
+
+def test_recap_closed_item_window_days_defaults(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.recap.closed_item_window_days == 90
+
+
+def test_recap_closed_item_window_days_is_configurable(tmp_path):
+    config = load_config(
+        write(tmp_path, VALID + "\n[recap]\nclosed_item_window_days = 60\n")
+    )
+
+    assert config.recap.closed_item_window_days == 60
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"60"'])
+def test_recap_closed_item_window_days_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[recap]\nclosed_item_window_days = {value}\n"
+    with pytest.raises(
+        ConfigError, match="closed_item_window_days must be a positive integer"
+    ):
+        load_config(write(tmp_path, text))

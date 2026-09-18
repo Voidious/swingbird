@@ -1,4 +1,4 @@
-from swingbird import recap
+from swingbird import recap_transcript
 from swingbird.recap import build_recap
 from tests.test_recap_build_behavior import CONFIG, _llm
 
@@ -9,7 +9,7 @@ def test_build_recap_flattens_a_hyphenated_label_to_spaces(monkeypatch):
     # instead of "a few words naming the item" per
     # _ITEM_EXTRACTION_INSTRUCTIONS -- inconsistently, since a different
     # recap call for the same underlying work came back with plain words.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -37,7 +37,7 @@ def test_build_recap_leaves_a_phrase_with_an_internal_hyphen_unchanged(monkeypat
     # label and appended a duplicate fallback for it. Only a label with no
     # spaces at all (a bare slug, like the sibling test above) should be
     # flattened.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         items=[
             {

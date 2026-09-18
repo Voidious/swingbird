@@ -165,6 +165,117 @@ def test_resolve_reference_channel_qualifier_that_matches_no_label_raises():
         resolve_reference((ITEM_F4, ITEM_F5), "F9 for dripbird")
 
 
+def test_resolve_reference_exact_label_match_is_not_swallowed_by_a_longer_fuzzy_match():
+    # Live bug: giving the exact, full label of one item still came back
+    # ambiguous. The old fuzzy pass is bidirectional -- it also matches when
+    # a *candidate's* label is a substring of the reference -- so a full
+    # title that happens to contain a second item's short label as a
+    # fragment (here, "F4") matched both items instead of recognizing the
+    # first was named exactly.
+    full_title = RecapItem(
+        channel="dripbird",
+        label="close the duplicate extractor F4 login fix",
+        summary="s",
+        instruction="i",
+    )
+    short_label = RecapItem(
+        channel="dripbird",
+        label="F4",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (full_title, short_label), "close the duplicate extractor F4 login fix"
+    )
+
+    assert resolved.items == [full_title]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_exact_label_match_is_case_insensitive():
+    other = RecapItem(
+        channel="dripbird", label="F4 login fix", summary="s", instruction="i"
+    )
+
+    resolved = resolve_reference((ITEM_F4, other), "F4 LOGIN FIX")
+
+    assert resolved.items == [other]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_exact_label_match_with_leftover_channel_qualifier():
+    # Live bug (2026-09-15): the router left the channel name in the
+    # reference text even after separately reporting `channel="swingbird"`,
+    # so "swingbird Recap list split fixes" didn't literally equal any
+    # label. It then fell through to the fuzzy pass, where nearly every
+    # swingbird dev-work item's label/keywords mention "recap" (since this
+    # project *is* the recap system), producing several matches instead of
+    # recognizing the reference named one item's title exactly once the
+    # channel qualifier is set aside.
+    target = RecapItem(
+        channel="swingbird",
+        label="Recap list split fixes",
+        summary="s",
+        instruction="i",
+    )
+    decoy_one = RecapItem(
+        channel="swingbird",
+        label="Detailed recap revamp",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+    decoy_two = RecapItem(
+        channel="swingbird",
+        label="Recap relay command",
+        summary="s",
+        instruction="i",
+        is_primary=False,
+    )
+
+    resolved = resolve_reference(
+        (target, decoy_one, decoy_two),
+        "swingbird Recap list split fixes",
+        channel="swingbird",
+    )
+
+    assert resolved.items == [target]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_exact_match_qualifier_strip_keeps_internal_stopwords():
+    # The channel-qualifier strip only trims stopwords left dangling at the
+    # edges after the channel name is removed -- a label that legitimately
+    # contains one internally (e.g. "wait for CI") must still match
+    # verbatim once the channel qualifier itself is gone.
+    decoy = RecapItem(
+        channel="crispen", label="wait for CI", summary="s", instruction="i"
+    )
+
+    resolved = resolve_reference((decoy,), "crispen wait for CI", channel="crispen")
+
+    assert resolved.items == [decoy]
+    assert resolved.degraded is False
+
+
+def test_resolve_reference_multiple_exact_label_matches_still_fall_through():
+    # Two different items can legitimately share the exact same label text
+    # (e.g. the same label recurring in two channels with no channel
+    # narrowing available) -- that's genuine ambiguity by identity, not
+    # something the exact-match shortcut can resolve, so it must fall
+    # through to the ordinary fuzzy pass (which, for a bare shared label
+    # with no channel signal, returns both as multiple matches).
+    other_channel_f4 = RecapItem(
+        channel="crispen", label="F4", summary="a different F4", instruction="i"
+    )
+
+    resolved = resolve_reference((ITEM_F4, other_channel_f4), "F4")
+
+    assert resolved.items == [ITEM_F4, other_channel_f4]
+
+
 def test_resolve_reference_by_word_within_a_bundled_multi_option_label():
     # A recap item covering a multi-way decision (e.g. "F4 or F5 or F6, pick
     # one") gets a compound label -- neither the whole label nor the whole

@@ -2,9 +2,8 @@ import json
 
 import pytest
 
-from swingbird import recap
+from swingbird import recap, recap_transcript
 from swingbird.config import ChannelConfig, Config, OwnerConfig, RecapConfig
-from swingbird.llm import LLMClient
 from swingbird.recap import _CONCISE_SYSTEM_PROMPT, RecapError, RecapItem, build_recap
 from tests.test_recap_build_behavior import (
     CONFIG,
@@ -13,26 +12,18 @@ from tests.test_recap_build_behavior import (
     NOW,
     RELAY_CONFIG,
     STALE,
-    FakeOpenAI,
     _llm,
     _system_prompt,
 )
+from tests.test_recap_build_edge_cases import _raw_llm
 from tests.test_recap_build_helpers import _build_recap_empty_channel_with_item
-
-
-def _raw_llm(content: str) -> tuple[LLMClient, FakeOpenAI]:
-    """For responses that don't match the normal {"text": ...} shape."""
-    fake = FakeOpenAI(content)
-    return LLMClient(LLM_CONFIG, client=fake), fake
+from tests.test_recap_setup_helpers import _setup_channel_with_messages_and_build_recap
+from tests.test_recap_tags import _transcript
 
 
 @pytest.fixture(autouse=True)
 def _freeze_time(monkeypatch):
     monkeypatch.setattr(recap.time, "time", lambda: NOW)
-
-
-def _transcript(fake) -> str:
-    return fake.chat.completions.calls[0]["messages"][1]["content"]
 
 
 def test_build_recap_summarizes_all_channels(monkeypatch):
@@ -42,7 +33,7 @@ def test_build_recap_summarizes_all_channels(monkeypatch):
             "chan-2": [{"created_at": FRESH, "content": "frontend msg"}],
         }[channel_id]
 
-    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", fake_fetch)
     llm, fake = _llm("here's the recap")
 
     result = build_recap(llm, CONFIG)
@@ -53,59 +44,6 @@ def test_build_recap_summarizes_all_channels(monkeypatch):
     assert "backend msg" in transcript
     assert "## frontend" in transcript
     assert "frontend msg" in transcript
-
-
-def test_build_recap_tags_transcript_messages_with_a_local_id(monkeypatch):
-    monkeypatch.setattr(
-        recap,
-        "fetch_messages_since",
-        lambda channel_id, since_ts, max_messages=None: (
-            [
-                {"created_at": FRESH, "content": "first", "id": "evt-a"},
-                {"created_at": FRESH, "content": "second", "id": "evt-b"},
-            ]
-            if channel_id == "chan-1"
-            else []
-        ),
-    )
-    llm, fake = _llm()
-
-    build_recap(llm, CONFIG)
-
-    transcript = _transcript(fake)
-    assert "[m1] " in transcript
-    assert "[m2] " in transcript
-
-
-def _setup_channel_with_messages_and_build_recap(monkeypatch, text="recap", items=None):
-    monkeypatch.setattr(
-        recap,
-        "fetch_messages_since",
-        lambda channel_id, since_ts, max_messages=None: (
-            [
-                {"created_at": FRESH, "content": "first", "id": "evt-a"},
-                {"created_at": FRESH, "content": "second", "id": "evt-b"},
-            ]
-            if channel_id == "chan-1"
-            else []
-        ),
-    )
-    llm, _ = _llm(
-        text,
-        items=items
-        or [
-            {
-                "channel": "backend",
-                "label": "F4",
-                "summary": "s",
-                "instruction": "do it",
-                "source_id": "m2",
-            }
-        ],
-    )
-
-    result = build_recap(llm, CONFIG)
-    return result
 
 
 def test_build_recap_resolves_source_id_to_the_real_event_id(monkeypatch):
@@ -121,7 +59,7 @@ def test_build_recap_resolves_source_id_to_the_message_content(monkeypatch):
 
 
 def _build_empty_channel_recap(monkeypatch, items=None):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "recap",
         items=items
@@ -153,7 +91,7 @@ def test_build_recap_leaves_source_event_id_none_without_a_source_id(monkeypatch
 
 def test_build_recap_leaves_source_event_id_none_for_an_unknown_tag(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
@@ -180,7 +118,7 @@ def test_build_recap_leaves_source_event_id_none_for_an_unknown_tag(monkeypatch)
 
 
 def test_build_recap_leaves_source_event_id_none_for_an_unmapped_channel(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "recap",
         items=[
@@ -201,7 +139,7 @@ def test_build_recap_leaves_source_event_id_none_for_an_unmapped_channel(monkeyp
 
 def test_build_recap_skips_map_entry_for_messages_without_an_id(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [{"created_at": FRESH, "content": "no id here"}]
@@ -228,7 +166,7 @@ def test_build_recap_skips_map_entry_for_messages_without_an_id(monkeypatch):
 
 
 def test_build_recap_parses_structured_items(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -254,7 +192,7 @@ def test_build_recap_parses_structured_items(monkeypatch):
 
 
 def test_build_recap_parses_keywords(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -280,7 +218,7 @@ def test_build_recap_defaults_keywords_to_empty_tuple_when_omitted(monkeypatch):
 
 
 def test_build_recap_drops_non_string_and_blank_keyword_entries(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -300,7 +238,7 @@ def test_build_recap_drops_non_string_and_blank_keyword_entries(monkeypatch):
 
 
 def test_build_recap_ignores_a_non_list_keywords_value(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -320,7 +258,7 @@ def test_build_recap_ignores_a_non_list_keywords_value(monkeypatch):
 
 
 def test_build_recap_drops_items_without_an_instruction(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "here's the recap",
         items=[
@@ -340,7 +278,7 @@ def test_build_recap_backfills_a_paragraph_for_a_channel_missing_from_text(
     # LLM's own "text" left out entirely -- observed on the busiest channel
     # in a multi-channel recap two times out of three. The rendered text
     # must still mention every channel it has a grounded primary item for.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: shipping the login fix.",
         items=[
@@ -369,7 +307,7 @@ def test_build_recap_backfills_a_paragraph_for_a_channel_missing_from_text(
 def test_build_recap_backfills_every_missing_primary_item_in_detailed_mode(
     monkeypatch,
 ):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend -- F4:** shipping the login fix.",
         items=[
@@ -406,7 +344,7 @@ def test_build_recap_backfills_every_missing_primary_item_in_detailed_mode(
 def test_build_recap_backfill_is_the_whole_text_when_the_llm_wrote_nothing(
     monkeypatch,
 ):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "",
         items=[
@@ -427,7 +365,7 @@ def test_build_recap_backfill_is_the_whole_text_when_the_llm_wrote_nothing(
 def test_build_recap_does_not_backfill_a_channel_already_present_in_text(
     monkeypatch,
 ):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     text = "**backend**: shipping the login fix.\n\n**frontend**: nothing new."
     llm, _ = _llm(
         text,
@@ -447,7 +385,7 @@ def test_build_recap_does_not_backfill_a_channel_already_present_in_text(
 
 
 def test_build_recap_appends_additional_item_count_to_concise_text(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text.\n\n**frontend**: nothing new.",
         items=[
@@ -475,7 +413,7 @@ def test_build_recap_appends_additional_item_count_to_concise_text(monkeypatch):
 
 
 def test_build_recap_pluralizes_additional_item_count(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text.",
         items=[
@@ -509,7 +447,7 @@ def test_build_recap_strips_llm_narrated_count_before_appending_real_one(monkeyp
     # Observed live: the LLM narrated its own "(1 more open item.)" despite
     # the prompt telling it not to, right where our deterministic count
     # would land -- without stripping first, the two would stack.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**swingbird**: primary item text. (1 more open item.)",
         items=[
@@ -542,7 +480,7 @@ def test_build_recap_strips_llm_narrated_zero_count_with_nothing_to_append(
     # that really does have zero additional items -- there's no real count
     # to append afterward, but the bogus note must still be removed rather
     # than left standing uncorrected.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**crispen**: primary item text. (0 more open items.)",
         items=[
@@ -565,7 +503,7 @@ def test_build_recap_strips_llm_narrated_countless_remain_note(monkeypatch):
     # no leading number/no/zero, and "remain" instead of "remaining" -- which
     # the original regex (requiring a leading count word) didn't catch,
     # leaving a bogus, uncorrected note standing on its own.
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**swingbird**: primary item text. (Additional open items remain.)",
         items=[
@@ -592,7 +530,7 @@ def test_build_recap_strips_llm_narrated_countless_remain_note(monkeypatch):
 
 
 def test_build_recap_strips_llm_narrated_count_case_insensitively(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text. (2 More Open Items.)",
         items=[
@@ -611,7 +549,7 @@ def test_build_recap_strips_llm_narrated_count_case_insensitively(monkeypatch):
 
 
 def test_build_recap_leaves_unrelated_trailing_parenthetical_alone(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text. (recommended)",
         items=[
@@ -631,7 +569,7 @@ def test_build_recap_leaves_unrelated_trailing_parenthetical_alone(monkeypatch):
 
 def test_build_recap_appends_source_link_to_primary_items_paragraph(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
@@ -660,7 +598,7 @@ def test_build_recap_appends_source_link_to_primary_items_paragraph(monkeypatch)
 
 
 def test_build_recap_omits_source_link_when_item_not_grounded(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _llm(
         "**backend**: primary item text.",
         items=[
@@ -680,7 +618,7 @@ def test_build_recap_omits_source_link_when_item_not_grounded(monkeypatch):
 
 def test_build_recap_omits_source_link_for_a_non_primary_item(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [
@@ -721,7 +659,7 @@ def test_build_recap_omits_source_link_for_a_non_primary_item(monkeypatch):
 
 def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: (
             [{"created_at": FRESH, "content": "first", "id": "evt-a"}]
@@ -751,7 +689,7 @@ def test_build_recap_appends_source_link_in_detailed_mode(monkeypatch):
 
 
 def test_build_recap_rejects_response_missing_text(monkeypatch):
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     llm, _ = _raw_llm(json.dumps({"items": []}))
 
     with pytest.raises(RecapError, match="missing recap text"):
@@ -761,7 +699,7 @@ def test_build_recap_rejects_response_missing_text(monkeypatch):
 def _build_recap_with_fake_fetch(
     monkeypatch, fake_fetch, config, channel_names=("backend",)
 ):
-    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", fake_fetch)
     llm, _ = _llm()
     build_recap(llm, config, channel_names=channel_names)
     return llm
@@ -813,7 +751,7 @@ def _build_backend_recap_transcript() -> str:
 
 def test_build_recap_includes_fresh_content_for_named_channel(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [
             {"created_at": FRESH, "content": "fresh backend msg"}
@@ -834,7 +772,7 @@ def _setup_empty_channel_recap(monkeypatch, channel_names=None):
     if channel_names is None:
         channel_names = ["backend"]
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
@@ -851,7 +789,7 @@ def test_build_recap_notes_empty_channel(monkeypatch):
 
 
 def _setup_and_build_recap(monkeypatch, fake_fetch, config):
-    monkeypatch.setattr(recap, "fetch_messages_since", fake_fetch)
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", fake_fetch)
     llm, fake = _llm()
 
     build_recap(llm, config)
@@ -907,7 +845,7 @@ def test_build_recap_shows_placeholder_for_named_channel_outside_the_window(
     paragraph instead of being omitted (see the omitted-channel test
     below)."""
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
@@ -917,7 +855,7 @@ def test_build_recap_shows_placeholder_for_named_channel_outside_the_window(
 
 def test_build_recap_all_channels_stale_yields_placeholder_transcript(monkeypatch):
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [],
     )
@@ -944,7 +882,7 @@ def test_build_recap_includes_goal_in_channel_header(monkeypatch):
         owner=OwnerConfig(pubkey="owner-pubkey", name="Voidious"),
     )
     monkeypatch.setattr(
-        recap,
+        recap_transcript,
         "fetch_messages_since",
         lambda channel_id, since_ts, max_messages=None: [
             {"created_at": FRESH, "content": "msg"}

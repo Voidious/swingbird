@@ -187,6 +187,44 @@ def test_route_recap_list_extracts_reference_verbatim():
     assert intent == Intent(kind="recap_list", message="the other items")
 
 
+def test_route_recap_close_extracts_reference_verbatim():
+    router, _ = _router(json.dumps({"intent": "recap_close", "message": "F4"}))
+
+    intent = router.route("close F4")
+
+    assert intent == Intent(kind="recap_close", message="F4")
+
+
+def test_route_reset_closed_with_named_channel():
+    router, _ = _router(json.dumps({"intent": "reset_closed", "channel": "backend"}))
+
+    intent = router.route("reset the closed items for backend")
+
+    assert intent == Intent(kind="reset_closed", channel="backend")
+
+
+def test_route_reset_closed_without_channel_leaves_it_null():
+    router, _ = _router(json.dumps({"intent": "reset_closed", "channel": None}))
+
+    intent = router.route("reset all closed items")
+
+    assert intent == Intent(kind="reset_closed", channel=None)
+
+
+def test_route_open_recap_note_mentions_recap_close():
+    router, fake = _router('{"intent": "recap_close", "message": "F4"}')
+
+    router.route("close F4", has_open_recap=True)
+
+    system_content = fake.chat.completions.calls[0]["messages"][0]["content"]
+    assert "recap_close" in system_content
+
+
+def test_route_no_open_recap_note_mentions_recap_close():
+    (_, system_content) = _route_and_get_system_content()
+    assert "recap_close" in system_content
+
+
 def test_route_recap_relay_extracts_item_reference_and_message_separately():
     router, _ = _router(
         json.dumps(

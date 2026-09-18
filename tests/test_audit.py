@@ -134,6 +134,49 @@ def test_log_recap_built_with_no_items_writes_an_empty_list(tmp_path):
     assert record["items"] == []
 
 
+def test_log_closed_items_writes_channel_label_and_source(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    other_item = RecapItem(
+        channel="dripbird",
+        label="F6",
+        summary="lint residue",
+        instruction="Fix the F6 lint residue.",
+        source_event_id="evt-9",
+    )
+
+    AuditLog(path).log_closed_items("thread-1", (RECAP_ITEM, other_item))
+
+    (record,) = _read_records(path)
+    assert record["kind"] == "closed_items"
+    assert record["thread_id"] == "thread-1"
+    assert record["items"] == [
+        {"channel": "dripbird", "label": "F4", "source_event_id": None},
+        {"channel": "dripbird", "label": "F6", "source_event_id": "evt-9"},
+    ]
+
+
+def test_log_closed_items_reset_with_channel_writes_channel_and_count(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_closed_items_reset("thread-1", "dripbird", 3)
+
+    (record,) = _read_records(path)
+    assert record["kind"] == "closed_items_reset"
+    assert record["thread_id"] == "thread-1"
+    assert record["channel"] == "dripbird"
+    assert record["count"] == 3
+
+
+def test_log_closed_items_reset_without_channel_writes_null(tmp_path):
+    path = tmp_path / "audit.jsonl"
+
+    AuditLog(path).log_closed_items_reset("thread-1", None, 0)
+
+    (record,) = _read_records(path)
+    assert record["channel"] is None
+    assert record["count"] == 0
+
+
 def test_appends_records_across_calls(tmp_path):
     path = tmp_path / "audit.jsonl"
     audit = AuditLog(path)

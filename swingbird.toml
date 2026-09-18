@@ -49,11 +49,15 @@ name = "swingbird"
 # --limit, so a chatty channel needs multiple paged calls); defaults to
 # 1000 if omitted. max_detailed_items caps how many open items a "detailed
 # recap" narrates per project before folding the rest into a count;
-# defaults to 3 if omitted.
+# defaults to 3 if omitted. closed_item_window_days caps how far back a
+# closed item ("close F4") still gets sent to the LLM as "don't re-list
+# this" context, floored at stale_after_days so it can never be narrower
+# than the recap's own message window; defaults to 90 if omitted.
 # [recap]
 # stale_after_days = 30
 # max_messages_per_channel = 1000
 # max_detailed_items = 3
+# closed_item_window_days = 90
 
 # Define your own projects below -- each [[channels]] block is one project.
 # `name` is the project name you'll say in conversation ("recap swingbird",

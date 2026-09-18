@@ -18,6 +18,7 @@ import pytest
 from swingbird import daemon, outbound
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
+from swingbird.closed_items import ClosedItemStore
 from swingbird.config import (
     AvatarConfig,
     ChannelConfig,
@@ -30,6 +31,7 @@ from swingbird.config import (
 )
 from swingbird.daemon import (
     DEFAULT_AUDIT_LOG_PATH,
+    DEFAULT_CLOSED_ITEMS_PATH,
     DEFAULT_CONFIG_PATH,
     Daemon,
     build_daemon,
@@ -38,6 +40,7 @@ from swingbird.inbound import InboundError
 from swingbird.pending_actions import PendingActionStore
 from swingbird.recap import RecapItem
 from swingbird.recap_actions import RecapActionStore
+from swingbird.recap_close import PendingClose, PendingCloseStore
 from swingbird.recap_disambiguation import DisambiguationStore, PendingDisambiguation
 from swingbird.router import Intent, IntentRouter
 
@@ -129,6 +132,8 @@ def _daemon(
     dm_id="dm-chan",
     recap_store=None,
     disambiguation=None,
+    pending_close=None,
+    closed_items=None,
     own_pubkey=None,
     config=None,
 ):
@@ -142,9 +147,11 @@ def _daemon(
         store or PendingActionStore(),
         llm,
         audit,
+        closed_items or ClosedItemStore(tmp_path / "closed_items.jsonl"),
         dm_id=dm_id,
         recap_store=recap_store,
         disambiguation=disambiguation,
+        pending_close=pending_close,
         own_pubkey=own_pubkey,
     )
 
@@ -158,14 +165,25 @@ def _sent(monkeypatch):
 
 
 def _handle_event_and_get_first_sent(
-    tmp_path, llm, sent, event=None, store=None, recap_store=None, disambiguation=None
+    tmp_path,
+    llm,
+    sent,
+    event=None,
+    store=None,
+    recap_store=None,
+    disambiguation=None,
+    pending_close=None,
+    closed_items=None,
+    bot=None,
 ):
-    bot = _daemon(
+    bot = bot or _daemon(
         tmp_path,
         llm,
         store=store,
         recap_store=recap_store,
         disambiguation=disambiguation,
+        pending_close=pending_close,
+        closed_items=closed_items,
     )
     asyncio.run(bot._handle_event(event or _event()))
     return sent[0]
@@ -262,9 +280,9 @@ def test_handle_event_does_not_block_the_event_loop_during_a_slow_llm_call(
 
 
 def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -278,9 +296,9 @@ def test_recap_reply_is_posted_back_to_the_source_channel(tmp_path, monkeypatch)
 
 
 def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -308,9 +326,9 @@ def test_recap_stores_items_for_later_follow_up(tmp_path, monkeypatch):
 
 
 def test_recap_logs_every_extracted_item(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -937,9 +955,9 @@ def test_cancel_clears_a_pending_disambiguation(tmp_path, monkeypatch):
 
 
 def test_fresh_recap_clears_a_stale_pending_disambiguation(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent, recap_store, disambiguation, _ = _setup_recap_action_disambiguation(
         monkeypatch
     )
@@ -971,6 +989,342 @@ def test_recap_action_unknown_reference_becomes_a_reply(tmp_path, monkeypatch):
     )
 
     assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
+
+
+def test_recap_close_proposes_closing_the_matched_item(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == (
+        "dm-chan",
+        (
+            "Close backend/F4 -- it won't be shown as open in future "
+            "recaps? Confirm to close, or cancel."
+        ),
+    )
+
+
+def test_recap_close_stores_a_pending_close(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
+    bot = _daemon(tmp_path, llm, recap_store=recap_store)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    pending = bot._pending_close.get("dm-chan")
+    assert pending.items == (F4_ITEM,)
+
+
+def test_recap_close_logs_the_resolved_reference(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
+
+    recap_reference = _run_event_and_get_recap_reference(
+        tmp_path, llm, recap_store, _event
+    )
+    assert recap_reference["recap_kind"] == "recap_close"
+    _assert_recap_reference(recap_reference)
+
+
+def test_recap_close_a_single_selection_ignores_a_sibling_sharing_its_source_event(
+    tmp_path, monkeypatch
+):
+    """A recap message can cover more than one unrelated item for the same
+    project (e.g. two independent PRIMARY items) -- selecting one of them
+    by an exact label match must close only that item, never re-add the
+    sibling just because they were grounded on the same message. This is
+    the regression Voidious hit: no phrasing of "close dripbird F6 lint
+    residue" could close just that item, since it kept getting batched with
+    the unrelated "Merge 0.3.3 branch" item grounded on the same message."""
+    sent = _sent(monkeypatch)
+    sibling = dataclasses.replace(
+        F4_ITEM, label="F5", source_event_id="src-evt", is_primary=False
+    )
+    grounded = dataclasses.replace(F4_ITEM, source_event_id="src-evt")
+    recap_store = _recap_store_with("dm-chan", grounded, sibling)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1] == (
+        "Close backend/F4 -- it won't be shown as open in future recaps? "
+        "Confirm to close, or cancel."
+    )
+
+
+def test_recap_close_without_a_source_event_closes_just_itself(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F4"},
+            {"indices": [1]},
+        ]
+    )
+    bot = _daemon(tmp_path, llm, recap_store=recap_store)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    assert bot._pending_close.get("dm-chan").items == (F4_ITEM,)
+
+
+def test_recap_close_without_a_recent_recap_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "recap_close", "message": "F4"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args == (
+        "dm-chan",
+        (
+            "Couldn't do that: I don't have a recent recap to reference here -- "
+            "ask for a recap first."
+        ),
+    )
+    # Nothing to select against -- the selection LLM call is never made.
+    assert len(llm.calls) == 1
+
+
+def test_recap_close_all_items_for_one_channel_closes_every_match(
+    tmp_path, monkeypatch
+):
+    """ "Close all swingbird items" (bullet 1/3 of Voidious's request) should
+    close every matched item in one confirmation, not ask "which did you
+    mean" the way a single-item recap_action/recap_relay reference would --
+    see recap_close_selection.py."""
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "all"},
+            {"indices": [1, 2]},
+        ]
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args[1].startswith("That request covers 2 items:")
+    assert "backend/F4" in args[1]
+    assert "frontend/F5" in args[1]
+
+
+def test_recap_close_no_match_becomes_a_reply(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    llm = FakeLLM(
+        json_response=[
+            {"intent": "recap_close", "message": "F9"},
+            {"indices": []},
+        ]
+    )
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, recap_store=recap_store
+    )
+
+    assert args == ("dm-chan", "Couldn't do that: no recap item matches 'F9'")
+
+
+def test_reset_closed_with_channel_clears_only_that_channel(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    closed_items.close(F5_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Reset 1 closed item for backend.")
+    assert [i.channel for i in closed_items.for_channels(None, since=0)] == ["frontend"]
+
+
+def test_reset_closed_without_channel_clears_every_project(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    closed_items.close(F5_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": None})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Reset 2 closed items for all projects.")
+    assert closed_items.for_channels(None, since=0) == ()
+
+
+def test_reset_closed_with_nothing_to_clear_replies_helpfully(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, closed_items=closed_items
+    )
+
+    assert args == ("dm-chan", "Nothing to reset -- no closed items for backend.")
+
+
+def test_reset_closed_unknown_channel_becomes_a_reply(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "nope"})
+
+    (args, _) = _handle_event_and_get_first_sent(tmp_path, llm, sent)
+
+    assert args == (
+        "dm-chan",
+        "Couldn't do that: unknown project channel: 'nope'",
+    )
+
+
+def test_reset_closed_logs_channel_and_count(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    closed_items.close(F4_ITEM)
+    llm = FakeLLM(json_response={"intent": "reset_closed", "channel": "backend"})
+    bot = _daemon(tmp_path, llm, closed_items=closed_items)
+
+    asyncio.run(bot._handle_event(_event()))
+
+    records = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    (record,) = [r for r in records if r["kind"] == "closed_items_reset"]
+    assert record["thread_id"] == "dm-chan"
+    assert record["channel"] == "backend"
+    assert record["count"] == 1
+
+
+def _pending_close_bot(tmp_path, recap_store, closed_items=None):
+    pending_close = PendingCloseStore()
+    pending_close.set("dm-chan", PendingClose((F4_ITEM,)))
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    bot = _daemon(
+        tmp_path,
+        llm,
+        recap_store=recap_store,
+        pending_close=pending_close,
+        closed_items=closed_items,
+    )
+    return bot, llm
+
+
+def test_pending_close_confirm_persists_and_replies(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    bot, llm = _pending_close_bot(tmp_path, recap_store, closed_items=closed_items)
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, event=_event(content="yes"), bot=bot
+    )
+
+    assert args == ("dm-chan", "Closed item: backend/F4.")
+    assert bot._pending_close.get("dm-chan") is None
+    assert len(closed_items.for_channels(None, since=0)) == 1
+
+
+def test_pending_close_confirm_logs_closed_items(tmp_path, monkeypatch):
+    _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    bot, _ = _pending_close_bot(tmp_path, recap_store)
+
+    asyncio.run(bot._handle_event(_event(content="yes")))
+
+    records = [
+        json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    (record,) = [r for r in records if r["kind"] == "closed_items"]
+    assert record["thread_id"] == "dm-chan"
+    assert record["items"] == [
+        {"channel": "backend", "label": "F4", "source_event_id": None}
+    ]
+
+
+def test_pending_close_confirm_multiple_items_pluralizes(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM, F5_ITEM)
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    pending_close = PendingCloseStore()
+    pending_close.set("dm-chan", PendingClose((F4_ITEM, F5_ITEM)))
+    bot = _daemon(tmp_path, llm, recap_store=recap_store, pending_close=pending_close)
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, event=_event(content="yes"), bot=bot
+    )
+
+    assert args == ("dm-chan", "Closed items: backend/F4, frontend/F5.")
+
+
+def test_pending_close_cancel_discards_without_closing(tmp_path, monkeypatch):
+    sent = _sent(monkeypatch)
+    closed_items = ClosedItemStore(tmp_path / "closed_items.jsonl")
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    bot, llm = _pending_close_bot(tmp_path, recap_store, closed_items=closed_items)
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path, llm, sent, event=_event(content="cancel"), bot=bot
+    )
+
+    assert args == ("dm-chan", "Cancelled -- nothing was closed.")
+    assert bot._pending_close.get("dm-chan") is None
+    assert closed_items.for_channels(None, since=0) == ()
+
+
+def test_pending_close_unrecognized_reply_falls_through_to_routing(
+    tmp_path, monkeypatch
+):
+    sent = _sent(monkeypatch)
+    recap_store = _recap_store_with("dm-chan", F4_ITEM)
+    bot, llm = _pending_close_bot(tmp_path, recap_store)
+
+    (args, _) = _handle_event_and_get_first_sent(
+        tmp_path,
+        llm,
+        sent,
+        event=_event(content="what's the weather like"),
+        bot=bot,
+    )
+
+    assert args == ("dm-chan", daemon._CHIT_CHAT_REPLY)
+    assert bot._pending_close.get("dm-chan") is not None
+    # The router's retry-on-chit_chat (see router.py) fires twice here since
+    # both calls return chit_chat -- what matters is that routing happened
+    # at all, i.e. the pending close was left unresolved and fell through.
+    assert len(llm.calls) == 2
 
 
 def test_recap_relay_proposes_dispatch_with_the_relayed_message(tmp_path, monkeypatch):
@@ -1295,9 +1649,9 @@ def test_recap_detail_falls_back_to_the_recaps_own_scoped_channel(
 def test_recap_stores_the_scoped_channel_for_a_named_channel_recap(
     tmp_path, monkeypatch
 ):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -1315,9 +1669,9 @@ def test_recap_stores_the_scoped_channel_for_a_named_channel_recap(
 def test_recap_stores_no_scoped_channel_for_an_all_channels_recap(
     tmp_path, monkeypatch
 ):
-    from swingbird import recap
+    from swingbird import recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -1421,9 +1775,9 @@ def test_recap_detail_without_a_recent_recap_replies_helpfully(tmp_path, monkeyp
 
 
 def test_recap_detail_from_intent_selects_detailed_prompt(tmp_path, monkeypatch):
-    from swingbird import recap
+    from swingbird import recap, recap_transcript
 
-    monkeypatch.setattr(recap, "fetch_messages_since", lambda *a, **k: [])
+    monkeypatch.setattr(recap_transcript, "fetch_messages_since", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     llm = FakeLLM(
         json_response=[
@@ -1836,6 +2190,7 @@ def test_confirm_reply_wait_times_out_without_a_reply(tmp_path, monkeypatch):
         store,
         dispatch_llm,
         audit,
+        ClosedItemStore(tmp_path / "closed_items.jsonl"),
         dm_id="dm-chan",
     )
 
@@ -2206,7 +2561,11 @@ write = true
 agents = ["Codex"]
 """)
 
-    bot = build_daemon(str(config_path), str(tmp_path / "audit.jsonl"))
+    bot = build_daemon(
+        str(config_path),
+        str(tmp_path / "audit.jsonl"),
+        str(tmp_path / "closed_items.jsonl"),
+    )
 
     assert isinstance(bot, Daemon)
     assert bot._config.owner.pubkey == OWNER_PUBKEY
@@ -2238,7 +2597,11 @@ agents = ["Codex"]
 """)
 
     with pytest.raises(InboundError, match="RELAY_KEY"):
-        build_daemon(str(config_path), str(tmp_path / "audit.jsonl"))
+        build_daemon(
+            str(config_path),
+            str(tmp_path / "audit.jsonl"),
+            str(tmp_path / "closed_items.jsonl"),
+        )
 
 
 class _FakeBuiltDaemon:
@@ -2253,9 +2616,10 @@ def test_main_uses_default_paths_and_runs_the_daemon(monkeypatch):
     built = _FakeBuiltDaemon()
     calls = {}
 
-    def fake_build_daemon(config_path, audit_log_path):
+    def fake_build_daemon(config_path, audit_log_path, closed_items_path):
         calls["config_path"] = config_path
         calls["audit_log_path"] = audit_log_path
+        calls["closed_items_path"] = closed_items_path
         return built
 
     monkeypatch.setattr(daemon, "build_daemon", fake_build_daemon)
@@ -2265,6 +2629,7 @@ def test_main_uses_default_paths_and_runs_the_daemon(monkeypatch):
 
     assert calls["config_path"] == DEFAULT_CONFIG_PATH
     assert calls["audit_log_path"] == DEFAULT_AUDIT_LOG_PATH
+    assert calls["closed_items_path"] == DEFAULT_CLOSED_ITEMS_PATH
     assert built.ran is True
 
 
@@ -2272,19 +2637,29 @@ def test_main_passes_through_custom_paths(monkeypatch):
     built = _FakeBuiltDaemon()
     calls = {}
 
-    def fake_build_daemon(config_path, audit_log_path):
+    def fake_build_daemon(config_path, audit_log_path, closed_items_path):
         calls["config_path"] = config_path
         calls["audit_log_path"] = audit_log_path
+        calls["closed_items_path"] = closed_items_path
         return built
 
     monkeypatch.setattr(daemon, "build_daemon", fake_build_daemon)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["swingbird", "--config", "other.toml", "--audit-log", "other.jsonl"],
+        [
+            "swingbird",
+            "--config",
+            "other.toml",
+            "--audit-log",
+            "other.jsonl",
+            "--closed-items",
+            "other-closed.jsonl",
+        ],
     )
 
     daemon.main()
 
     assert calls["config_path"] == "other.toml"
     assert calls["audit_log_path"] == "other.jsonl"
+    assert calls["closed_items_path"] == "other-closed.jsonl"
