@@ -28,7 +28,7 @@ swingbird: Confirmed and relayed: buzz://message?channel=...&id=...
 swingbird: Fixed the login bug -- turned out to be a stale session cookie.
 
 you:       for backend F4, couldn't we just cache that instead?
-swingbird: About to relay to backend (for Sonnet): "couldn't we just cache that instead?"
+swingbird: About to relay to backend (for Sonnet): 'couldn't we just cache that instead?'
            Confirm to send, or cancel.
 ```
 
