@@ -3,6 +3,7 @@ import pytest
 
 from swingbird import voice_wake
 from swingbird.config import VoiceMicConfig
+from swingbird.voice_audio import MicStreamError
 from swingbird.voice_wake import WakeWordError, listen_for_wake_word, load_model
 
 
@@ -18,19 +19,8 @@ class FakeModel:
         return self.scores.pop(0)
 
 
-class FakeStdout:
-    def __init__(self, chunks):
-        self._chunks = list(chunks)
-
-    def read(self, n):
-        if not self._chunks:
-            return b""
-        return self._chunks.pop(0)
-
-
-class FakeRecordProcess:
-    def __init__(self, chunks):
-        self.stdout = FakeStdout(chunks)
+class FakeProcess:
+    def __init__(self):
         self.terminated = False
 
     def terminate(self):
@@ -65,63 +55,32 @@ def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
     ]
     monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
 
-    frame_bytes = np.zeros(voice_wake.FRAME_SAMPLES, dtype=np.int16).tobytes()
-    fake_process = FakeRecordProcess([frame_bytes, frame_bytes])
-    popen_calls = []
+    fake_process = FakeProcess()
+    mic_calls = []
     monkeypatch.setattr(
-        voice_wake.subprocess,
-        "Popen",
-        lambda args, stdout=None: popen_calls.append(args) or fake_process,
+        voice_wake,
+        "open_mic_stream",
+        lambda mic: mic_calls.append(mic) or fake_process,
     )
+    frame = np.zeros(1280, dtype=np.int16)
+    frames = iter([frame, frame])
+    monkeypatch.setattr(voice_wake, "read_frame", lambda process: next(frames))
 
-    listen_for_wake_word("hey_jarvis", VoiceMicConfig(type="onboard"))
+    mic = VoiceMicConfig(type="usb")
+    listen_for_wake_word("hey_jarvis", mic)
 
-    assert popen_calls == [
-        [
-            "arecord",
-            "-D",
-            "default",
-            "-r",
-            "16000",
-            "-f",
-            "S16_LE",
-            "-t",
-            "raw",
-            "-c",
-            "1",
-            "-",
-        ]
-    ]
+    assert mic_calls == [mic]
     assert fake_process.terminated
 
 
-def test_listen_for_wake_word_usb_mic_targets_usb_device(monkeypatch):
-    fake_model = FakeModel([])
-    fake_model.scores = [{"hey_jarvis_v0.1": 0.9}]
-    monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
-
-    frame_bytes = np.zeros(voice_wake.FRAME_SAMPLES, dtype=np.int16).tobytes()
-    fake_process = FakeRecordProcess([frame_bytes])
-    popen_calls = []
-    monkeypatch.setattr(
-        voice_wake.subprocess,
-        "Popen",
-        lambda args, stdout=None: popen_calls.append(args) or fake_process,
-    )
-
-    listen_for_wake_word("hey_jarvis", VoiceMicConfig(type="usb"))
-
-    assert popen_calls[0][popen_calls[0].index("-D") + 1] == "usb"
-
-
-def test_listen_for_wake_word_raises_when_arecord_not_found(monkeypatch):
+def test_listen_for_wake_word_raises_when_mic_stream_wont_open(monkeypatch):
     fake_model = FakeModel([])
     monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
 
-    def raise_not_found(args, stdout=None):
-        raise FileNotFoundError()
+    def raise_not_found(mic):
+        raise MicStreamError("arecord not found on PATH (install alsa-utils)")
 
-    monkeypatch.setattr(voice_wake.subprocess, "Popen", raise_not_found)
+    monkeypatch.setattr(voice_wake, "open_mic_stream", raise_not_found)
 
     with pytest.raises(WakeWordError, match="arecord not found on PATH"):
         listen_for_wake_word("hey_jarvis", VoiceMicConfig())
@@ -131,10 +90,13 @@ def test_listen_for_wake_word_raises_when_stream_ends_unexpectedly(monkeypatch):
     fake_model = FakeModel([])
     monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
 
-    fake_process = FakeRecordProcess([b"\x00\x01"])  # shorter than one frame
-    monkeypatch.setattr(
-        voice_wake.subprocess, "Popen", lambda args, stdout=None: fake_process
-    )
+    fake_process = FakeProcess()
+    monkeypatch.setattr(voice_wake, "open_mic_stream", lambda mic: fake_process)
+
+    def raise_ended(process):
+        raise MicStreamError("arecord stream ended unexpectedly")
+
+    monkeypatch.setattr(voice_wake, "read_frame", raise_ended)
 
     with pytest.raises(WakeWordError, match="arecord stream ended unexpectedly"):
         listen_for_wake_word("hey_jarvis", VoiceMicConfig())

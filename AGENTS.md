@@ -24,6 +24,12 @@ uv run python -m piper.download_voices --download-dir voice_models en_US-lessac-
 `voice_models/` is gitignored (large binaries); `voice_tts.py`'s smoke-test CLI reads from it by
 default (`uv run python -m swingbird.voice_tts "text to speak" --config swingbird.toml`).
 
+`voice_wake.py`'s openWakeWord pretrained models and `voice_stt.py`'s Silero VAD ship inside the
+`openwakeword` package itself -- no download step. `voice_stt.py`'s faster-whisper weights
+("small"/"small.en") aren't bundled and download from Hugging Face on first use
+(`uv run python -m swingbird.voice_stt --config swingbird.toml`), cached under the default HF
+cache dir after that -- needs network access once.
+
 ## Build / test / lint
 
 ```bash
@@ -116,6 +122,8 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `voice_render.py` | Spoken-safe rendering pass over a DM-formatted reply string, for voice mode (Voice Mode design doc §V.7). |
 | `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
 | `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
+| `voice_audio.py` | Shared `arecord` mic-capture plumbing (frame size, device mapping) used by both `voice_wake.py` and `voice_stt.py`, so the two don't duplicate (and drift on) the same audio format. |
+| `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
 
 ## Tests
 

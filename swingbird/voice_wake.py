@@ -18,41 +18,28 @@ module's job is just to make `[voice].wake_word` a real, working config
 knob against whichever pretrained models exist today, so pointing it at a
 custom model later is a one-line change once that model exists.
 
-Mic capture uses `arecord`, mirroring `voice_tts.py`'s choice of `aplay`
-for playback -- one less native audio dependency to get working on both
-WSL and the Orange Pi (§V.14), via the same ALSA/Pulse bridge story.
+Mic capture is `voice_audio.py`'s -- shared with `voice_stt.py` since both
+read the same `arecord` stream off the same device.
 """
 
 from __future__ import annotations
 
 import argparse
-import subprocess
 
-import numpy as np
 import openwakeword
 from openwakeword.model import Model
 
 from swingbird.config import VoiceMicConfig, load_config
-
-# openWakeWord's own frame size: predict() wants multiples of 80ms (1280
-# samples) at 16kHz mono -- see Model.predict's docstring.
-FRAME_SAMPLES = 1280
-SAMPLE_RATE = 16000
-BYTES_PER_SAMPLE = 2  # S16_LE
+from swingbird.voice_audio import (
+    call_translating_stream_error,
+    open_mic_stream,
+    read_frame,
+)
 
 # A single-frame threshold, no consecutive-frame patience -- keeping this
 # simple until step 3's live-room testing (§V.16) shows whether false
 # positives need the debounce/patience knobs `Model.predict` supports.
 DETECTION_THRESHOLD = 0.5
-
-# Mirrors voice_tts.py's `_ALSA_DEVICE_BY_OUTPUT_TYPE`: "onboard" is the
-# ALSA/Pulse default input (the WSL dev machine today, the Orange Pi's
-# onboard mic later); "usb" is the reSpeaker XVF3800 array, a placeholder
-# device name now so wiring in the real one later is a one-line change.
-_ALSA_DEVICE_BY_MIC_TYPE = {
-    "onboard": "default",
-    "usb": "usb",
-}
 
 
 class WakeWordError(Exception):
@@ -92,36 +79,12 @@ def listen_for_wake_word(wake_word: str, mic: VoiceMicConfig) -> None:
     constraint to design around before §V.16 step 5 exists.
     """
     model, score_key = load_model(wake_word)
-    device = _ALSA_DEVICE_BY_MIC_TYPE[mic.type]
-    chunk_bytes = FRAME_SAMPLES * BYTES_PER_SAMPLE
 
-    try:
-        record = subprocess.Popen(
-            [
-                "arecord",
-                "-D",
-                device,
-                "-r",
-                str(SAMPLE_RATE),
-                "-f",
-                "S16_LE",
-                "-t",
-                "raw",
-                "-c",
-                "1",
-                "-",
-            ],
-            stdout=subprocess.PIPE,
-        )
-    except FileNotFoundError as exc:
-        raise WakeWordError("arecord not found on PATH (install alsa-utils)") from exc
+    record = call_translating_stream_error(WakeWordError, open_mic_stream, mic)
 
     try:
         while True:
-            raw = record.stdout.read(chunk_bytes)
-            if len(raw) < chunk_bytes:
-                raise WakeWordError("arecord stream ended unexpectedly")
-            frame = np.frombuffer(raw, dtype=np.int16)
+            frame = call_translating_stream_error(WakeWordError, read_frame, record)
             if model.predict(frame)[score_key] >= DETECTION_THRESHOLD:
                 return
     finally:
