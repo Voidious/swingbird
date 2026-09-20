@@ -70,7 +70,9 @@ name = "swingbird"
 # once enabled = true. wake_word must currently name one of openWakeWord's
 # bundled pretrained phrases (e.g. "hey_jarvis" -- see voice_wake.py) --
 # "swingbird" is the intended eventual value once a custom model exists
-# (§V.13), not a working one yet.
+# (§V.13), not a working one yet. follow_up_window_seconds (default 60) is
+# how long swingbird keeps listening for a follow-up command after a reply
+# before requiring the wake word again.
 # [voice]
 # enabled = true
 # wake_word = "hey_jarvis"

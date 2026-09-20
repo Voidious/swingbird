@@ -59,10 +59,12 @@ When `config.voice.enabled`, `run()` also starts `_run_voice_loop` as a
 second background task alongside the main event subscription (Voice Mode
 design doc §V.16 step 5) -- a voice turn begins whenever the wake word
 fires, not as another event on the inbound subscription, so it can't be
-driven from inside the same `async for`. `_run_voice_turn` feeds the
+driven from inside the same `async for`. `_run_voice_exchange` feeds each
 transcript through `_process`, the exact same intent machinery a typed DM
 uses, via the same `thread_id`/`event_id` shape `_process` already takes
-for that reason (see `_process`'s own docstring).
+for that reason (see `_process`'s own docstring); `_run_voice_turn` can run
+several exchanges back-to-back within one wake word, per its own follow-up
+window (§V.11).
 """
 
 from __future__ import annotations
@@ -361,9 +363,9 @@ class Daemon:
         other background task started there.
 
         Deliberately `while True` with no exit condition of its own: a
-        voice turn's only natural end is the reply having been spoken, at
-        which point the daemon should immediately go back to listening for
-        the wake word, not stop.
+        voice turn's only natural end is its follow-up window (§V.11)
+        elapsing with nothing said, at which point the daemon should
+        immediately go back to listening for the wake word, not stop.
         """
         while True:
             await self._safe_run_voice_turn()
@@ -375,25 +377,47 @@ class Daemon:
             print(f"swingbird: voice turn failed: {exc}")
 
     async def _run_voice_turn(self) -> None:
-        """Wait for the wake word, capture and transcribe the utterance
-        that follows it, then route the transcript through the exact same
-        intent machinery a typed DM uses -- the first fully voice-driven
-        turn (§V.16 step 5). No footer or turn-to-turn threading polish
-        yet (§V.8) -- that's a later build-order step.
+        """Wait for the wake word, then run voice exchanges back-to-back
+        without requiring it again until `follow_up_window_seconds` passes
+        with nothing said (§V.11) -- at which point this turn ends and
+        `_run_voice_loop` calls back in here, requiring the wake word once
+        more. No footer or turn-to-turn threading polish yet (§V.8) --
+        that's a later build-order step.
 
-        Mirrors `_handle_event`'s to_thread structure for the same reason:
-        `listen_for_wake_word`, `record_and_transcribe`, `_process`, and
-        `speak` are all blocking calls (subprocess audio I/O or an LLM
-        call), so each runs off-thread to keep servicing the inbound
-        WebSocket's read/keepalive traffic while it's in flight.
+        `listen_for_wake_word` runs off-thread for the same reason
+        `_run_voice_exchange`'s blocking calls do -- see its docstring.
         """
         voice = self._config.voice
         await asyncio.to_thread(
             voice_wake.listen_for_wake_word, voice.wake_word, voice.mic
         )
+        # The first exchange after the wake word uses record_and_transcribe's
+        # own default wait (matching pre-§V.11 behavior exactly); only
+        # later ones in this same turn use the longer follow-up window.
         transcript = await asyncio.to_thread(
             voice_stt.record_and_transcribe, voice.mic, voice.stt
         )
+        while transcript is not None:
+            await self._run_voice_exchange(transcript)
+            transcript = await asyncio.to_thread(
+                voice_stt.record_and_transcribe,
+                voice.mic,
+                voice.stt,
+                voice.follow_up_window_seconds,
+            )
+
+    async def _run_voice_exchange(self, transcript: str) -> None:
+        """Route one already-captured `transcript` through the exact same
+        intent machinery a typed DM uses -- the first fully voice-driven
+        exchange (§V.16 step 5), and every exchange after it within the
+        same wake word's follow-up window (§V.11).
+
+        Mirrors `_handle_event`'s to_thread structure for the same reason:
+        `_process` and `speak` are both blocking calls (an LLM call, or
+        subprocess audio I/O), so each runs off-thread to keep servicing
+        the inbound WebSocket's read/keepalive traffic while it's in flight.
+        """
+        voice = self._config.voice
         # §V.3: voice shares the DM's thread id, every turn posts its own
         # DM first -- so the transcript is on the record, and `_process`
         # has an event id to anchor replies/reply-waits to, before routing.
@@ -414,9 +438,9 @@ class Daemon:
     def _start_pending_watch(self) -> None:
         """Consume `_pending_watch` (set by `_confirm`, running off-thread
         inside `_process`) and register the reply-wait it describes --
-        shared by `_handle_event` and `_run_voice_turn`, the two callers
-        that call `_process` and then need to hand any resulting watch
-        request back to the main thread (see `_pending_watch`'s own
+        shared by `_handle_event` and `_run_voice_exchange`, the two
+        callers that call `_process` and then need to hand any resulting
+        watch request back to the main thread (see `_pending_watch`'s own
         docstring for why it can't be created off-thread directly)."""
         if self._pending_watch is not None:
             watch, self._pending_watch = self._pending_watch, None
@@ -522,13 +546,13 @@ class Daemon:
         event dict -- the pubkey/channel checks that decide whether
         something *is* an owner command already happened one level up, in
         `_handle_event`, and nothing below this point needs any other field
-        off the event. This is what lets `_run_voice_turn` (see the Voice
-        Mode design doc §V.3/§V.4, §V.16 step 5) feed a transcript through
-        the exact same recap/dispatch/confirm/safety machinery as a text
-        DM, without a real inbound Buzz event to hang it off of -- it just
-        needs a thread id (the shared DM channel, for voice) and an event
-        id to anchor replies/reply-waits to (the DM `_run_voice_turn` posts
-        for that turn, for voice).
+        off the event. This is what lets `_run_voice_exchange` (see the
+        Voice Mode design doc §V.3/§V.4, §V.16 step 5) feed a transcript
+        through the exact same recap/dispatch/confirm/safety machinery as a
+        text DM, without a real inbound Buzz event to hang it off of -- it
+        just needs a thread id (the shared DM channel, for voice) and an
+        event id to anchor replies/reply-waits to (the DM
+        `_run_voice_exchange` posts for that exchange, for voice).
         """
         try:
             pending = self._disambiguation.get(thread_id)

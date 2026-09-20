@@ -100,21 +100,61 @@ def test_record_utterance_stops_after_silence_follows_speech(monkeypatch):
     assert fake_process.terminated
 
 
-def test_record_utterance_stops_at_max_seconds_if_never_silent(monkeypatch):
+def _setup_record_utterance(monkeypatch):
+    """Stub a mic stream good for up to 10,000 frames and a `VAD` whose
+    scores the caller fills in -- shared setup for every `record_utterance`
+    test below that isn't exercising the exact short frame sequence
+    `test_record_utterance_stops_after_silence_follows_speech` hand-builds.
+    """
     fake_process = FakeProcess()
     monkeypatch.setattr(voice_stt, "open_mic_stream", lambda mic: fake_process)
     frames = iter([_frame()] * 10_000)
     monkeypatch.setattr(voice_stt, "read_frame", lambda process: next(frames))
-
     fake_vad = FakeVAD()
+    monkeypatch.setattr(voice_stt, "VAD", lambda: fake_vad)
+    return fake_process, fake_vad
+
+
+def test_record_utterance_stops_at_max_seconds_if_never_silent(monkeypatch):
+    fake_process, fake_vad = _setup_record_utterance(monkeypatch)
     max_frames = int(voice_stt.MAX_UTTERANCE_SECONDS * 16000 / FRAME_SAMPLES)
     fake_vad.scores = [0.9] * max_frames
-    monkeypatch.setattr(voice_stt, "VAD", lambda: fake_vad)
 
     audio = record_utterance(VoiceMicConfig())
 
     assert len(audio) == FRAME_SAMPLES * max_frames
     assert fake_process.terminated
+
+
+def test_record_utterance_returns_none_if_speech_never_starts_within_wait(
+    monkeypatch,
+):
+    fake_process, fake_vad = _setup_record_utterance(monkeypatch)
+    wait_frames = int(1.0 * 16000 / FRAME_SAMPLES)
+    fake_vad.scores = [0.0] * wait_frames
+
+    audio = record_utterance(VoiceMicConfig(), max_wait_seconds=1.0)
+
+    assert audio is None
+    assert fake_process.terminated
+
+
+def test_record_utterance_ignores_max_wait_once_speech_has_started(monkeypatch):
+    _, fake_vad = _setup_record_utterance(monkeypatch)
+    wait_frames = int(1.0 * 16000 / FRAME_SAMPLES)
+    # Speech starts on the very last frame the wait window allows, then
+    # stops -- shouldn't be treated as a timeout just because it cut it
+    # close.
+    fake_vad.scores = (
+        [0.0] * (wait_frames - 1) + [0.9] + [0.0] * voice_stt.SILENCE_FRAMES_TO_STOP
+    )
+
+    audio = record_utterance(VoiceMicConfig(), max_wait_seconds=1.0)
+
+    assert audio is not None
+    assert len(audio) == FRAME_SAMPLES * (
+        wait_frames + voice_stt.SILENCE_FRAMES_TO_STOP
+    )
 
 
 def test_record_utterance_raises_when_mic_stream_wont_open(monkeypatch):
@@ -150,7 +190,10 @@ def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch)
     monkeypatch.setattr(
         voice_stt,
         "record_utterance",
-        lambda mic: calls.append(("record", mic)) or np.zeros(1, dtype=np.int16),
+        lambda mic, max_wait_seconds: (
+            calls.append(("record", mic, max_wait_seconds))
+            or np.zeros(1, dtype=np.int16)
+        ),
     )
     monkeypatch.setattr(
         voice_stt,
@@ -160,11 +203,30 @@ def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch)
 
     mic = VoiceMicConfig()
     stt = VoiceSTTConfig(model="small")
-    result = record_and_transcribe(mic, stt)
+    result = record_and_transcribe(mic, stt, max_wait_seconds=5.0)
 
     assert result == "hi"
     assert calls[0] == ("load", stt)
-    assert calls[1][0] == "record"
-    assert calls[1][1] is mic
+    assert calls[1] == ("record", mic, 5.0)
     assert calls[2][0] == "transcribe"
     assert calls[2][1] == "model"
+
+
+def test_record_and_transcribe_returns_none_without_transcribing_if_no_speech(
+    monkeypatch,
+):
+    monkeypatch.setattr(voice_stt, "load_model", lambda stt: "model")
+    monkeypatch.setattr(
+        voice_stt, "record_utterance", lambda mic, max_wait_seconds: None
+    )
+    transcribe_calls = []
+    monkeypatch.setattr(
+        voice_stt,
+        "transcribe",
+        lambda model, audio: transcribe_calls.append((model, audio)) or "hi",
+    )
+
+    result = record_and_transcribe(VoiceMicConfig(), VoiceSTTConfig(model="small"))
+
+    assert result is None
+    assert transcribe_calls == []

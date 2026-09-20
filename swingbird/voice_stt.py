@@ -60,10 +60,25 @@ def load_model(stt: VoiceSTTConfig) -> WhisperModel:
     return WhisperModel(stt.model, device="cpu", compute_type=COMPUTE_TYPE)
 
 
-def record_utterance(mic: VoiceMicConfig) -> np.ndarray:
+def record_utterance(
+    mic: VoiceMicConfig, max_wait_seconds: float = MAX_UTTERANCE_SECONDS
+) -> np.ndarray | None:
     """Record one utterance from `mic`, via `voice_audio`'s `arecord`
-    stream, stopping at the first silence that follows detected speech
-    (or `MAX_UTTERANCE_SECONDS`, whichever comes first).
+    stream, stopping at the first silence that follows detected speech (or
+    `MAX_UTTERANCE_SECONDS` of total speech, whichever comes first).
+
+    `max_wait_seconds` only bounds how long this waits for speech to
+    *start* -- once it has, the utterance always runs to
+    `SILENCE_FRAMES_TO_STOP`/`MAX_UTTERANCE_SECONDS` regardless of
+    `max_wait_seconds`. Defaulting it to `MAX_UTTERANCE_SECONDS` matches
+    this function's original (pre-§V.11) single-timer behavior exactly;
+    `daemon.py`'s follow-up-window listen (§V.11, no wake word required)
+    passes a longer value since the user might pause well past 15s before
+    speaking again. Returns `None`, not a silent/empty array, if
+    `max_wait_seconds` elapses with no speech ever detected -- lets a
+    follow-up turn's caller tell "gave up waiting" apart from "captured a
+    real (if quiet) utterance," which it needs to fall back to requiring
+    the wake word again.
     """
     record = call_translating_stream_error(STTError, open_mic_stream, mic)
 
@@ -71,10 +86,12 @@ def record_utterance(mic: VoiceMicConfig) -> np.ndarray:
     frames: list[np.ndarray] = []
     speech_started = False
     silent_frame_count = 0
-    max_frames = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
+    speech_frame_count = 0
+    wait_frames = int(max_wait_seconds * SAMPLE_RATE / FRAME_SAMPLES)
+    max_speech_frames = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
 
     try:
-        for _ in range(max_frames):
+        while True:
             frame = call_translating_stream_error(STTError, read_frame, record)
             frames.append(frame)
             if vad.predict(frame) >= VAD_SPEECH_THRESHOLD:
@@ -84,6 +101,13 @@ def record_utterance(mic: VoiceMicConfig) -> np.ndarray:
                 silent_frame_count += 1
                 if silent_frame_count >= SILENCE_FRAMES_TO_STOP:
                     break
+
+            if speech_started:
+                speech_frame_count += 1
+                if speech_frame_count >= max_speech_frames:
+                    break
+            elif len(frames) >= wait_frames:
+                return None
     finally:
         record.terminate()
 
@@ -97,9 +121,19 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
     return " ".join(segment.text.strip() for segment in segments).strip()
 
 
-def record_and_transcribe(mic: VoiceMicConfig, stt: VoiceSTTConfig) -> str:
+def record_and_transcribe(
+    mic: VoiceMicConfig,
+    stt: VoiceSTTConfig,
+    max_wait_seconds: float = MAX_UTTERANCE_SECONDS,
+) -> str | None:
+    """Record one utterance and transcribe it, or return `None` (skipping
+    transcription) if `record_utterance` gave up waiting for speech to
+    start -- see its own docstring for `max_wait_seconds`.
+    """
     model = load_model(stt)
-    audio = record_utterance(mic)
+    audio = record_utterance(mic, max_wait_seconds)
+    if audio is None:
+        return None
     return transcribe(model, audio)
 
 

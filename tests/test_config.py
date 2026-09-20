@@ -688,6 +688,7 @@ def test_voice_defaults_to_disabled(tmp_path):
     assert config.voice.output.type == "onboard"
     assert config.voice.stt.model == "small"
     assert config.voice.tts is None
+    assert config.voice.follow_up_window_seconds == 60
 
 
 def test_voice_section_not_a_table(tmp_path):
@@ -790,5 +791,22 @@ def test_voice_tts_voice_rejects_invalid_values(tmp_path, value):
     text = VALID + f"\n[voice.tts]\nvoice = {value}\n"
     with pytest.raises(
         ConfigError, match=r"\[voice.tts\].voice must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_follow_up_window_seconds_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nfollow_up_window_seconds = 30\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.follow_up_window_seconds == 30
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"60"'])
+def test_voice_follow_up_window_seconds_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nfollow_up_window_seconds = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].follow_up_window_seconds must be a positive integer",
     ):
         load_config(write(tmp_path, text))

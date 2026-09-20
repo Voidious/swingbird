@@ -2685,10 +2685,16 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         lambda wake_word, mic: wake_calls.append((wake_word, mic)),
     )
     stt_calls = []
+    transcripts = iter(["recap", None])
+
+    def fake_record_and_transcribe(
+        mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS
+    ):
+        stt_calls.append((mic, stt, max_wait_seconds))
+        return next(transcripts)
+
     monkeypatch.setattr(
-        daemon.voice_stt,
-        "record_and_transcribe",
-        lambda mic, stt: stt_calls.append((mic, stt)) or "recap",
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     speak_calls = []
     monkeypatch.setattr(
@@ -2710,7 +2716,18 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     asyncio.run(bot._run_voice_turn())
 
     assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
-    assert stt_calls == [(voice_config.voice.mic, voice_config.voice.stt)]
+    assert stt_calls == [
+        (
+            voice_config.voice.mic,
+            voice_config.voice.stt,
+            daemon.voice_stt.MAX_UTTERANCE_SECONDS,
+        ),
+        (
+            voice_config.voice.mic,
+            voice_config.voice.stt,
+            voice_config.voice.follow_up_window_seconds,
+        ),
+    ]
     expected_reply = (
         "That's outside what I handle -- ask me for a recap, or to dispatch "
         "an instruction to a project channel."
@@ -2731,11 +2748,16 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     monkeypatch.setattr(daemon.voice_tts, "speak", lambda text, tts, output: None)
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
     _sent(monkeypatch)
-    transcripts = iter(["dispatch it", "confirm"])
+    # A `None` after each real transcript ends that turn's follow-up loop
+    # immediately, so each `_run_voice_turn()` call below still does
+    # exactly one wake word + one exchange, matching this test's intent.
+    transcripts = iter(["dispatch it", None, "confirm", None])
     monkeypatch.setattr(
         daemon.voice_stt,
         "record_and_transcribe",
-        lambda mic, stt: next(transcripts),
+        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: next(
+            transcripts
+        ),
     )
     dispatch_llm = FakeLLM(
         json_response={
@@ -2760,6 +2782,45 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     # left pending afterwards, and the watch itself should be live.
     assert bot._pending_watch is None
     assert len(bot._reply_watches) == 1
+
+
+def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_times_out(
+    tmp_path, monkeypatch
+):
+    wake_calls = []
+    monkeypatch.setattr(
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic: wake_calls.append((wake_word, mic)),
+    )
+    monkeypatch.setattr(daemon.voice_tts, "speak", lambda text, tts, output: None)
+    _sent(monkeypatch)
+    max_waits = []
+    transcripts = iter(["recap", "recap", None])
+    monkeypatch.setattr(
+        daemon.voice_stt,
+        "record_and_transcribe",
+        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: (
+            max_waits.append(max_wait_seconds) or next(transcripts)
+        ),
+    )
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, llm, config=voice_config)
+
+    asyncio.run(bot._run_voice_turn())
+
+    # Only one wake-word wait for two exchanges -- the second one is a
+    # follow-up (§V.11), not a fresh turn. The first record uses
+    # record_and_transcribe's own default wait; only the follow-up
+    # record(s) after it use the longer configured window, and the turn
+    # ends once that window comes back empty.
+    assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
+    assert max_waits == [
+        daemon.voice_stt.MAX_UTTERANCE_SECONDS,
+        voice_config.voice.follow_up_window_seconds,
+        voice_config.voice.follow_up_window_seconds,
+    ]
 
 
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(
