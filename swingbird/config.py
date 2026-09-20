@@ -154,6 +154,76 @@ class RecapConfig:
     closed_item_window_days: int = DEFAULT_CLOSED_ITEM_WINDOW_DAYS
 
 
+_SUPPORTED_MIC_TYPES = ("onboard", "usb")
+_SUPPORTED_OUTPUT_TYPES = ("onboard", "usb")
+_SUPPORTED_STT_MODELS = ("small", "small.en")
+
+DEFAULT_WAKE_WORD = "swingbird"
+DEFAULT_MIC_TYPE = "onboard"
+DEFAULT_OUTPUT_TYPE = "onboard"
+DEFAULT_STT_MODEL = "small"
+
+
+@dataclass(frozen=True)
+class VoiceMicConfig:
+    """Which physical mic input the wake-word/VAD/STT pipeline listens on
+    (Voice Mode design doc §V.6). Both types are permanent, tested code
+    paths, not a prototype-vs-production split: "onboard" is the WSL dev
+    machine's default input today and the Orange Pi's onboard mic later;
+    "usb" is the reSpeaker XVF3800 array, the final product's primary
+    input on real hardware.
+    """
+
+    type: str = DEFAULT_MIC_TYPE
+
+
+@dataclass(frozen=True)
+class VoiceOutputConfig:
+    """Which physical audio output Piper's speech plays on (§V.6),
+    mirroring `VoiceMicConfig`'s input-side split for the same reason.
+    """
+
+    type: str = DEFAULT_OUTPUT_TYPE
+
+
+@dataclass(frozen=True)
+class VoiceSTTConfig:
+    """faster-whisper model size (§V.5). Only "small"/"small.en" are
+    supported: "base" is a needless accuracy step down for no real gain,
+    and "medium" drops below real-time on the Orange Pi 5 Pro's CPU.
+    """
+
+    model: str = DEFAULT_STT_MODEL
+
+
+@dataclass(frozen=True)
+class VoiceTTSConfig:
+    """Piper voice model name, e.g. "en_US-lessac-medium" -- resolved by
+    `voice_tts.py` to `<voice>.onnx`/`<voice>.onnx.json` under its models
+    directory. No default: silently picking a voice would be worse than
+    failing loudly, since Voidious hasn't chosen one yet (§V.13's wake-word
+    equivalent question for the voice itself is still open).
+    """
+
+    voice: str
+
+
+@dataclass(frozen=True)
+class VoiceConfig:
+    """Voice-mode settings (§V.15). Disabled by default -- an existing
+    text-DM-only deployment doesn't need a [voice] section at all, and one
+    with the section present but `enabled = false` stays that way until
+    it's ready to run against real audio hardware (§V.14).
+    """
+
+    enabled: bool = False
+    wake_word: str = DEFAULT_WAKE_WORD
+    mic: VoiceMicConfig = VoiceMicConfig()
+    output: VoiceOutputConfig = VoiceOutputConfig()
+    stt: VoiceSTTConfig = VoiceSTTConfig()
+    tts: VoiceTTSConfig | None = None
+
+
 @dataclass(frozen=True)
 class Config:
     llm: LLMConfig
@@ -163,6 +233,7 @@ class Config:
     dispatch: DispatchConfig = DispatchConfig()
     identity: IdentityConfig = IdentityConfig()
     recap: RecapConfig = RecapConfig()
+    voice: VoiceConfig = VoiceConfig()
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -218,6 +289,7 @@ def load_config(path: str | Path) -> Config:
         dispatch=_parse_dispatch(raw),
         identity=_parse_identity(raw),
         recap=_parse_recap(raw),
+        voice=_parse_voice(raw),
     )
 
 
@@ -327,6 +399,77 @@ def _parse_recap(raw: dict) -> RecapConfig:
         max_detailed_items=max_detailed_items,
         closed_item_window_days=closed_item_window_days,
     )
+
+
+def _parse_voice(raw: dict) -> VoiceConfig:
+    section = raw.get("voice", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[voice] must be a table")
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("[voice].enabled must be a boolean")
+
+    wake_word = section.get("wake_word", DEFAULT_WAKE_WORD)
+    if not isinstance(wake_word, str) or not wake_word.strip():
+        raise ConfigError("[voice].wake_word must be a non-empty string")
+
+    return VoiceConfig(
+        enabled=enabled,
+        wake_word=wake_word,
+        mic=_parse_voice_mic(section.get("mic", {})),
+        output=_parse_voice_output(section.get("output", {})),
+        stt=_parse_voice_stt(section.get("stt", {})),
+        tts=_parse_voice_tts(section.get("tts"), enabled=enabled),
+    )
+
+
+def _parse_voice_mic(section: object) -> VoiceMicConfig:
+    if not isinstance(section, dict):
+        raise ConfigError("[voice.mic] must be a table")
+    mic_type = section.get("type", DEFAULT_MIC_TYPE)
+    if mic_type not in _SUPPORTED_MIC_TYPES:
+        raise ConfigError(
+            f"[voice.mic].type must be one of {_SUPPORTED_MIC_TYPES!r}, "
+            f"got {mic_type!r}"
+        )
+    return VoiceMicConfig(type=mic_type)
+
+
+def _parse_voice_output(section: object) -> VoiceOutputConfig:
+    if not isinstance(section, dict):
+        raise ConfigError("[voice.output] must be a table")
+    output_type = section.get("type", DEFAULT_OUTPUT_TYPE)
+    if output_type not in _SUPPORTED_OUTPUT_TYPES:
+        raise ConfigError(
+            f"[voice.output].type must be one of {_SUPPORTED_OUTPUT_TYPES!r}, "
+            f"got {output_type!r}"
+        )
+    return VoiceOutputConfig(type=output_type)
+
+
+def _parse_voice_stt(section: object) -> VoiceSTTConfig:
+    if not isinstance(section, dict):
+        raise ConfigError("[voice.stt] must be a table")
+    model = section.get("model", DEFAULT_STT_MODEL)
+    if model not in _SUPPORTED_STT_MODELS:
+        raise ConfigError(
+            f"[voice.stt].model must be one of {_SUPPORTED_STT_MODELS!r}, got {model!r}"
+        )
+    return VoiceSTTConfig(model=model)
+
+
+def _parse_voice_tts(section: object, *, enabled: bool) -> VoiceTTSConfig | None:
+    if section is None:
+        if enabled:
+            raise ConfigError("[voice.tts] is required when [voice].enabled is true")
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError("[voice.tts] must be a table")
+    voice_name = section.get("voice")
+    if not isinstance(voice_name, str) or not voice_name.strip():
+        raise ConfigError("[voice.tts].voice must be a non-empty string")
+    return VoiceTTSConfig(voice=voice_name)
 
 
 def _parse_identity(raw: dict) -> IdentityConfig:

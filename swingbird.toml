@@ -59,6 +59,31 @@ name = "swingbird"
 # max_detailed_items = 3
 # closed_item_window_days = 90
 
+# Optional, and disabled by default -- see the Voice Mode design doc.
+# wake_word defaults to "swingbird" if omitted. mic.type/output.type pick
+# which physical device the audio pipeline uses ("onboard" is the WSL dev
+# machine's default device today and the Orange Pi's onboard mic/jack
+# later; "usb" is the reSpeaker XVF3800 array, the final product's
+# primary). stt.model must be "small" or "small.en" (faster-whisper).
+# tts.voice names a Piper voice model, e.g. "en_US-lessac-medium",
+# downloaded into voice_models/ (see AGENTS.md) -- required once
+# enabled = true.
+# [voice]
+# enabled = true
+# wake_word = "swingbird"
+#
+# [voice.mic]
+# type = "onboard"
+#
+# [voice.output]
+# type = "onboard"
+#
+# [voice.stt]
+# model = "small"
+#
+# [voice.tts]
+# voice = "en_US-lessac-medium"
+
 # Define your own projects below -- each [[channels]] block is one project.
 # `name` is the project name you'll say in conversation ("recap swingbird",
 # "tell swingbird to..."), independent of the channel's own Buzz display

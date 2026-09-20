@@ -225,3 +225,7 @@ audit.jsonl
 
 # Swingbird closed-items log (local, append-only, grows unbounded)
 closed_items.jsonl
+
+# Downloaded Piper voice models (large binaries, fetched via
+# `python -m piper.download_voices`, see AGENTS.md)
+voice_models/

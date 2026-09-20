@@ -13,6 +13,17 @@ uv sync
 Requires Python 3.12+ (`.python-version` pins 3.13). `uv sync` also pulls the dev group
 (`crispen`, `pytest-cov`, `ruff`, `pre-commit`).
 
+Voice mode (optional, see the Voice Mode design doc and `config.py`'s `VoiceConfig`) needs a
+downloaded Piper voice model before `voice_tts.speak` can run -- the package (`piper-tts`) ships
+no models itself:
+
+```bash
+uv run python -m piper.download_voices --download-dir voice_models en_US-lessac-medium
+```
+
+`voice_models/` is gitignored (large binaries); `voice_tts.py`'s smoke-test CLI reads from it by
+default (`uv run python -m swingbird.voice_tts "text to speak" --config swingbird.toml`).
+
 ## Build / test / lint
 
 ```bash
@@ -102,6 +113,8 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `reply_summary.py` | LLM-summarizes a coding agent's reply to a relayed dispatch, for the owner's DM. |
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |
+| `voice_render.py` | Spoken-safe rendering pass over a DM-formatted reply string, for voice mode (Voice Mode design doc §V.7). |
+| `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
 
 ## Tests
 

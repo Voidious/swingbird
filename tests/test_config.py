@@ -677,3 +677,118 @@ def test_recap_closed_item_window_days_rejects_invalid_values(tmp_path, value):
         ConfigError, match="closed_item_window_days must be a positive integer"
     ):
         load_config(write(tmp_path, text))
+
+
+def test_voice_defaults_to_disabled(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.voice.enabled is False
+    assert config.voice.wake_word == "swingbird"
+    assert config.voice.mic.type == "onboard"
+    assert config.voice.output.type == "onboard"
+    assert config.voice.stt.model == "small"
+    assert config.voice.tts is None
+
+
+def test_voice_section_not_a_table(tmp_path):
+    with pytest.raises(ConfigError, match=r"\[voice\] must be a table"):
+        load_config(write(tmp_path, "voice = 5\n\n" + VALID))
+
+
+def test_voice_enabled_rejects_non_boolean(tmp_path):
+    text = VALID + '\n[voice]\nenabled = "yes"\n'
+    with pytest.raises(ConfigError, match=r"\[voice\].enabled must be a boolean"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_enabled_with_tts_configures_fully(tmp_path):
+    text = (
+        VALID
+        + '\n[voice]\nenabled = true\nwake_word = "birdie"\n'
+        + '\n[voice.mic]\ntype = "usb"\n'
+        + '\n[voice.output]\ntype = "usb"\n'
+        + '\n[voice.stt]\nmodel = "small.en"\n'
+        + '\n[voice.tts]\nvoice = "en_US-lessac-medium"\n'
+    )
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.enabled is True
+    assert config.voice.wake_word == "birdie"
+    assert config.voice.mic.type == "usb"
+    assert config.voice.output.type == "usb"
+    assert config.voice.stt.model == "small.en"
+    assert config.voice.tts.voice == "en_US-lessac-medium"
+
+
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_voice_wake_word_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nwake_word = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice\].wake_word must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_mic_section_not_a_table(tmp_path):
+    text = VALID + "\n[voice]\nmic = 5\n"
+    with pytest.raises(ConfigError, match=r"\[voice.mic\] must be a table"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_mic_rejects_unsupported_type(tmp_path):
+    text = VALID + '\n[voice.mic]\ntype = "bluetooth"\n'
+    with pytest.raises(ConfigError, match=r"\[voice.mic\].type must be one of"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_output_section_not_a_table(tmp_path):
+    text = VALID + "\n[voice]\noutput = 5\n"
+    with pytest.raises(ConfigError, match=r"\[voice.output\] must be a table"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_output_rejects_unsupported_type(tmp_path):
+    text = VALID + '\n[voice.output]\ntype = "bluetooth"\n'
+    with pytest.raises(ConfigError, match=r"\[voice.output\].type must be one of"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_stt_section_not_a_table(tmp_path):
+    text = VALID + "\n[voice]\nstt = 5\n"
+    with pytest.raises(ConfigError, match=r"\[voice.stt\] must be a table"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_stt_rejects_unsupported_model(tmp_path):
+    text = VALID + '\n[voice.stt]\nmodel = "medium"\n'
+    with pytest.raises(ConfigError, match=r"\[voice.stt\].model must be one of"):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_tts_required_when_enabled(tmp_path):
+    text = VALID + "\n[voice]\nenabled = true\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.tts\] is required when \[voice\].enabled is true"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_tts_not_required_when_disabled(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.voice.tts is None
+
+
+def test_voice_tts_not_a_table(tmp_path):
+    text = VALID + "\n[voice]\ntts = 5\n"
+    with pytest.raises(ConfigError, match=r"\[voice.tts\] must be a table"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_voice_tts_voice_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice.tts]\nvoice = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.tts\].voice must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))
