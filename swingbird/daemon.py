@@ -319,7 +319,9 @@ class Daemon:
         # idle; since a clean server-initiated close ends `events()`'s
         # `async for` silently (no exception), that stalled event loop was
         # otherwise indistinguishable from the daemon just exiting.
-        reply = await asyncio.to_thread(self._process, event, channel_id)
+        reply = await asyncio.to_thread(
+            self._process, event["content"], channel_id, event["id"]
+        )
         if self._pending_watch is not None:
             watch, self._pending_watch = self._pending_watch, None
             self._watch_for_reply(*watch)
@@ -422,27 +424,38 @@ class Daemon:
             reply_to=dm_reply_to,
         )
 
-    def _process(self, event: dict, thread_id: str) -> str:
+    def _process(self, content: str, thread_id: str, event_id: str) -> str:
+        """Route one piece of owner-authored text through the daemon's
+        existing intent machinery and return the reply text.
+
+        Deliberately takes plain `content`/`event_id` rather than a Buzz
+        event dict -- the pubkey/channel checks that decide whether
+        something *is* an owner command already happened one level up, in
+        `_handle_event`, and nothing below this point needs any other field
+        off the event. This is what lets a future voice entry point (see the
+        Voice Mode design doc §V.3/§V.4) feed a transcript through the exact
+        same recap/dispatch/confirm/safety machinery as a text DM, without a
+        real inbound Buzz event to hang it off of -- it just needs a thread
+        id (the shared DM channel, for voice) and an event id to anchor
+        replies/reply-waits to (the DM `_process_voice_turn` posts for that
+        turn, for voice).
+        """
         try:
             pending = self._disambiguation.get(thread_id)
             if pending is not None:
-                resumed = self._resume_disambiguation(
-                    pending, event["content"], thread_id
-                )
+                resumed = self._resume_disambiguation(pending, content, thread_id)
                 if resumed is not None:
                     return resumed
             pending_close = self._pending_close.get(thread_id)
             if pending_close is not None:
-                resumed = self._resume_pending_close(
-                    pending_close, event["content"], thread_id
-                )
+                resumed = self._resume_pending_close(pending_close, content, thread_id)
                 if resumed is not None:
                     return resumed
             open_recap_items = self._recap_store.get(thread_id)
             has_open_recap = open_recap_items is not None
             has_pending_dispatch = self._store.get(thread_id) is not None
             intent = self._router.route(
-                event["content"],
+                content,
                 thread_id=thread_id,
                 has_open_recap=has_open_recap,
                 has_pending_dispatch=has_pending_dispatch,
@@ -450,7 +463,7 @@ class Daemon:
                     (item.channel, item.label) for item in open_recap_items or ()
                 ),
             )
-            return self._act(intent, thread_id, event["id"])
+            return self._act(intent, thread_id, event_id)
         except _ACTIONABLE_ERRORS as exc:
             return f"Couldn't do that: {exc}"
 
