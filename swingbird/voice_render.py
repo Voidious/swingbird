@@ -25,6 +25,16 @@ call site rather than guessing at general text-cleanup rules:
   own `repr()`, so it's correct for whichever quote style/escaping `repr()`
   picked, not just the common case).
 - Buzz's `@name` mention syntax -- the `@` is dropped, leaving just the name.
+- `recap.py`/`recap_detail.py`/`recap_list.py`'s bold `"**channel -- label:**"`
+  paragraph-prefix Markdown (also plain `"**channel**:"`), and any inline
+  `` `code` `` span or `#`-heading -- unwrapped/stripped to plain text.
+  Piper has no Markdown awareness, so left in place these read aloud
+  literally ("asterisk asterisk channel dash dash label colon asterisk
+  asterisk"), observed live once real recap replies were actually spoken.
+  Deliberately not handling single-`*` italics or `-`/`*` bullet lists here
+  -- neither prompt in this codebase asks the LLM for them, and a bare `*`
+  is ambiguous with things like multiplication in a way `**`/`` ` ``/`#`
+  aren't.
 """
 
 from __future__ import annotations
@@ -53,12 +63,27 @@ _PROPOSAL_INSTRUCTION_RE = re.compile(
 # Buzz's own `@name` mention syntax -- spoken as just the name.
 _MENTION_RE = re.compile(r"@(\w[\w.-]*)")
 
+# recap.py/recap_detail.py/recap_list.py's own Markdown, see module
+# docstring. Bold is unwrapped before inline code so a bold-wrapped code
+# span (not currently produced by any prompt here, but not assumed against)
+# still loses both marker pairs rather than just the outer one.
+_MARKDOWN_HEADER_RE = re.compile(r"^#{1,6}[ \t]+", re.MULTILINE)
+_MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+
 
 def render_for_speech(text: str) -> str:
     """Return `text` (a DM-formatted reply) rendered for TTS."""
     text = _strip_message_links(text)
+    text = _strip_markdown_formatting(text)
     text = _unquote_proposal_instruction(text)
     return _MENTION_RE.sub(r"\1", text)
+
+
+def _strip_markdown_formatting(text: str) -> str:
+    text = _MARKDOWN_HEADER_RE.sub("", text)
+    text = _MARKDOWN_BOLD_RE.sub(r"\1", text)
+    return _MARKDOWN_INLINE_CODE_RE.sub(r"\1", text)
 
 
 def _strip_message_links(text: str) -> str:

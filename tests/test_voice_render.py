@@ -68,3 +68,28 @@ def test_strips_at_mentions_to_plain_names():
 def test_combines_link_stripping_and_mention_stripping():
     text = "Relayed to @backend -- buzz://message?channel=abc&id=123"
     assert render_for_speech(text) == "Relayed to backend --"
+
+
+def test_strips_bold_channel_prefix():
+    text = "**backend**: ship the release."
+    assert render_for_speech(text) == "backend: ship the release."
+
+
+def test_strips_bold_channel_and_label_prefix_with_colon_inside():
+    text = "**swingbird -- F4:** wire up the follow-up window."
+    assert render_for_speech(text) == "swingbird -- F4: wire up the follow-up window."
+
+
+def test_strips_inline_code_spans():
+    text = "Run `uv sync` before `uv run pytest`."
+    assert render_for_speech(text) == "Run uv sync before uv run pytest."
+
+
+def test_strips_markdown_headers():
+    text = "# Recap\n\n### backend\nAll clear."
+    assert render_for_speech(text) == "Recap\n\nbackend\nAll clear."
+
+
+def test_leaves_bare_asterisks_and_hashes_unchanged():
+    text = "5 * 3 = 15, and #4 is done."
+    assert render_for_speech(text) == text
