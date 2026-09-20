@@ -67,10 +67,13 @@ name = "swingbird"
 # primary). stt.model must be "small" or "small.en" (faster-whisper).
 # tts.voice names a Piper voice model, e.g. "en_US-lessac-medium",
 # downloaded into voice_models/ (see AGENTS.md) -- required once
-# enabled = true.
+# enabled = true. wake_word must currently name one of openWakeWord's
+# bundled pretrained phrases (e.g. "hey_jarvis" -- see voice_wake.py) --
+# "swingbird" is the intended eventual value once a custom model exists
+# (§V.13), not a working one yet.
 # [voice]
 # enabled = true
-# wake_word = "swingbird"
+# wake_word = "hey_jarvis"
 #
 # [voice.mic]
 # type = "onboard"

@@ -115,6 +115,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |
 | `voice_render.py` | Spoken-safe rendering pass over a DM-formatted reply string, for voice mode (Voice Mode design doc §V.7). |
 | `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
+| `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
 
 ## Tests
 

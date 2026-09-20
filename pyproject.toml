@@ -7,6 +7,7 @@ dependencies = [
     "bech32>=1.2.0",
     "coincurve>=21.0.0",
     "openai>=3.6.0",
+    "openwakeword>=0.4.0",
     "piper-tts>=1.8.0",
     "websockets>=17.1",
 ]
