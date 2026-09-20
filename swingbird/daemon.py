@@ -54,17 +54,27 @@ worth watching up front (the thread's true root for a grounded dispatch,
 the relayed event's own id for a fresh top-level one), and
 `_reply_target_ids` checks every `e`-tag id on an inbound event against
 it, so either shape of reply is caught -- see both for why.
+
+When `config.voice.enabled`, `run()` also starts `_run_voice_loop` as a
+second background task alongside the main event subscription (Voice Mode
+design doc §V.16 step 5) -- a voice turn begins whenever the wake word
+fires, not as another event on the inbound subscription, so it can't be
+driven from inside the same `async for`. `_run_voice_turn` feeds the
+transcript through `_process`, the exact same intent machinery a typed DM
+uses, via the same `thread_id`/`event_id` shape `_process` already takes
+for that reason (see `_process`'s own docstring).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import time
 from dataclasses import replace
 
-from swingbird import outbound
+from swingbird import outbound, voice_stt, voice_tts, voice_wake
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
 from swingbird.closed_items import ClosedItemStore
@@ -106,6 +116,7 @@ from swingbird.recap_list import render_items
 from swingbird.recap_relay import relay_with_context
 from swingbird.reply_summary import summarize_reply
 from swingbird.router import Intent, IntentRouter, RouterError
+from swingbird.voice_render import render_for_speech
 
 DEFAULT_CONFIG_PATH = "swingbird.toml"
 DEFAULT_AUDIT_LOG_PATH = "audit.jsonl"
@@ -229,11 +240,25 @@ class Daemon:
         await self._inbound.subscribe(channel_ids, since=since)
         self._set_presence("online")
         print("swingbird: connected and listening")
+        # Runs alongside the main event loop, same rationale as the
+        # reply-wait background task (see module docstring): a voice turn
+        # arrives on its own schedule (whenever the wake word fires), not as
+        # another event on this subscription, so it can't be driven from
+        # inside `async for event in self._inbound.events()`.
+        voice_task = (
+            asyncio.create_task(self._run_voice_loop())
+            if self._config.voice.enabled
+            else None
+        )
         try:
             async for event in self._inbound.events():
                 await self._safe_handle(event)
         finally:
             self._set_presence("offline")
+            if voice_task is not None:
+                voice_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await voice_task
 
     def _set_presence(self, status: str) -> None:
         # Best-effort: a presence hiccup is cosmetic (it only drives the
@@ -322,15 +347,80 @@ class Daemon:
         reply = await asyncio.to_thread(
             self._process, event["content"], channel_id, event["id"]
         )
-        if self._pending_watch is not None:
-            watch, self._pending_watch = self._pending_watch, None
-            self._watch_for_reply(*watch)
+        self._start_pending_watch()
         try:
             await asyncio.to_thread(
                 outbound.send_message, channel_id, reply, reply_to=event["id"]
             )
         except outbound.RelayError as exc:
             print(f"swingbird: failed to send reply to {event['id']}: {exc}")
+
+    async def _run_voice_loop(self) -> None:
+        """Run voice turns back-to-back for as long as the daemon is up
+        (§V.16 step 5) -- cancelled by `run()` on shutdown, same as any
+        other background task started there.
+
+        Deliberately `while True` with no exit condition of its own: a
+        voice turn's only natural end is the reply having been spoken, at
+        which point the daemon should immediately go back to listening for
+        the wake word, not stop.
+        """
+        while True:
+            await self._safe_run_voice_turn()
+
+    async def _safe_run_voice_turn(self) -> None:
+        try:
+            await self._run_voice_turn()
+        except Exception as exc:  # noqa: BLE001 - last-resort net, see module docstring
+            print(f"swingbird: voice turn failed: {exc}")
+
+    async def _run_voice_turn(self) -> None:
+        """Wait for the wake word, capture and transcribe the utterance
+        that follows it, then route the transcript through the exact same
+        intent machinery a typed DM uses -- the first fully voice-driven
+        turn (§V.16 step 5). No footer or turn-to-turn threading polish
+        yet (§V.8) -- that's a later build-order step.
+
+        Mirrors `_handle_event`'s to_thread structure for the same reason:
+        `listen_for_wake_word`, `record_and_transcribe`, `_process`, and
+        `speak` are all blocking calls (subprocess audio I/O or an LLM
+        call), so each runs off-thread to keep servicing the inbound
+        WebSocket's read/keepalive traffic while it's in flight.
+        """
+        voice = self._config.voice
+        await asyncio.to_thread(
+            voice_wake.listen_for_wake_word, voice.wake_word, voice.mic
+        )
+        transcript = await asyncio.to_thread(
+            voice_stt.record_and_transcribe, voice.mic, voice.stt
+        )
+        # §V.3: voice shares the DM's thread id, every turn posts its own
+        # DM first -- so the transcript is on the record, and `_process`
+        # has an event id to anchor replies/reply-waits to, before routing.
+        event_id = await asyncio.to_thread(
+            outbound.send_message, self._dm_id, transcript
+        )
+        reply = await asyncio.to_thread(
+            self._process, transcript, self._dm_id, event_id
+        )
+        self._start_pending_watch()
+        await asyncio.to_thread(
+            outbound.send_message, self._dm_id, reply, reply_to=event_id
+        )
+        await asyncio.to_thread(
+            voice_tts.speak, render_for_speech(reply), voice.tts, voice.output
+        )
+
+    def _start_pending_watch(self) -> None:
+        """Consume `_pending_watch` (set by `_confirm`, running off-thread
+        inside `_process`) and register the reply-wait it describes --
+        shared by `_handle_event` and `_run_voice_turn`, the two callers
+        that call `_process` and then need to hand any resulting watch
+        request back to the main thread (see `_pending_watch`'s own
+        docstring for why it can't be created off-thread directly)."""
+        if self._pending_watch is not None:
+            watch, self._pending_watch = self._pending_watch, None
+            self._watch_for_reply(*watch)
 
     def _resolve_reply_watch(self, event: dict) -> bool:
         """If `event` replies anywhere within a thread we're waiting on,
@@ -432,13 +522,13 @@ class Daemon:
         event dict -- the pubkey/channel checks that decide whether
         something *is* an owner command already happened one level up, in
         `_handle_event`, and nothing below this point needs any other field
-        off the event. This is what lets a future voice entry point (see the
-        Voice Mode design doc §V.3/§V.4) feed a transcript through the exact
-        same recap/dispatch/confirm/safety machinery as a text DM, without a
-        real inbound Buzz event to hang it off of -- it just needs a thread
-        id (the shared DM channel, for voice) and an event id to anchor
-        replies/reply-waits to (the DM `_process_voice_turn` posts for that
-        turn, for voice).
+        off the event. This is what lets `_run_voice_turn` (see the Voice
+        Mode design doc §V.3/§V.4, §V.16 step 5) feed a transcript through
+        the exact same recap/dispatch/confirm/safety machinery as a text
+        DM, without a real inbound Buzz event to hang it off of -- it just
+        needs a thread id (the shared DM channel, for voice) and an event
+        id to anchor replies/reply-waits to (the DM `_run_voice_turn` posts
+        for that turn, for voice).
         """
         try:
             pending = self._disambiguation.get(thread_id)

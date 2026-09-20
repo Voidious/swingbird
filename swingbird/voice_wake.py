@@ -3,9 +3,9 @@
 STT and wiring a transcript into `_process` are later build-order steps
 (§V.16 steps 4-5) -- this module is deliberately detection-only, proving
 the wake-word listener fires reliably before anything downstream of it
-exists. Nothing in the daemon's own event loop calls `listen_for_wake_word`
-yet; this is reachable today only via this module's own `__main__`
-smoke-test CLI.
+exists. `daemon.py`'s `_run_voice_turn` now calls `listen_for_wake_word`
+to start each turn (§V.16 step 5); this module's own `__main__` is still
+there as a standalone smoke-test CLI.
 
 Unlike Piper's TTS voices (`voice_tts.py`), openWakeWord's pretrained
 models ship inside the `openwakeword` package itself -- no download step,

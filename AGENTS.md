@@ -120,10 +120,10 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `audit.py` | Local append-only JSON-lines log of inbound events and proposal outcomes, independent of Buzz's own event log. |
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |
 | `voice_render.py` | Spoken-safe rendering pass over a DM-formatted reply string, for voice mode (Voice Mode design doc §V.7). |
-| `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
-| `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
+| `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Called by `daemon.py`'s `_run_voice_turn` to speak each turn's reply; also reachable standalone via its own `__main__` smoke-test CLI. |
+| `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Called by `daemon.py`'s `_run_voice_turn` to start each turn; also reachable standalone via its own `__main__` smoke-test CLI. |
 | `voice_audio.py` | Shared `arecord` mic-capture plumbing (frame size, device mapping) used by both `voice_wake.py` and `voice_stt.py`, so the two don't duplicate (and drift on) the same audio format. |
-| `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Not yet wired into the daemon's own event loop -- reachable today only via its own `__main__` smoke-test CLI. |
+| `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Called by `daemon.py`'s `_run_voice_turn` right after the wake word fires; also reachable standalone via its own `__main__` smoke-test CLI. |
 
 ## Tests
 

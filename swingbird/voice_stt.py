@@ -1,11 +1,11 @@
 """faster-whisper speech-to-text (Voice Mode design doc §V.5, §V.16 step 4).
 
-Wiring a transcript into `_process` is the next build-order step (§V.16
-step 5) -- this module is deliberately capture-and-transcribe only,
-proving STT accuracy against real speech in the room it'll live in before
-anything downstream of it exists. Nothing in the daemon's own event loop
-calls `record_and_transcribe` yet; reachable today only via this module's
-own `__main__` smoke-test CLI.
+This module is deliberately capture-and-transcribe only, proving STT
+accuracy against real speech in the room it'll live in before anything
+downstream of it exists. `daemon.py`'s `_run_voice_turn` now calls
+`record_and_transcribe` right after the wake word fires (§V.16 step 5);
+this module's own `__main__` is still there as a standalone smoke-test
+CLI.
 
 Endpointing (deciding when the user has stopped talking) reuses
 openWakeWord's own bundled Silero VAD (`openwakeword.vad.VAD`) rather than

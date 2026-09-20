@@ -8,6 +8,7 @@
 # file-scoped-but-refactor-specific marker, only skip-file (all refactors) or
 # skip=<name> (a single statement/function/entity).
 import asyncio
+import contextlib
 import dataclasses
 import json
 import sys
@@ -28,6 +29,8 @@ from swingbird.config import (
     LLMConfig,
     OwnerConfig,
     RelayConfig,
+    VoiceConfig,
+    VoiceTTSConfig,
 )
 from swingbird.daemon import (
     DEFAULT_AUDIT_LOG_PATH,
@@ -2663,3 +2666,175 @@ def test_main_passes_through_custom_paths(monkeypatch):
     assert calls["config_path"] == "other.toml"
     assert calls["audit_log_path"] == "other.jsonl"
     assert calls["closed_items_path"] == "other-closed.jsonl"
+
+
+def _voice_config(config=None, **voice_overrides):
+    voice_overrides.setdefault("enabled", True)
+    voice_overrides.setdefault("tts", VoiceTTSConfig(voice="en_US-lessac-medium"))
+    base = config or CONFIG
+    return dataclasses.replace(base, voice=VoiceConfig(**voice_overrides))
+
+
+def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
+    tmp_path, monkeypatch
+):
+    wake_calls = []
+    monkeypatch.setattr(
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic: wake_calls.append((wake_word, mic)),
+    )
+    stt_calls = []
+    monkeypatch.setattr(
+        daemon.voice_stt,
+        "record_and_transcribe",
+        lambda mic, stt: stt_calls.append((mic, stt)) or "recap",
+    )
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_tts,
+        "speak",
+        lambda text, tts, output: speak_calls.append((text, tts, output)),
+    )
+    sent = []
+    event_ids = iter(["transcript-evt", "reply-evt"])
+    monkeypatch.setattr(
+        outbound,
+        "send_message",
+        lambda *a, **k: sent.append((a, k)) or next(event_ids),
+    )
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, llm, config=voice_config)
+
+    asyncio.run(bot._run_voice_turn())
+
+    assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
+    assert stt_calls == [(voice_config.voice.mic, voice_config.voice.stt)]
+    expected_reply = (
+        "That's outside what I handle -- ask me for a recap, or to dispatch "
+        "an instruction to a project channel."
+    )
+    assert sent == [
+        (("dm-chan", "recap"), {}),
+        (("dm-chan", expected_reply), {"reply_to": "transcript-evt"}),
+    ]
+    assert speak_calls == [
+        (expected_reply, voice_config.voice.tts, voice_config.voice.output)
+    ]
+
+
+def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+    )
+    monkeypatch.setattr(daemon.voice_tts, "speak", lambda text, tts, output: None)
+    monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
+    _sent(monkeypatch)
+    transcripts = iter(["dispatch it", "confirm"])
+    monkeypatch.setattr(
+        daemon.voice_stt,
+        "record_and_transcribe",
+        lambda mic, stt: next(transcripts),
+    )
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        }
+    )
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, dispatch_llm, config=voice_config)
+
+    async def scenario():
+        await bot._run_voice_turn()
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._run_voice_turn()
+
+    asyncio.run(scenario())
+
+    # The reply-wait registration consumes `_pending_watch` synchronously
+    # inside `_run_voice_turn`, same as `_handle_event` -- nothing should be
+    # left pending afterwards, and the watch itself should be live.
+    assert bot._pending_watch is None
+    assert len(bot._reply_watches) == 1
+
+
+def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(
+    tmp_path, monkeypatch, capsys
+):
+    def _fail(wake_word, mic):
+        raise RuntimeError("mic gone")
+
+    monkeypatch.setattr(daemon.voice_wake, "listen_for_wake_word", _fail)
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+
+    asyncio.run(bot._safe_run_voice_turn())
+
+    out = capsys.readouterr().out
+    assert "voice turn failed" in out
+    assert "mic gone" in out
+
+
+def test_run_voice_loop_runs_turns_back_to_back_until_cancelled(tmp_path):
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+    calls = []
+
+    async def fake_safe_run_voice_turn():
+        calls.append(1)
+        await asyncio.sleep(0)
+
+    bot._safe_run_voice_turn = fake_safe_run_voice_turn
+
+    async def scenario():
+        task = asyncio.create_task(bot._run_voice_loop())
+        while len(calls) < 3:
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert len(calls) >= 3
+
+
+class _YieldingInbound(FakeInbound):
+    """Like `FakeInbound`, but cedes control to the event loop once before
+    replaying its events -- needed so a task `run()` creates alongside the
+    main `async for` (e.g. the voice loop) actually gets a turn to start
+    before an empty event list lets `run()` fall straight through to
+    `finally` and cancel it unstarted."""
+
+    async def events(self):
+        await asyncio.sleep(0)
+        async for event in super().events():
+            yield event
+
+
+def test_run_starts_and_cancels_the_voice_loop_when_voice_is_enabled(
+    tmp_path, monkeypatch
+):
+    sent = _setup_outbound_mocks(monkeypatch)
+    started = []
+    cancelled = []
+
+    async def fake_run_voice_loop(self):
+        started.append(1)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(1)
+            raise
+
+    monkeypatch.setattr(Daemon, "_run_voice_loop", fake_run_voice_loop)
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    bot = _daemon(tmp_path, llm, inbound=_YieldingInbound([]), config=_voice_config())
+
+    asyncio.run(bot.run())
+
+    assert started == [1]
+    assert cancelled == [1]
+    assert sent == []

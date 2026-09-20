@@ -3,9 +3,9 @@
 Wake word, VAD, and STT are later build-order steps (§V.16 steps 3-5) --
 this module is deliberately TTS-only, proving Piper's own output pipeline
 end to end on real audio hardware before anything upstream of it exists.
-Nothing in the daemon's own event loop calls `speak` yet (that's §V.16
-step 5); this is reachable today only via this module's own `__main__`
-smoke-test CLI.
+`daemon.py`'s `_run_voice_turn` calls `speak` to speak each turn's reply
+(§V.16 step 6); this module's own `__main__` is still there as a
+standalone smoke-test CLI.
 
 Piper synthesizes raw PCM directly, so there's no on-disk .wav step;
 `aplay` plays it. Subprocess rather than a Python audio library
