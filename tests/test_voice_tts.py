@@ -46,19 +46,7 @@ class FakePopen:
         pass
 
 
-def test_speak_raises_when_model_missing(tmp_path):
-    with pytest.raises(TTSError, match="Piper voice model not found"):
-        speak(
-            "hi",
-            VoiceTTSConfig(voice="missing-voice"),
-            VoiceOutputConfig(),
-            models_dir=tmp_path,
-        )
-
-
-def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypatch):
-    (tmp_path / "test-voice.onnx").write_bytes(b"")
-    fake_voice = FakeVoice([FakeChunk(b"abc"), FakeChunk(b"def")], sample_rate=22050)
+def _mock_piper_voice_and_popen(monkeypatch, fake_voice):
     load_calls = []
     monkeypatch.setattr(
         voice_tts.PiperVoice,
@@ -66,6 +54,55 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
         lambda path: load_calls.append(path) or fake_voice,
     )
     fake_popen = FakePopen(returncode=0)
+    return load_calls, fake_popen
+
+
+def test_speak_downloads_missing_model_then_loads_it(tmp_path, monkeypatch):
+    models_dir = tmp_path / "voice_models"
+    download_calls = []
+
+    def fake_download_voice(voice_name, download_dir):
+        download_calls.append((voice_name, download_dir))
+        (download_dir / f"{voice_name}.onnx").write_bytes(b"")
+        (download_dir / f"{voice_name}.onnx.json").write_bytes(b"{}")
+
+    monkeypatch.setattr(voice_tts, "download_voice", fake_download_voice)
+    fake_voice = FakeVoice([])
+    load_calls, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
+    monkeypatch.setattr(
+        voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
+    )
+
+    speak(
+        "hi",
+        VoiceTTSConfig(voice="missing-voice"),
+        VoiceOutputConfig(),
+        models_dir=models_dir,
+    )
+
+    assert download_calls == [("missing-voice", models_dir)]
+    assert load_calls == [str(models_dir / "missing-voice.onnx")]
+
+
+def test_speak_raises_when_model_download_fails(tmp_path, monkeypatch):
+    def fake_download_voice(voice_name, download_dir):
+        raise ValueError(f"Voice '{voice_name}' did not match pattern")
+
+    monkeypatch.setattr(voice_tts, "download_voice", fake_download_voice)
+
+    with pytest.raises(TTSError, match="couldn't download Piper voice"):
+        speak(
+            "missing-voice",
+            VoiceTTSConfig(voice="missing-voice"),
+            VoiceOutputConfig(),
+            models_dir=tmp_path / "voice_models",
+        )
+
+
+def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice([FakeChunk(b"abc"), FakeChunk(b"def")], sample_rate=22050)
+    load_calls, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
 
     def fake_ctor(args, stdin=None):
         fake_popen.args = args

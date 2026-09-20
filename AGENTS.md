@@ -14,8 +14,10 @@ Requires Python 3.12+ (`.python-version` pins 3.13). `uv sync` also pulls the de
 (`crispen`, `pytest-cov`, `ruff`, `pre-commit`).
 
 Voice mode (optional, see the Voice Mode design doc and `config.py`'s `VoiceConfig`) needs a
-downloaded Piper voice model before `voice_tts.speak` can run -- the package (`piper-tts`) ships
-no models itself:
+Piper voice model before `voice_tts.speak` can run -- the package (`piper-tts`) ships no models
+itself. `voice_tts.speak` fetches it into `voice_models/` on first use if it isn't there
+already, same as `voice_stt.py`'s faster-whisper weights below; to pre-fetch instead (e.g. for
+an offline/headless deploy), run it manually:
 
 ```bash
 uv run python -m piper.download_voices --download-dir voice_models en_US-lessac-medium

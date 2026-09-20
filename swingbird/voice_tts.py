@@ -24,6 +24,7 @@ import subprocess
 from pathlib import Path
 
 from piper import PiperVoice
+from piper.download_voices import download_voice
 
 from swingbird.config import VoiceOutputConfig, VoiceTTSConfig, load_config
 
@@ -47,13 +48,21 @@ class TTSError(Exception):
 
 
 def _voice_model_path(voice_name: str, models_dir: Path) -> Path:
+    """Return `models_dir`'s `.onnx` file for `voice_name`, fetching it (and
+    its sidecar `.onnx.json`) from Piper's own voice repository first if it
+    isn't already there -- same first-use-fetches-and-caches shape as
+    `voice_stt.py`'s faster-whisper weights, rather than requiring a manual
+    `piper.download_voices` run before the first real voice turn.
+    """
     path = models_dir / f"{voice_name}.onnx"
     if not path.is_file():
-        raise TTSError(
-            f"Piper voice model not found: {path} -- download it first, e.g. "
-            f"`uv run python -m piper.download_voices "
-            f"--download-dir {models_dir} {voice_name}`"
-        )
+        models_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            download_voice(voice_name, models_dir)
+        except (ValueError, OSError) as exc:
+            raise TTSError(
+                f"couldn't download Piper voice {voice_name!r}: {exc}"
+            ) from exc
     return path
 
 
