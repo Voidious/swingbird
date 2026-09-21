@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import time
 from pathlib import Path
 
 from piper import PiperVoice
@@ -47,7 +48,10 @@ _ALSA_DEVICE_BY_OUTPUT_TYPE = {
 # .2 or .3 seconds" (2026-09-21) after finding back-to-back items in a
 # detailed recap ran together with almost no pause. Split on the same
 # blank-line ("\n\n") paragraph boundary recap.py's own prompts already use
-# to separate items, so this needs no new text markup.
+# to separate items, so this needs no new text markup. A real wall-clock
+# `time.sleep` between separate `aplay` invocations now (see `speak`'s
+# docstring for why), not PCM silence appended inside one continuous
+# stream -- same audible gap either way.
 _PARAGRAPH_PAUSE_SECONDS = 0.25
 
 # aplay's own ALSA default buffer/period sizing underran audibly on a long
@@ -81,64 +85,11 @@ def _voice_model_path(voice_name: str, models_dir: Path) -> Path:
     return path
 
 
-def _silence_pcm(duration_seconds: float, sample_rate: int) -> bytes:
-    return b"\x00\x00" * int(sample_rate * duration_seconds)
-
-
-def speak(
-    text: str,
-    tts: VoiceTTSConfig,
-    output: VoiceOutputConfig,
-    models_dir: Path = DEFAULT_MODELS_DIR,
-) -> None:
-    """Synthesize `text` with Piper and play it on `output`'s device.
-
-    Blocking and synchronous on purpose -- nothing calls this from an
-    event loop yet (see module docstring), so there's no responsiveness
-    constraint to design around before §V.16 step 5 exists.
-
-    Synthesizes the whole of `text` into one in-memory PCM buffer before
-    starting `aplay`, rather than streaming Piper's chunks straight into
-    its stdin as they're produced. Live-tested against a real detailed
-    recap reply (2026-09-21): streaming synthesis fell behind real-time
-    partway through a long reply, and each `stdin.write` call blocked on
-    `aplay` draining a pipe synthesis wasn't refilling fast enough --
-    audible as speech breaking into progressively longer silent gaps
-    between shrinking blips, never finishing cleanly. Buffering first
-    fully decouples synthesis speed from playback timing, at the cost of
-    a longer delay before playback starts on a long reply.
-
-    Also passes explicit `--buffer-time`/`--period-time` to `aplay`.
-    Buffering the synthesis fixed the long-reply breakup above, but a
-    single long `recap_detail` elaboration (2026-09-21, same day, a
-    different reply than the one that motivated the buffering fix above)
-    still broke up audibly even fully buffered -- `aplay`'s own ALSA
-    default buffer/period sizing is tuned for short clips and leaves too
-    little slack against scheduling jitter over WSLg's ALSA-to-Pulse
-    bridge on a long continuous stream, so the *playback* side underruns
-    independently of anything the synthesis side is doing. A larger
-    buffer (500ms) and period (100ms) give the bridge more slack to
-    recover from a late wakeup without an audible gap.
-
-    `text` is split into paragraphs on blank lines (the same "\\n\\n"
-    boundary recap.py's own prompts use to separate items) and a short
-    `_PARAGRAPH_PAUSE_SECONDS` silence is inserted between them, so
-    consecutive recap items don't run together with no breathing room.
+def _play(audio: bytes, sample_rate: int, device: str) -> None:
+    """Play one already-synthesized PCM buffer through its own `aplay`
+    invocation -- see `speak`'s docstring for why `speak` calls this once
+    per paragraph rather than once for a whole reply.
     """
-    voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
-    device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
-    sample_rate = voice.config.sample_rate
-
-    paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
-    silence = _silence_pcm(_PARAGRAPH_PAUSE_SECONDS, sample_rate)
-    audio_parts = []
-    for index, paragraph in enumerate(paragraphs):
-        for chunk in voice.synthesize(paragraph):
-            audio_parts.append(chunk.audio_int16_bytes)
-        if index < len(paragraphs) - 1:
-            audio_parts.append(silence)
-    audio = b"".join(audio_parts)
-
     try:
         play = subprocess.Popen(
             [
@@ -169,6 +120,64 @@ def speak(
     play.wait()
     if play.returncode != 0:
         raise TTSError(f"aplay exited with code {play.returncode}")
+
+
+def speak(
+    text: str,
+    tts: VoiceTTSConfig,
+    output: VoiceOutputConfig,
+    models_dir: Path = DEFAULT_MODELS_DIR,
+) -> None:
+    """Synthesize `text` with Piper and play it on `output`'s device.
+
+    Blocking and synchronous on purpose -- nothing calls this from an
+    event loop yet (see module docstring), so there's no responsiveness
+    constraint to design around before §V.16 step 5 exists.
+
+    `text` is split into paragraphs on blank lines (the same "\\n\\n"
+    boundary recap.py's own prompts use to separate items), and each
+    paragraph is fully synthesized and played through its *own* `aplay`
+    invocation -- one continuous ALSA stream per paragraph, not one for
+    the whole reply -- with a `time.sleep(_PARAGRAPH_PAUSE_SECONDS)` gap
+    between them.
+
+    This module's history is three rounds of live-tested fixes against
+    the same symptom (2026-09-21), each of which helped without fully
+    curing it: (1) buffering a paragraph's whole synthesis before
+    starting `aplay`, instead of streaming Piper's chunks straight into
+    its stdin as they were produced, after a long reply broke up when
+    synthesis fell behind real-time and `stdin.write` blocked on a pipe
+    nothing was draining; (2) passing explicit `--buffer-time`/
+    `--period-time` to `aplay`, after a fully-buffered but single long
+    continuous stream still underran audibly, which pure buffering
+    doesn't fix since that's ALSA's own default sizing being too tight
+    for WSLg's ALSA-to-Pulse bridge; (3) waiting for the prior turn's
+    `arecord` to fully exit (`voice_audio.close_mic_stream`) before
+    opening any new device, after a mic-to-speaker handoff race showed up
+    in one repro's logs as a multi-second underrun right after an
+    "Aborted by signal Terminated" line. A 5-item reply still broke up
+    afterwards, now consistently *later* into the reply as items got
+    shorter/fewer (item 4 of 5, then item 3 of 5) rather than at any
+    particular content -- i.e. the failure tracks elapsed continuous
+    playback time on this bridge, not anything about a specific
+    paragraph. Splitting playback into one `aplay` per paragraph bounds
+    how long any single continuous stream has to survive to the length
+    of one item, using the pause between items (already wanted for
+    pacing) as a natural point to close and reopen the device instead of
+    holding it continuously for an entire multi-item reply.
+    """
+    voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
+    device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
+    sample_rate = voice.config.sample_rate
+
+    paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
+    for index, paragraph in enumerate(paragraphs):
+        audio = b"".join(
+            chunk.audio_int16_bytes for chunk in voice.synthesize(paragraph)
+        )
+        _play(audio, sample_rate, device)
+        if index < len(paragraphs) - 1:
+            time.sleep(_PARAGRAPH_PAUSE_SECONDS)
 
 
 def _main() -> None:  # pragma: no cover -- manual smoke test, see §V.16 step 2

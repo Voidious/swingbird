@@ -145,7 +145,9 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
     assert fake_popen.stdin.closed
 
 
-def test_speak_inserts_silence_pause_between_paragraphs(tmp_path, monkeypatch):
+def test_speak_plays_each_paragraph_through_its_own_aplay_with_a_sleep_between(
+    tmp_path, monkeypatch
+):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
     fake_voice = FakeVoice(
         chunks=None,
@@ -155,10 +157,17 @@ def test_speak_inserts_silence_pause_between_paragraphs(tmp_path, monkeypatch):
             "second item": [FakeChunk(b"bb")],
         },
     )
-    load_calls, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    fake_popens = [FakePopen(returncode=0), FakePopen(returncode=0)]
+    remaining_popens = list(fake_popens)
+    popen_calls = []
     monkeypatch.setattr(
-        voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
+        voice_tts.subprocess,
+        "Popen",
+        lambda args, stdin=None: (popen_calls.append(args), remaining_popens.pop(0))[1],
     )
+    sleep_calls = []
+    monkeypatch.setattr(voice_tts.time, "sleep", sleep_calls.append)
 
     speak(
         "first item\n\nsecond item",
@@ -167,10 +176,11 @@ def test_speak_inserts_silence_pause_between_paragraphs(tmp_path, monkeypatch):
         models_dir=tmp_path,
     )
 
-    assert load_calls == [str(tmp_path / "test-voice.onnx")]
     assert fake_voice.synthesize_calls == ["first item", "second item"]
-    silence = voice_tts._silence_pcm(voice_tts._PARAGRAPH_PAUSE_SECONDS, 4)
-    assert bytes(fake_popen.stdin.written) == b"aa" + silence + b"bb"
+    assert len(popen_calls) == 2
+    assert bytes(fake_popens[0].stdin.written) == b"aa"
+    assert bytes(fake_popens[1].stdin.written) == b"bb"
+    assert sleep_calls == [voice_tts._PARAGRAPH_PAUSE_SECONDS]
 
 
 def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
