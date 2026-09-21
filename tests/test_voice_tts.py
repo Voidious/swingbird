@@ -62,6 +62,14 @@ def _mock_piper_voice_and_popen(monkeypatch, fake_voice):
     return load_calls, fake_popen
 
 
+def test_split_sentences_splits_on_terminal_punctuation():
+    assert voice_tts._split_sentences("One. Two! Three?") == ["One.", "Two!", "Three?"]
+
+
+def test_split_sentences_returns_whole_text_with_no_terminal_punctuation():
+    assert voice_tts._split_sentences("no punctuation here") == ["no punctuation here"]
+
+
 def test_speak_downloads_missing_model_then_loads_it(tmp_path, monkeypatch):
     models_dir = tmp_path / "voice_models"
     download_calls = []
@@ -145,6 +153,19 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
     assert fake_popen.stdin.closed
 
 
+def _mock_aplay_and_sleep(monkeypatch, fake_popens):
+    remaining_popens = list(fake_popens)
+    popen_calls = []
+    monkeypatch.setattr(
+        voice_tts.subprocess,
+        "Popen",
+        lambda args, stdin=None: (popen_calls.append(args), remaining_popens.pop(0))[1],
+    )
+    sleep_calls = []
+    monkeypatch.setattr(voice_tts.time, "sleep", sleep_calls.append)
+    return popen_calls, sleep_calls
+
+
 def test_speak_plays_each_paragraph_through_its_own_aplay_with_a_sleep_between(
     tmp_path, monkeypatch
 ):
@@ -159,15 +180,7 @@ def test_speak_plays_each_paragraph_through_its_own_aplay_with_a_sleep_between(
     )
     monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
     fake_popens = [FakePopen(returncode=0), FakePopen(returncode=0)]
-    remaining_popens = list(fake_popens)
-    popen_calls = []
-    monkeypatch.setattr(
-        voice_tts.subprocess,
-        "Popen",
-        lambda args, stdin=None: (popen_calls.append(args), remaining_popens.pop(0))[1],
-    )
-    sleep_calls = []
-    monkeypatch.setattr(voice_tts.time, "sleep", sleep_calls.append)
+    popen_calls, sleep_calls = _mock_aplay_and_sleep(monkeypatch, fake_popens)
 
     speak(
         "first item\n\nsecond item",
@@ -181,6 +194,39 @@ def test_speak_plays_each_paragraph_through_its_own_aplay_with_a_sleep_between(
     assert bytes(fake_popens[0].stdin.written) == b"aa"
     assert bytes(fake_popens[1].stdin.written) == b"bb"
     assert sleep_calls == [voice_tts._PARAGRAPH_PAUSE_SECONDS]
+
+
+def test_speak_splits_a_long_paragraph_into_duration_capped_chunks(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice(
+        chunks=None,
+        sample_rate=1,
+        chunks_by_text={
+            "One.": [FakeChunk(b"aa")],
+            "Two.": [FakeChunk(b"bb")],
+            "Three.": [FakeChunk(b"cc")],
+        },
+    )
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    monkeypatch.setattr(voice_tts, "_MAX_CONTINUOUS_SECONDS", 1.0)
+    fake_popens = [FakePopen(returncode=0) for _ in range(3)]
+    popen_calls, sleep_calls = _mock_aplay_and_sleep(monkeypatch, fake_popens)
+
+    speak(
+        "One. Two. Three.",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+    )
+
+    assert fake_voice.synthesize_calls == ["One.", "Two.", "Three."]
+    assert len(popen_calls) == 3
+    assert bytes(fake_popens[0].stdin.written) == b"aa"
+    assert bytes(fake_popens[1].stdin.written) == b"bb"
+    assert bytes(fake_popens[2].stdin.written) == b"cc"
+    assert sleep_calls == []  # only between paragraphs, not chunks of one
 
 
 def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
@@ -202,10 +248,15 @@ def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
     assert bytes(fake_popen.stdin.written) == b"abc"
 
 
-def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):
+def _mock_piper_voice_with_model(tmp_path, monkeypatch):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
-    fake_voice = FakeVoice([])
+    fake_voice = FakeVoice([FakeChunk(b"x")])
     monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    return fake_voice
+
+
+def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):
+    _mock_piper_voice_with_model(tmp_path, monkeypatch)
     fake_popen = FakePopen(returncode=0)
     monkeypatch.setattr(
         voice_tts.subprocess,
@@ -221,13 +272,15 @@ def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):
     )
 
     assert fake_popen.args[fake_popen.args.index("-D") + 1] == "usb"
-    assert bytes(fake_popen.stdin.written) == b""
+    assert bytes(fake_popen.stdin.written) == b"x"
     assert fake_popen.stdin.closed
 
 
 def test_speak_raises_when_aplay_not_found(tmp_path, monkeypatch):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
-    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: FakeVoice([]))
+    monkeypatch.setattr(
+        voice_tts.PiperVoice, "load", lambda path: FakeVoice([FakeChunk(b"x")])
+    )
 
     def raise_not_found(args, stdin=None):
         raise FileNotFoundError()
@@ -244,9 +297,7 @@ def test_speak_raises_when_aplay_not_found(tmp_path, monkeypatch):
 
 
 def test_speak_raises_when_aplay_exits_nonzero(tmp_path, monkeypatch):
-    (tmp_path / "test-voice.onnx").write_bytes(b"")
-    fake_voice = FakeVoice([FakeChunk(b"x")])
-    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    _mock_piper_voice_with_model(tmp_path, monkeypatch)
     fake_popen = FakePopen(returncode=1)
     monkeypatch.setattr(
         voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen

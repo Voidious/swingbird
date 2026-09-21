@@ -20,6 +20,7 @@ environment without this module knowing which is which.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -60,6 +61,25 @@ _PARAGRAPH_PAUSE_SECONDS = 0.25
 # `--period-time` unit.
 _ALSA_BUFFER_TIME_MICROSECONDS = 500_000
 _ALSA_PERIOD_TIME_MICROSECONDS = 100_000
+
+# Splitting playback per-paragraph (see `speak`'s docstring) only bounds
+# continuous stream length when paragraphs happen to be short -- a single
+# `recap_detail` elaboration is one long paragraph with no "\n\n" inside it
+# at all, and still underran audibly (2026-09-21) even after that split.
+# Sentences within a paragraph are grouped into playback chunks capped at
+# this many seconds of audio each, so no single `aplay` invocation has to
+# sustain a stream longer than this regardless of paragraph structure.
+_MAX_CONTINUOUS_SECONDS = 8.0
+_BYTES_PER_SAMPLE = 2  # S16_LE mono
+
+# Simple and imperfect -- splits after `.`/`!`/`?` followed by whitespace,
+# so an abbreviation like "Mr." would also split. Matches this codebase's
+# existing rule-based approach to spoken text (see `voice_render.py`'s own
+# docstring) rather than a general-purpose sentence tokenizer: this
+# codebase's own LLM-generated recap/elaboration text doesn't use
+# abbreviations like that, and a rare miss here just means one chunk plays
+# a little longer, not an error.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 class TTSError(Exception):
@@ -122,6 +142,34 @@ def _play(audio: bytes, sample_rate: int, device: str) -> None:
         raise TTSError(f"aplay exited with code {play.returncode}")
 
 
+def _split_sentences(paragraph: str) -> list[str]:
+    return [s for s in _SENTENCE_BOUNDARY_RE.split(paragraph) if s.strip()]
+
+
+def _synthesize_chunks(voice, paragraph: str, sample_rate: int) -> list[bytes]:
+    """Synthesize `paragraph` sentence-by-sentence, grouping consecutive
+    sentences into playback chunks capped at `_MAX_CONTINUOUS_SECONDS` of
+    audio each -- see the constant's own comment for why. A paragraph with
+    no sentence-ending punctuation (or one short enough to fit under the
+    cap already) comes back as a single chunk, identical to synthesizing
+    it whole.
+    """
+    max_bytes = int(_MAX_CONTINUOUS_SECONDS * sample_rate) * _BYTES_PER_SAMPLE
+    chunks = []
+    current = bytearray()
+    for sentence in _split_sentences(paragraph):
+        audio = b"".join(
+            chunk.audio_int16_bytes for chunk in voice.synthesize(sentence)
+        )
+        if current and len(current) + len(audio) > max_bytes:
+            chunks.append(bytes(current))
+            current = bytearray()
+        current.extend(audio)
+    if current:
+        chunks.append(bytes(current))
+    return chunks
+
+
 def speak(
     text: str,
     tts: VoiceTTSConfig,
@@ -141,30 +189,33 @@ def speak(
     the whole reply -- with a `time.sleep(_PARAGRAPH_PAUSE_SECONDS)` gap
     between them.
 
-    This module's history is three rounds of live-tested fixes against
-    the same symptom (2026-09-21), each of which helped without fully
-    curing it: (1) buffering a paragraph's whole synthesis before
-    starting `aplay`, instead of streaming Piper's chunks straight into
-    its stdin as they were produced, after a long reply broke up when
-    synthesis fell behind real-time and `stdin.write` blocked on a pipe
-    nothing was draining; (2) passing explicit `--buffer-time`/
-    `--period-time` to `aplay`, after a fully-buffered but single long
-    continuous stream still underran audibly, which pure buffering
-    doesn't fix since that's ALSA's own default sizing being too tight
-    for WSLg's ALSA-to-Pulse bridge; (3) waiting for the prior turn's
-    `arecord` to fully exit (`voice_audio.close_mic_stream`) before
-    opening any new device, after a mic-to-speaker handoff race showed up
-    in one repro's logs as a multi-second underrun right after an
-    "Aborted by signal Terminated" line. A 5-item reply still broke up
-    afterwards, now consistently *later* into the reply as items got
-    shorter/fewer (item 4 of 5, then item 3 of 5) rather than at any
-    particular content -- i.e. the failure tracks elapsed continuous
-    playback time on this bridge, not anything about a specific
-    paragraph. Splitting playback into one `aplay` per paragraph bounds
-    how long any single continuous stream has to survive to the length
-    of one item, using the pause between items (already wanted for
-    pacing) as a natural point to close and reopen the device instead of
-    holding it continuously for an entire multi-item reply.
+    This module's history is four rounds of live-tested fixes against the
+    same symptom (2026-09-21), each of which helped without fully curing
+    it: (1) buffering a paragraph's whole synthesis before starting
+    `aplay`, instead of streaming Piper's chunks straight into its stdin
+    as they were produced, after a long reply broke up when synthesis fell
+    behind real-time and `stdin.write` blocked on a pipe nothing was
+    draining; (2) passing explicit `--buffer-time`/`--period-time` to
+    `aplay`, after a fully-buffered but single long continuous stream
+    still underran audibly, which pure buffering doesn't fix since that's
+    ALSA's own default sizing being too tight for WSLg's ALSA-to-Pulse
+    bridge; (3) waiting for the prior turn's `arecord` to fully exit
+    (`voice_audio.close_mic_stream`) before opening any new device, after
+    a mic-to-speaker handoff race showed up in one repro's logs as a
+    multi-second underrun right after an "Aborted by signal Terminated"
+    line; (4) playing each paragraph through its own `aplay` invocation
+    instead of one for the whole reply, after a 5-item reply kept breaking
+    up consistently later as items got shorter/fewer -- which fixed that
+    5-item reply, but a single `recap_detail` elaboration (one long
+    paragraph, no "\n\n" inside it at all) still underran just as badly,
+    proving the failure tracks elapsed *continuous stream* duration, not
+    paragraph count. This step generalizes (4): each paragraph's sentences
+    are grouped into `_synthesize_chunks` chunks capped at
+    `_MAX_CONTINUOUS_SECONDS`, each played through its own `aplay` call
+    with no pause between chunks of the *same* paragraph (only between
+    different paragraphs, via `_PARAGRAPH_PAUSE_SECONDS`) -- so even one
+    very long paragraph gets the same "close and reopen the device
+    periodically" treatment a multi-paragraph reply already got.
     """
     voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
     device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
@@ -172,10 +223,8 @@ def speak(
 
     paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
     for index, paragraph in enumerate(paragraphs):
-        audio = b"".join(
-            chunk.audio_int16_bytes for chunk in voice.synthesize(paragraph)
-        )
-        _play(audio, sample_rate, device)
+        for chunk_audio in _synthesize_chunks(voice, paragraph, sample_rate):
+            _play(chunk_audio, sample_rate, device)
         if index < len(paragraphs) - 1:
             time.sleep(_PARAGRAPH_PAUSE_SECONDS)
 
