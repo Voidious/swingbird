@@ -64,6 +64,26 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
         raise MicStreamError("arecord not found on PATH (install alsa-utils)") from exc
 
 
+def close_mic_stream(process: subprocess.Popen) -> None:
+    """Terminate `process` and block until it has actually exited.
+
+    `voice_wake.py` and `voice_stt.py` both used to call `process.terminate()`
+    alone in their `finally` blocks and return immediately -- but a SIGTERM'd
+    `arecord` doesn't release the ALSA/Pulse device the instant the signal is
+    sent, especially crossing WSLg's ALSA-to-Pulse bridge. The very next audio
+    open (a cue or `voice_tts.speak`'s `aplay`, or another `arecord` for the
+    next turn) could then race that teardown -- live-tested against a real
+    detailed-recap follow-up (2026-09-21): the log showed `aplay` starting
+    right after an `arecord` was "Aborted by signal Terminated", immediately
+    followed by a tens-of-seconds ALSA underrun, consistent with the playback
+    open stalling on a mic device that hadn't finished releasing. Waiting
+    here makes `listen_for_wake_word`/`record_utterance` block until the mic
+    device is actually free before their caller can open anything else.
+    """
+    process.terminate()
+    process.wait()
+
+
 def read_frame(process: subprocess.Popen) -> np.ndarray:
     """Read one `FRAME_SAMPLES`-sample frame from `process`'s stdout."""
     raw = process.stdout.read(CHUNK_BYTES)

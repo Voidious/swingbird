@@ -22,9 +22,13 @@ class FakeModel:
 class FakeProcess:
     def __init__(self):
         self.terminated = False
+        self.waited = False
 
     def terminate(self):
         self.terminated = True
+
+    def wait(self):
+        self.waited = True
 
 
 def test_pretrained_model_path_raises_for_unknown_wake_word():
@@ -71,6 +75,7 @@ def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
 
     assert mic_calls == [mic]
     assert fake_process.terminated
+    assert fake_process.waited
 
 
 def test_listen_for_wake_word_raises_when_mic_stream_wont_open(monkeypatch):
@@ -102,3 +107,4 @@ def test_listen_for_wake_word_raises_when_stream_ends_unexpectedly(monkeypatch):
         listen_for_wake_word("hey_jarvis", VoiceMicConfig())
 
     assert fake_process.terminated
+    assert fake_process.waited

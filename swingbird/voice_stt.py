@@ -33,6 +33,7 @@ from swingbird.voice_audio import (
     FRAME_SAMPLES,
     SAMPLE_RATE,
     call_translating_stream_error,
+    close_mic_stream,
     open_mic_stream,
     read_frame,
 )
@@ -109,7 +110,7 @@ def record_utterance(
             elif len(frames) >= wait_frames:
                 return None
     finally:
-        record.terminate()
+        close_mic_stream(record)
 
     return np.concatenate(frames)
 

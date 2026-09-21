@@ -6,6 +6,7 @@ from swingbird.config import VoiceMicConfig
 from swingbird.voice_audio import (
     MicStreamError,
     call_translating_stream_error,
+    close_mic_stream,
     open_mic_stream,
     read_frame,
 )
@@ -99,6 +100,21 @@ def test_read_frame_raises_when_stream_ends_unexpectedly():
 
     with pytest.raises(MicStreamError, match="arecord stream ended unexpectedly"):
         read_frame(process)
+
+
+def test_close_mic_stream_terminates_then_waits():
+    calls = []
+
+    class FakeProcess:
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self):
+            calls.append("wait")
+
+    close_mic_stream(FakeProcess())
+
+    assert calls == ["terminate", "wait"]
 
 
 def test_call_translating_stream_error_returns_value_on_success():

@@ -40,9 +40,13 @@ class FakeVAD:
 class FakeProcess:
     def __init__(self):
         self.terminated = False
+        self.waited = False
 
     def terminate(self):
         self.terminated = True
+
+    def wait(self):
+        self.waited = True
 
 
 def _frame():
@@ -98,6 +102,7 @@ def test_record_utterance_stops_after_silence_follows_speech(monkeypatch):
 
     assert len(audio) == FRAME_SAMPLES * (3 + voice_stt.SILENCE_FRAMES_TO_STOP)
     assert fake_process.terminated
+    assert fake_process.waited
 
 
 def _setup_record_utterance(monkeypatch):
@@ -124,6 +129,7 @@ def test_record_utterance_stops_at_max_seconds_if_never_silent(monkeypatch):
 
     assert len(audio) == FRAME_SAMPLES * max_frames
     assert fake_process.terminated
+    assert fake_process.waited
 
 
 def test_record_utterance_returns_none_if_speech_never_starts_within_wait(
@@ -137,6 +143,7 @@ def test_record_utterance_returns_none_if_speech_never_starts_within_wait(
 
     assert audio is None
     assert fake_process.terminated
+    assert fake_process.waited
 
 
 def test_record_utterance_ignores_max_wait_once_speech_has_started(monkeypatch):
@@ -180,6 +187,7 @@ def test_record_utterance_raises_when_stream_ends_unexpectedly(monkeypatch):
         record_utterance(VoiceMicConfig())
 
     assert fake_process.terminated
+    assert fake_process.waited
 
 
 def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch):

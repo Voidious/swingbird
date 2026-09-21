@@ -32,6 +32,7 @@ from openwakeword.model import Model
 from swingbird.config import VoiceMicConfig, load_config
 from swingbird.voice_audio import (
     call_translating_stream_error,
+    close_mic_stream,
     open_mic_stream,
     read_frame,
 )
@@ -88,7 +89,7 @@ def listen_for_wake_word(wake_word: str, mic: VoiceMicConfig) -> None:
             if model.predict(frame)[score_key] >= DETECTION_THRESHOLD:
                 return
     finally:
-        record.terminate()
+        close_mic_stream(record)
 
 
 def _main() -> None:  # pragma: no cover -- manual smoke test, see §V.16 step 3
