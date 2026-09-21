@@ -226,7 +226,32 @@ def test_speak_splits_a_long_paragraph_into_duration_capped_chunks(
     assert bytes(fake_popens[0].stdin.written) == b"aa"
     assert bytes(fake_popens[1].stdin.written) == b"bb"
     assert bytes(fake_popens[2].stdin.written) == b"cc"
-    assert sleep_calls == []  # only between paragraphs, not chunks of one
+    # A short pause between chunks of the same paragraph, not the longer
+    # inter-paragraph pause -- and none after the final chunk.
+    assert sleep_calls == [
+        voice_tts._CHUNK_PAUSE_SECONDS,
+        voice_tts._CHUNK_PAUSE_SECONDS,
+    ]
+
+
+def test_speak_single_chunk_paragraph_has_no_pause_inserted(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice(
+        chunks=None, sample_rate=1, chunks_by_text={"One.": [FakeChunk(b"aa")]}
+    )
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    fake_popens = [FakePopen(returncode=0)]
+    popen_calls, sleep_calls = _mock_aplay_and_sleep(monkeypatch, fake_popens)
+
+    speak(
+        "One.",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+    )
+
+    assert len(popen_calls) == 1
+    assert sleep_calls == []
 
 
 def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):

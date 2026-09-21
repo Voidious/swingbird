@@ -72,6 +72,19 @@ _ALSA_PERIOD_TIME_MICROSECONDS = 100_000
 _MAX_CONTINUOUS_SECONDS = 8.0
 _BYTES_PER_SAMPLE = 2  # S16_LE mono
 
+# A duration-capped elaboration *still* underran audibly (2026-09-21) after
+# the chunk split above, with no ALSA-reported underrun or mic-teardown race
+# in the log this time -- meaning the earlier `close_mic_stream` fix (a
+# `terminate()` not implying the device is actually free yet over WSLg's
+# ALSA-to-Pulse bridge) has a same-shaped sibling here: chunk boundaries
+# open a fresh `aplay` back-to-back with zero gap, since `_play`'s own
+# `wait()` only confirms the *process* exited, not that the bridge has
+# released the device for the next `Popen` to reacquire cleanly. A small
+# real gap between chunks of the same paragraph gives the bridge time to
+# settle between rapid same-paragraph reopens, short enough to preserve the
+# "no pause within a paragraph" pacing `_PARAGRAPH_PAUSE_SECONDS` is for.
+_CHUNK_PAUSE_SECONDS = 0.05
+
 # Simple and imperfect -- splits after `.`/`!`/`?` followed by whitespace,
 # so an abbreviation like "Mr." would also split. Matches this codebase's
 # existing rule-based approach to spoken text (see `voice_render.py`'s own
@@ -189,7 +202,7 @@ def speak(
     the whole reply -- with a `time.sleep(_PARAGRAPH_PAUSE_SECONDS)` gap
     between them.
 
-    This module's history is four rounds of live-tested fixes against the
+    This module's history is five rounds of live-tested fixes against the
     same symptom (2026-09-21), each of which helped without fully curing
     it: (1) buffering a paragraph's whole synthesis before starting
     `aplay`, instead of streaming Piper's chunks straight into its stdin
@@ -209,13 +222,18 @@ def speak(
     5-item reply, but a single `recap_detail` elaboration (one long
     paragraph, no "\n\n" inside it at all) still underran just as badly,
     proving the failure tracks elapsed *continuous stream* duration, not
-    paragraph count. This step generalizes (4): each paragraph's sentences
-    are grouped into `_synthesize_chunks` chunks capped at
-    `_MAX_CONTINUOUS_SECONDS`, each played through its own `aplay` call
-    with no pause between chunks of the *same* paragraph (only between
-    different paragraphs, via `_PARAGRAPH_PAUSE_SECONDS`) -- so even one
-    very long paragraph gets the same "close and reopen the device
-    periodically" treatment a multi-paragraph reply already got.
+    paragraph count; (5) generalizing (4): each paragraph's sentences are
+    grouped into `_synthesize_chunks` chunks capped at
+    `_MAX_CONTINUOUS_SECONDS`, each played through its own `aplay` call --
+    which still underran audibly on a long elaboration, but this time with
+    *no* ALSA underrun message and no mic-teardown race in the log,
+    pointing at the same speaker-to-speaker reopen race (3) fixed for
+    mic-to-speaker, since chunks played back-to-back with no gap at all.
+    This step adds a small `time.sleep(_CHUNK_PAUSE_SECONDS)` between
+    chunks of the *same* paragraph (distinct from, and much shorter than,
+    `_PARAGRAPH_PAUSE_SECONDS` between different paragraphs) so the bridge
+    gets a moment to settle between rapid reopens without adding an
+    audible gap mid-sentence.
     """
     voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
     device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
@@ -223,8 +241,11 @@ def speak(
 
     paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
     for index, paragraph in enumerate(paragraphs):
-        for chunk_audio in _synthesize_chunks(voice, paragraph, sample_rate):
+        chunks = _synthesize_chunks(voice, paragraph, sample_rate)
+        for chunk_index, chunk_audio in enumerate(chunks):
             _play(chunk_audio, sample_rate, device)
+            if chunk_index < len(chunks) - 1:
+                time.sleep(_CHUNK_PAUSE_SECONDS)
         if index < len(paragraphs) - 1:
             time.sleep(_PARAGRAPH_PAUSE_SECONDS)
 
