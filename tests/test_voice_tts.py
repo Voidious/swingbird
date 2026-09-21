@@ -135,6 +135,10 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
         "raw",
         "-c",
         "1",
+        "--buffer-time",
+        str(voice_tts._ALSA_BUFFER_TIME_MICROSECONDS),
+        "--period-time",
+        str(voice_tts._ALSA_PERIOD_TIME_MICROSECONDS),
         "-",
     ]
     assert bytes(fake_popen.stdin.written) == b"abcdef"

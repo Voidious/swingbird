@@ -50,6 +50,13 @@ _ALSA_DEVICE_BY_OUTPUT_TYPE = {
 # to separate items, so this needs no new text markup.
 _PARAGRAPH_PAUSE_SECONDS = 0.25
 
+# aplay's own ALSA default buffer/period sizing underran audibly on a long
+# continuous stream over WSLg's ALSA-to-Pulse bridge -- see `speak`'s
+# docstring. Both in microseconds, aplay's own `--buffer-time`/
+# `--period-time` unit.
+_ALSA_BUFFER_TIME_MICROSECONDS = 500_000
+_ALSA_PERIOD_TIME_MICROSECONDS = 100_000
+
 
 class TTSError(Exception):
     """Raised when a Piper voice model can't be loaded or `aplay` fails."""
@@ -101,6 +108,18 @@ def speak(
     fully decouples synthesis speed from playback timing, at the cost of
     a longer delay before playback starts on a long reply.
 
+    Also passes explicit `--buffer-time`/`--period-time` to `aplay`.
+    Buffering the synthesis fixed the long-reply breakup above, but a
+    single long `recap_detail` elaboration (2026-09-21, same day, a
+    different reply than the one that motivated the buffering fix above)
+    still broke up audibly even fully buffered -- `aplay`'s own ALSA
+    default buffer/period sizing is tuned for short clips and leaves too
+    little slack against scheduling jitter over WSLg's ALSA-to-Pulse
+    bridge on a long continuous stream, so the *playback* side underruns
+    independently of anything the synthesis side is doing. A larger
+    buffer (500ms) and period (100ms) give the bridge more slack to
+    recover from a late wakeup without an audible gap.
+
     `text` is split into paragraphs on blank lines (the same "\\n\\n"
     boundary recap.py's own prompts use to separate items) and a short
     `_PARAGRAPH_PAUSE_SECONDS` silence is inserted between them, so
@@ -134,6 +153,10 @@ def speak(
                 "raw",
                 "-c",
                 "1",
+                "--buffer-time",
+                str(_ALSA_BUFFER_TIME_MICROSECONDS),
+                "--period-time",
+                str(_ALSA_PERIOD_TIME_MICROSECONDS),
                 "-",
             ],
             stdin=subprocess.PIPE,
