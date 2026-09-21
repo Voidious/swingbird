@@ -2702,6 +2702,17 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         "speak",
         lambda text, tts, output: speak_calls.append((text, tts, output)),
     )
+    cue_calls = []
+    monkeypatch.setattr(
+        daemon.voice_cues,
+        "play_listening_started",
+        lambda output: cue_calls.append(("started", output)),
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues,
+        "play_listening_stopped",
+        lambda output: cue_calls.append(("stopped", output)),
+    )
     sent = []
     event_ids = iter(["transcript-evt", "reply-evt"])
     monkeypatch.setattr(
@@ -2716,6 +2727,14 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     asyncio.run(bot._run_voice_turn())
 
     assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
+    # "started" after the wake word, then again after the one real
+    # exchange (the mic reopens for a follow-up) -- then that follow-up
+    # listen comes back `None`, ending the turn with one "stopped" cue.
+    assert cue_calls == [
+        ("started", voice_config.voice.output),
+        ("started", voice_config.voice.output),
+        ("stopped", voice_config.voice.output),
+    ]
     assert stt_calls == [
         (
             voice_config.voice.mic,
@@ -2746,6 +2765,12 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
         daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
     )
     monkeypatch.setattr(daemon.voice_tts, "speak", lambda text, tts, output: None)
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_started", lambda output: None
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_stopped", lambda output: None
+    )
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
     _sent(monkeypatch)
     # A `None` after each real transcript ends that turn's follow-up loop
@@ -2794,6 +2819,12 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
         lambda wake_word, mic: wake_calls.append((wake_word, mic)),
     )
     monkeypatch.setattr(daemon.voice_tts, "speak", lambda text, tts, output: None)
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_started", lambda output: None
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_stopped", lambda output: None
+    )
     _sent(monkeypatch)
     max_waits = []
     transcripts = iter(["recap", "recap", None])

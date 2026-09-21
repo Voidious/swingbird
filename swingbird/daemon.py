@@ -76,7 +76,7 @@ import os
 import time
 from dataclasses import replace
 
-from swingbird import outbound, voice_stt, voice_tts, voice_wake
+from swingbird import outbound, voice_cues, voice_stt, voice_tts, voice_wake
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
 from swingbird.closed_items import ClosedItemStore
@@ -386,11 +386,18 @@ class Daemon:
 
         `listen_for_wake_word` runs off-thread for the same reason
         `_run_voice_exchange`'s blocking calls do -- see its docstring.
+
+        A `voice_cues.play_listening_started` chime plays every time the
+        mic is about to start listening (after the wake word, and again
+        after each reply while the follow-up window stays open), and
+        `play_listening_stopped` plays once, when the window finally
+        elapses and this turn ends -- see `voice_cues.py`'s own docstring.
         """
         voice = self._config.voice
         await asyncio.to_thread(
             voice_wake.listen_for_wake_word, voice.wake_word, voice.mic
         )
+        await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
         # The first exchange after the wake word uses record_and_transcribe's
         # own default wait (matching pre-§V.11 behavior exactly); only
         # later ones in this same turn use the longer follow-up window.
@@ -399,12 +406,14 @@ class Daemon:
         )
         while transcript is not None:
             await self._run_voice_exchange(transcript)
+            await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
             transcript = await asyncio.to_thread(
                 voice_stt.record_and_transcribe,
                 voice.mic,
                 voice.stt,
                 voice.follow_up_window_seconds,
             )
+        await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 
     async def _run_voice_exchange(self, transcript: str) -> None:
         """Route one already-captured `transcript` through the exact same

@@ -126,6 +126,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Called by `daemon.py`'s `_run_voice_turn` to start each turn; also reachable standalone via its own `__main__` smoke-test CLI. |
 | `voice_audio.py` | Shared `arecord` mic-capture plumbing (frame size, device mapping) used by both `voice_wake.py` and `voice_stt.py`, so the two don't duplicate (and drift on) the same audio format. |
 | `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Called by `daemon.py`'s `_run_voice_turn` right after the wake word fires; also reachable standalone via its own `__main__` smoke-test CLI. |
+| `voice_cues.py` | Short synthesized tones marking voice-turn listening boundaries: one when the mic starts listening (wake word registered, or a follow-up window is still open), a different one when listening actually stops and the wake word is required again. Called by `daemon.py`'s `_run_voice_turn`. |
 
 ## Tests
 
