@@ -162,7 +162,8 @@ DEFAULT_WAKE_WORD = "swingbird"
 DEFAULT_MIC_TYPE = "onboard"
 DEFAULT_OUTPUT_TYPE = "onboard"
 DEFAULT_STT_MODEL = "small"
-DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 60
+DEFAULT_WAKE_WORD_WINDOW_SECONDS = 30
+DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -223,11 +224,18 @@ class VoiceConfig:
     output: VoiceOutputConfig = VoiceOutputConfig()
     stt: VoiceSTTConfig = VoiceSTTConfig()
     tts: VoiceTTSConfig | None = None
-    # §V.11: how long to keep listening for a follow-up command after a
-    # reply, without requiring the wake word again -- separate from
+    # How long to wait for the user to start speaking right after the wake
+    # word fires before giving up and requiring it again -- separate from
     # voice_stt.py's fixed SILENCE_FRAMES_TO_STOP/MAX_UTTERANCE_SECONDS,
-    # which govern *within* one utterance, not whether the *next* one
-    # needs the wake word.
+    # which govern *within* one utterance, not whether an utterance starts
+    # at all. Previously hardcoded to record_and_transcribe's own default
+    # (MAX_UTTERANCE_SECONDS); Voidious asked for it to be a visible,
+    # tunable config knob instead.
+    wake_word_window_seconds: int = DEFAULT_WAKE_WORD_WINDOW_SECONDS
+    # §V.11: how long to keep listening for a follow-up command after a
+    # reply, without requiring the wake word again -- same
+    # in-utterance-vs-between-utterances distinction as
+    # wake_word_window_seconds above.
     follow_up_window_seconds: int = DEFAULT_FOLLOW_UP_WINDOW_SECONDS
 
 
@@ -421,6 +429,16 @@ def _parse_voice(raw: dict) -> VoiceConfig:
     if not isinstance(wake_word, str) or not wake_word.strip():
         raise ConfigError("[voice].wake_word must be a non-empty string")
 
+    wake_word_window_seconds = section.get(
+        "wake_word_window_seconds", DEFAULT_WAKE_WORD_WINDOW_SECONDS
+    )
+    if (
+        isinstance(wake_word_window_seconds, bool)
+        or not isinstance(wake_word_window_seconds, int)
+        or wake_word_window_seconds <= 0
+    ):
+        raise ConfigError("[voice].wake_word_window_seconds must be a positive integer")
+
     follow_up_window_seconds = section.get(
         "follow_up_window_seconds", DEFAULT_FOLLOW_UP_WINDOW_SECONDS
     )
@@ -438,6 +456,7 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         output=_parse_voice_output(section.get("output", {})),
         stt=_parse_voice_stt(section.get("stt", {})),
         tts=_parse_voice_tts(section.get("tts"), enabled=enabled),
+        wake_word_window_seconds=wake_word_window_seconds,
         follow_up_window_seconds=follow_up_window_seconds,
     )
 

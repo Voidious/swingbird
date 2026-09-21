@@ -31,7 +31,14 @@ _ALSA_DEVICE_BY_OUTPUT_TYPE = {
 
 SAMPLE_RATE = 16000
 _DURATION_SECONDS = 0.08
-_AMPLITUDE = 0.2  # quiet by design -- a startle-volume beep defeats "light"
+# Quiet by design -- a startle-volume beep defeats "light". Both cues share
+# this one constant, so they're always equally loud as each other; lowered
+# 0.2 -> 0.15 (~25%) per Voidious's live-listening feedback (2026-09-21)
+# that both the wake-word-ack and follow-up-timeout cues felt too loud --
+# the "go ahead" cue after a reply already used this exact same tone/
+# amplitude, so there was nothing to align it *to*, just an across-the-
+# board volume cut.
+_AMPLITUDE = 0.15
 _FADE_SECONDS = 0.005  # avoids an audible click at tone start/end
 
 # A rising tone reads as "go ahead"; the stop cue is a perfect fifth lower,

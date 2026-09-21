@@ -64,18 +64,26 @@ name = "swingbird"
 # which physical device the audio pipeline uses ("onboard" is the WSL dev
 # machine's default device today and the Orange Pi's onboard mic/jack
 # later; "usb" is the reSpeaker XVF3800 array, the final product's
-# primary). stt.model must be "small" or "small.en" (faster-whisper).
-# tts.voice names a Piper voice model, e.g. "en_US-lessac-medium",
-# auto-downloaded into voice_models/ on first use (see AGENTS.md) -- required
-# once enabled = true. wake_word must currently name one of openWakeWord's
-# bundled pretrained phrases (e.g. "hey_jarvis" -- see voice_wake.py) --
-# "swingbird" is the intended eventual value once a custom model exists
-# (§V.13), not a working one yet. follow_up_window_seconds (default 60) is
-# how long swingbird keeps listening for a follow-up command after a reply
-# before requiring the wake word again.
+# primary). stt.model must be "small" or "small.en" (faster-whisper) --
+# "medium" is intentionally not supported, it drops below real-time on the
+# Orange Pi 5 Pro's CPU. tts.voice names a Piper voice model, e.g.
+# "en_US-lessac-medium", auto-downloaded into voice_models/ on first use
+# (see AGENTS.md) -- required once enabled = true; this is a separate,
+# unrelated model from stt.model (Piper for speaking vs. faster-whisper for
+# listening), so its own name containing "medium" doesn't affect STT speed.
+# wake_word must currently name one of openWakeWord's bundled pretrained
+# phrases (e.g. "hey_jarvis" -- see voice_wake.py) -- "swingbird" is the
+# intended eventual value once a custom model exists (§V.13), not a
+# working one yet. wake_word_window_seconds (default 30) is how long
+# swingbird waits for you to start speaking right after the wake word
+# fires before giving up and requiring it again. follow_up_window_seconds
+# (default 30) is how long swingbird keeps listening for a follow-up
+# command after a reply before requiring the wake word again.
 # [voice]
 # enabled = true
 # wake_word = "hey_jarvis"
+# wake_word_window_seconds = 30
+# follow_up_window_seconds = 30
 #
 # [voice.mic]
 # type = "onboard"

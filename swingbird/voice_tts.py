@@ -42,6 +42,14 @@ _ALSA_DEVICE_BY_OUTPUT_TYPE = {
     "usb": "usb",
 }
 
+# A brief silence between recap items/paragraphs reads as more natural at
+# the pace this codebase otherwise keeps -- Voidious asked for "even like
+# .2 or .3 seconds" (2026-09-21) after finding back-to-back items in a
+# detailed recap ran together with almost no pause. Split on the same
+# blank-line ("\n\n") paragraph boundary recap.py's own prompts already use
+# to separate items, so this needs no new text markup.
+_PARAGRAPH_PAUSE_SECONDS = 0.25
+
 
 class TTSError(Exception):
     """Raised when a Piper voice model can't be loaded or `aplay` fails."""
@@ -66,6 +74,10 @@ def _voice_model_path(voice_name: str, models_dir: Path) -> Path:
     return path
 
 
+def _silence_pcm(duration_seconds: float, sample_rate: int) -> bytes:
+    return b"\x00\x00" * int(sample_rate * duration_seconds)
+
+
 def speak(
     text: str,
     tts: VoiceTTSConfig,
@@ -77,9 +89,36 @@ def speak(
     Blocking and synchronous on purpose -- nothing calls this from an
     event loop yet (see module docstring), so there's no responsiveness
     constraint to design around before §V.16 step 5 exists.
+
+    Synthesizes the whole of `text` into one in-memory PCM buffer before
+    starting `aplay`, rather than streaming Piper's chunks straight into
+    its stdin as they're produced. Live-tested against a real detailed
+    recap reply (2026-09-21): streaming synthesis fell behind real-time
+    partway through a long reply, and each `stdin.write` call blocked on
+    `aplay` draining a pipe synthesis wasn't refilling fast enough --
+    audible as speech breaking into progressively longer silent gaps
+    between shrinking blips, never finishing cleanly. Buffering first
+    fully decouples synthesis speed from playback timing, at the cost of
+    a longer delay before playback starts on a long reply.
+
+    `text` is split into paragraphs on blank lines (the same "\\n\\n"
+    boundary recap.py's own prompts use to separate items) and a short
+    `_PARAGRAPH_PAUSE_SECONDS` silence is inserted between them, so
+    consecutive recap items don't run together with no breathing room.
     """
     voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
     device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
+    sample_rate = voice.config.sample_rate
+
+    paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
+    silence = _silence_pcm(_PARAGRAPH_PAUSE_SECONDS, sample_rate)
+    audio_parts = []
+    for index, paragraph in enumerate(paragraphs):
+        for chunk in voice.synthesize(paragraph):
+            audio_parts.append(chunk.audio_int16_bytes)
+        if index < len(paragraphs) - 1:
+            audio_parts.append(silence)
+    audio = b"".join(audio_parts)
 
     try:
         play = subprocess.Popen(
@@ -88,7 +127,7 @@ def speak(
                 "-D",
                 device,
                 "-r",
-                str(voice.config.sample_rate),
+                str(sample_rate),
                 "-f",
                 "S16_LE",
                 "-t",
@@ -102,8 +141,7 @@ def speak(
     except FileNotFoundError as exc:
         raise TTSError("aplay not found on PATH (install alsa-utils)") from exc
 
-    for chunk in voice.synthesize(text):
-        play.stdin.write(chunk.audio_int16_bytes)
+    play.stdin.write(audio)
     play.stdin.close()
     play.wait()
     if play.returncode != 0:

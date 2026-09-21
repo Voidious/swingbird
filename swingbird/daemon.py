@@ -398,11 +398,14 @@ class Daemon:
             voice_wake.listen_for_wake_word, voice.wake_word, voice.mic
         )
         await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
-        # The first exchange after the wake word uses record_and_transcribe's
-        # own default wait (matching pre-§V.11 behavior exactly); only
-        # later ones in this same turn use the longer follow-up window.
+        # The first exchange after the wake word waits up to
+        # wake_word_window_seconds for speech to start; later ones in this
+        # same turn use the longer follow-up window instead.
         transcript = await asyncio.to_thread(
-            voice_stt.record_and_transcribe, voice.mic, voice.stt
+            voice_stt.record_and_transcribe,
+            voice.mic,
+            voice.stt,
+            voice.wake_word_window_seconds,
         )
         while transcript is not None:
             await self._run_voice_exchange(transcript)

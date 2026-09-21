@@ -16,11 +16,16 @@ class FakeVoiceConfig:
 
 
 class FakeVoice:
-    def __init__(self, chunks, sample_rate=22050):
+    def __init__(self, chunks, sample_rate=22050, chunks_by_text=None):
         self._chunks = chunks
+        self._chunks_by_text = chunks_by_text
         self.config = FakeVoiceConfig(sample_rate)
+        self.synthesize_calls = []
 
     def synthesize(self, text):
+        self.synthesize_calls.append(text)
+        if self._chunks_by_text is not None:
+            return iter(self._chunks_by_text.get(text, []))
         return iter(self._chunks)
 
 
@@ -134,6 +139,53 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
     ]
     assert bytes(fake_popen.stdin.written) == b"abcdef"
     assert fake_popen.stdin.closed
+
+
+def test_speak_inserts_silence_pause_between_paragraphs(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice(
+        chunks=None,
+        sample_rate=4,
+        chunks_by_text={
+            "first item": [FakeChunk(b"aa")],
+            "second item": [FakeChunk(b"bb")],
+        },
+    )
+    load_calls, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
+    monkeypatch.setattr(
+        voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
+    )
+
+    speak(
+        "first item\n\nsecond item",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+    )
+
+    assert load_calls == [str(tmp_path / "test-voice.onnx")]
+    assert fake_voice.synthesize_calls == ["first item", "second item"]
+    silence = voice_tts._silence_pcm(voice_tts._PARAGRAPH_PAUSE_SECONDS, 4)
+    assert bytes(fake_popen.stdin.written) == b"aa" + silence + b"bb"
+
+
+def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice([FakeChunk(b"abc")], sample_rate=22050)
+    _, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
+    monkeypatch.setattr(
+        voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
+    )
+
+    speak(
+        "just one paragraph",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+    )
+
+    assert fake_voice.synthesize_calls == ["just one paragraph"]
+    assert bytes(fake_popen.stdin.written) == b"abc"
 
 
 def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):

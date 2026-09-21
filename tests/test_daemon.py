@@ -2739,7 +2739,7 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         (
             voice_config.voice.mic,
             voice_config.voice.stt,
-            daemon.voice_stt.MAX_UTTERANCE_SECONDS,
+            voice_config.voice.wake_word_window_seconds,
         ),
         (
             voice_config.voice.mic,
@@ -2843,12 +2843,12 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
 
     # Only one wake-word wait for two exchanges -- the second one is a
     # follow-up (§V.11), not a fresh turn. The first record uses
-    # record_and_transcribe's own default wait; only the follow-up
-    # record(s) after it use the longer configured window, and the turn
-    # ends once that window comes back empty.
+    # wake_word_window_seconds; only the follow-up record(s) after it use
+    # the longer configured window, and the turn ends once that window
+    # comes back empty.
     assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
     assert max_waits == [
-        daemon.voice_stt.MAX_UTTERANCE_SECONDS,
+        voice_config.voice.wake_word_window_seconds,
         voice_config.voice.follow_up_window_seconds,
         voice_config.voice.follow_up_window_seconds,
     ]
