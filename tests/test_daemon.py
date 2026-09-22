@@ -2753,7 +2753,10 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     )
     assert sent == [
         (("dm-chan", "recap"), {}),
-        (("dm-chan", expected_reply), {"reply_to": "transcript-evt"}),
+        (
+            ("dm-chan", f"{expected_reply}\n\n-- recap"),
+            {"reply_to": "transcript-evt"},
+        ),
     ]
     assert speak_calls == [
         (expected_reply, voice_config.voice.tts, voice_config.voice.output)

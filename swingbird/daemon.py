@@ -381,8 +381,8 @@ class Daemon:
         without requiring it again until `follow_up_window_seconds` passes
         with nothing said (§V.11) -- at which point this turn ends and
         `_run_voice_loop` calls back in here, requiring the wake word once
-        more. No footer or turn-to-turn threading polish yet (§V.8) --
-        that's a later build-order step.
+        more. Each exchange's reply DM carries a transcript footer (§V.8) --
+        see `_run_voice_exchange`'s own docstring.
 
         `listen_for_wake_word` runs off-thread for the same reason
         `_run_voice_exchange`'s blocking calls do -- see its docstring.
@@ -433,6 +433,10 @@ class Daemon:
         # §V.3: voice shares the DM's thread id, every turn posts its own
         # DM first -- so the transcript is on the record, and `_process`
         # has an event id to anchor replies/reply-waits to, before routing.
+        # It stays its own message rather than folding into the reply
+        # below: `_confirm` (inside `_process`) needs a real, already-posted
+        # event id to anchor a dispatch's later async reply-wait to, and
+        # that has to exist before the reply text (or its own event) does.
         event_id = await asyncio.to_thread(
             outbound.send_message, self._dm_id, transcript
         )
@@ -440,8 +444,15 @@ class Daemon:
             self._process, transcript, self._dm_id, event_id
         )
         self._start_pending_watch()
+        # §V.8: the reply DM appends the transcript as a footer so it reads
+        # on its own -- e.g. in a push notification, or scrolled past its
+        # paired transcript message -- rather than relying on thread
+        # position alone to show which command it's answering.
         await asyncio.to_thread(
-            outbound.send_message, self._dm_id, reply, reply_to=event_id
+            outbound.send_message,
+            self._dm_id,
+            f"{reply}\n\n-- {transcript}",
+            reply_to=event_id,
         )
         await asyncio.to_thread(
             voice_tts.speak, render_for_speech(reply), voice.tts, voice.output
