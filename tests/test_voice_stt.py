@@ -6,6 +6,7 @@ from swingbird.config import VoiceMicConfig, VoiceSTTConfig
 from swingbird.voice_audio import FRAME_SAMPLES, MicStreamError
 from swingbird.voice_stt import (
     STTError,
+    Transcript,
     record_and_transcribe,
     record_utterance,
     transcribe,
@@ -13,8 +14,9 @@ from swingbird.voice_stt import (
 
 
 class FakeSegment:
-    def __init__(self, text):
+    def __init__(self, text, avg_logprob=-0.1):
         self.text = text
+        self.avg_logprob = avg_logprob
 
 
 class FakeWhisperModel:
@@ -23,10 +25,11 @@ class FakeWhisperModel:
         self.device = device
         self.compute_type = compute_type
         self.transcribe_calls = []
+        self.segments = [FakeSegment("hello"), FakeSegment("world")]
 
     def transcribe(self, audio, beam_size=5):
         self.transcribe_calls.append((audio, beam_size))
-        return [FakeSegment("hello"), FakeSegment("world")], object()
+        return self.segments, object()
 
 
 class FakeVAD:
@@ -78,12 +81,42 @@ def test_transcribe_joins_segment_text_and_normalizes_audio():
 
     result = transcribe(model, audio)
 
-    assert result == "hello world"
+    assert result == Transcript(text="hello world", is_confident=True)
     normalized, beam_size = model.transcribe_calls[0]
     assert beam_size == 5
     assert normalized.dtype == np.float32
     assert normalized[0] == pytest.approx(32767 / 32768.0)
     assert normalized[1] == pytest.approx(-1.0)
+
+
+def test_transcribe_is_not_confident_when_any_segment_avg_logprob_is_low():
+    model = FakeWhisperModel("small", "cpu", "int8")
+    model.segments = [
+        FakeSegment("hello", avg_logprob=-0.1),
+        FakeSegment("world", avg_logprob=voice_stt.MIN_AVG_LOGPROB - 0.01),
+    ]
+
+    result = transcribe(model, np.zeros(1, dtype=np.int16))
+
+    assert result == Transcript(text="hello world", is_confident=False)
+
+
+def test_transcribe_avg_logprob_at_threshold_is_confident():
+    model = FakeWhisperModel("small", "cpu", "int8")
+    model.segments = [FakeSegment("hello", avg_logprob=voice_stt.MIN_AVG_LOGPROB)]
+
+    result = transcribe(model, np.zeros(1, dtype=np.int16))
+
+    assert result.is_confident is True
+
+
+def test_transcribe_is_not_confident_with_no_segments():
+    model = FakeWhisperModel("small", "cpu", "int8")
+    model.segments = []
+
+    result = transcribe(model, np.zeros(1, dtype=np.int16))
+
+    assert result == Transcript(text="", is_confident=False)
 
 
 def test_record_utterance_stops_after_silence_follows_speech(monkeypatch):
@@ -194,6 +227,7 @@ def test_record_and_transcribe_records_then_loads_model_then_transcribes(
     monkeypatch,
 ):
     calls = []
+    expected = Transcript(text="hi", is_confident=True)
     monkeypatch.setattr(
         voice_stt, "load_model", lambda stt: calls.append(("load", stt)) or "model"
     )
@@ -208,14 +242,14 @@ def test_record_and_transcribe_records_then_loads_model_then_transcribes(
     monkeypatch.setattr(
         voice_stt,
         "transcribe",
-        lambda model, audio: calls.append(("transcribe", model, audio)) or "hi",
+        lambda model, audio: calls.append(("transcribe", model, audio)) or expected,
     )
 
     mic = VoiceMicConfig()
     stt = VoiceSTTConfig(model="small")
     result = record_and_transcribe(mic, stt, max_wait_seconds=5.0)
 
-    assert result == "hi"
+    assert result == expected
     assert calls[0] == ("record", mic, 5.0)
     assert calls[1] == ("load", stt)
     assert calls[2][0] == "transcribe"

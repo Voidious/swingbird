@@ -384,14 +384,23 @@ class Daemon:
         more. Each exchange's reply DM carries a transcript footer (§V.8) --
         see `_run_voice_exchange`'s own docstring.
 
+        A captured utterance that `voice_stt.transcribe` flags as
+        low-confidence (§V.10) never reaches `_run_voice_exchange` -- it's
+        not posted as a DM, and never routed through `_process`, so a
+        misheard word can't accidentally read as a recap/dispatch/confirm.
+        The owner instead just hears `voice_stt.LOW_CONFIDENCE_REPLY`
+        spoken back, and the turn keeps listening exactly like it would
+        after a normal reply.
+
         `listen_for_wake_word` runs off-thread for the same reason
         `_run_voice_exchange`'s blocking calls do -- see its docstring.
 
         A `voice_cues.play_listening_started` chime plays every time the
         mic is about to start listening (after the wake word, and again
-        after each reply while the follow-up window stays open), and
-        `play_listening_stopped` plays once, when the window finally
-        elapses and this turn ends -- see `voice_cues.py`'s own docstring.
+        after each reply -- confident or not -- while the follow-up window
+        stays open), and `play_listening_stopped` plays once, when the
+        window finally elapses and this turn ends -- see `voice_cues.py`'s
+        own docstring.
         """
         voice = self._config.voice
         await asyncio.to_thread(
@@ -408,7 +417,15 @@ class Daemon:
             voice.wake_word_window_seconds,
         )
         while transcript is not None:
-            await self._run_voice_exchange(transcript)
+            if transcript.is_confident:
+                await self._run_voice_exchange(transcript.text)
+            else:
+                await asyncio.to_thread(
+                    voice_tts.speak,
+                    voice_stt.LOW_CONFIDENCE_REPLY,
+                    voice.tts,
+                    voice.output,
+                )
             await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
             transcript = await asyncio.to_thread(
                 voice_stt.record_and_transcribe,

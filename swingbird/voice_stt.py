@@ -23,6 +23,7 @@ AGENTS.md).
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -51,6 +52,37 @@ VAD_SPEECH_THRESHOLD = 0.5
 # testing shows whether it needs tuning.
 SILENCE_FRAMES_TO_STOP = 15
 MAX_UTTERANCE_SECONDS = 15
+
+# `Segment.avg_logprob` is faster-whisper's own per-segment confidence
+# proxy: the average log probability of that segment's tokens, more
+# negative meaning the model was less sure what it heard (as opposed to
+# `no_speech_prob`, which is about whether there was speech at all --
+# already handled upstream by VAD gating `record_utterance`). Confidence
+# is the *minimum* across segments, not an average, so one garbled segment
+# in an otherwise-clear utterance still rejects the whole thing -- per
+# AGENTS.md's "never guess" stance elsewhere in this codebase (grounding
+# recap items, resolving ambiguous references), a misheard command
+# shouldn't get a chance to reach dispatch confirmation just because the
+# rest of the sentence transcribed cleanly.
+MIN_AVG_LOGPROB = -1.0
+
+LOW_CONFIDENCE_REPLY = "Sorry, I didn't catch that."
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """One recorded-and-transcribed utterance. `is_confident` is `False`
+    when Whisper's own segment-level `avg_logprob` suggests it guessed
+    rather than actually heard the words -- see `transcribe`'s docstring.
+    `text` is still populated either way; callers that only want to act on
+    trustworthy input must check `is_confident` themselves rather than
+    treating a low-confidence `Transcript` as equivalent to a `None`
+    result from `record_and_transcribe` (that still means "no speech was
+    ever detected," a different condition).
+    """
+
+    text: str
+    is_confident: bool
 
 
 class STTError(Exception):
@@ -115,21 +147,38 @@ def record_utterance(
     return np.concatenate(frames)
 
 
-def transcribe(model: WhisperModel, audio: np.ndarray) -> str:
-    """Transcribe `audio` (int16 PCM, 16kHz mono) with a loaded model."""
+def transcribe(model: WhisperModel, audio: np.ndarray) -> Transcript:
+    """Transcribe `audio` (int16 PCM, 16kHz mono) with a loaded model.
+
+    A transcript with zero segments (Whisper decided there was nothing to
+    transcribe, despite VAD having triggered `record_utterance` in the
+    first place) is treated as not confident rather than crashing on an
+    empty `min()` -- same "reject rather than guess" outcome as a real
+    low-`avg_logprob` segment, just a different way of getting there.
+    """
     normalized = audio.astype(np.float32) / 32768.0
     segments, _info = model.transcribe(normalized, beam_size=5)
-    return " ".join(segment.text.strip() for segment in segments).strip()
+    texts = []
+    avg_logprobs = []
+    for segment in segments:
+        texts.append(segment.text.strip())
+        avg_logprobs.append(segment.avg_logprob)
+    text = " ".join(texts).strip()
+    is_confident = bool(avg_logprobs) and min(avg_logprobs) >= MIN_AVG_LOGPROB
+    return Transcript(text=text, is_confident=is_confident)
 
 
 def record_and_transcribe(
     mic: VoiceMicConfig,
     stt: VoiceSTTConfig,
     max_wait_seconds: float = MAX_UTTERANCE_SECONDS,
-) -> str | None:
+) -> Transcript | None:
     """Record one utterance and transcribe it, or return `None` (skipping
     transcription) if `record_utterance` gave up waiting for speech to
-    start -- see its own docstring for `max_wait_seconds`.
+    start -- see its own docstring for `max_wait_seconds`. A captured
+    utterance always yields a `Transcript`, confident or not; callers
+    decide what to do with a low-confidence one (see `Transcript`'s own
+    docstring) -- this function only captures and transcribes.
 
     Records *before* loading the whisper model, not after -- only
     `transcribe()` below needs the model, but constructing a fresh
@@ -156,8 +205,12 @@ def _main() -> None:  # pragma: no cover -- manual smoke test, see §V.16 step 4
 
     config = load_config(args.config)
     print("Recording -- speak now (stops after a pause)...")
-    text = record_and_transcribe(config.voice.mic, config.voice.stt)
-    print(f"Transcript: {text!r}")
+    transcript = record_and_transcribe(config.voice.mic, config.voice.stt)
+    if transcript is None:
+        print("No speech detected.")
+    else:
+        confidence = "confident" if transcript.is_confident else "LOW CONFIDENCE"
+        print(f"Transcript ({confidence}): {transcript.text!r}")
 
 
 if __name__ == "__main__":

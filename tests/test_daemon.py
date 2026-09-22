@@ -2685,7 +2685,9 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         lambda wake_word, mic: wake_calls.append((wake_word, mic)),
     )
     stt_calls = []
-    transcripts = iter(["recap", None])
+    transcripts = iter(
+        [daemon.voice_stt.Transcript(text="recap", is_confident=True), None]
+    )
 
     def fake_record_and_transcribe(
         mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS
@@ -2763,6 +2765,54 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     ]
 
 
+def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+    )
+    transcripts = iter(
+        [daemon.voice_stt.Transcript(text="recap", is_confident=False), None]
+    )
+    monkeypatch.setattr(
+        daemon.voice_stt,
+        "record_and_transcribe",
+        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: next(
+            transcripts
+        ),
+    )
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_tts,
+        "speak",
+        lambda text, tts, output: speak_calls.append((text, tts, output)),
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_started", lambda output: None
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_stopped", lambda output: None
+    )
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, llm, config=voice_config)
+
+    asyncio.run(bot._run_voice_turn())
+
+    # Nothing posted (not the transcript, not a reply) and no LLM-routed
+    # reply spoken -- a low-confidence utterance never reaches `_process`
+    # or `_run_voice_exchange` at all (§V.10).
+    assert sent == []
+    assert speak_calls == [
+        (
+            daemon.voice_stt.LOW_CONFIDENCE_REPLY,
+            voice_config.voice.tts,
+            voice_config.voice.output,
+        )
+    ]
+
+
 def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypatch):
     monkeypatch.setattr(
         daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
@@ -2779,7 +2829,15 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     # A `None` after each real transcript ends that turn's follow-up loop
     # immediately, so each `_run_voice_turn()` call below still does
     # exactly one wake word + one exchange, matching this test's intent.
-    transcripts = iter(["dispatch it", None, "confirm", None])
+    T = daemon.voice_stt.Transcript
+    transcripts = iter(
+        [
+            T(text="dispatch it", is_confident=True),
+            None,
+            T(text="confirm", is_confident=True),
+            None,
+        ]
+    )
     monkeypatch.setattr(
         daemon.voice_stt,
         "record_and_transcribe",
@@ -2830,7 +2888,10 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     )
     _sent(monkeypatch)
     max_waits = []
-    transcripts = iter(["recap", "recap", None])
+    T = daemon.voice_stt.Transcript
+    transcripts = iter(
+        [T(text="recap", is_confident=True), T(text="recap", is_confident=True), None]
+    )
     monkeypatch.setattr(
         daemon.voice_stt,
         "record_and_transcribe",
