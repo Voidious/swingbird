@@ -130,11 +130,20 @@ def record_and_transcribe(
     """Record one utterance and transcribe it, or return `None` (skipping
     transcription) if `record_utterance` gave up waiting for speech to
     start -- see its own docstring for `max_wait_seconds`.
+
+    Records *before* loading the whisper model, not after -- only
+    `transcribe()` below needs the model, but constructing a fresh
+    `WhisperModel` takes long enough (~0.8s on the Orange Pi, live-tested
+    2026-09-22) that loading it first left the mic not actually open yet
+    right after `voice_cues.play_listening_started`'s "go ahead" chime,
+    silently swallowing the user's first word or two. Recording first
+    means the mic is live the instant the cue finishes, and the model-load
+    cost lands after the utterance is already captured instead of before.
     """
-    model = load_model(stt)
     audio = record_utterance(mic, max_wait_seconds)
     if audio is None:
         return None
+    model = load_model(stt)
     return transcribe(model, audio)
 
 

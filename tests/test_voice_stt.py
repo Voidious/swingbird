@@ -190,7 +190,9 @@ def test_record_utterance_raises_when_stream_ends_unexpectedly(monkeypatch):
     assert fake_process.waited
 
 
-def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch):
+def test_record_and_transcribe_records_then_loads_model_then_transcribes(
+    monkeypatch,
+):
     calls = []
     monkeypatch.setattr(
         voice_stt, "load_model", lambda stt: calls.append(("load", stt)) or "model"
@@ -214,8 +216,8 @@ def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch)
     result = record_and_transcribe(mic, stt, max_wait_seconds=5.0)
 
     assert result == "hi"
-    assert calls[0] == ("load", stt)
-    assert calls[1] == ("record", mic, 5.0)
+    assert calls[0] == ("record", mic, 5.0)
+    assert calls[1] == ("load", stt)
     assert calls[2][0] == "transcribe"
     assert calls[2][1] == "model"
 
@@ -223,7 +225,10 @@ def test_record_and_transcribe_loads_model_records_then_transcribes(monkeypatch)
 def test_record_and_transcribe_returns_none_without_transcribing_if_no_speech(
     monkeypatch,
 ):
-    monkeypatch.setattr(voice_stt, "load_model", lambda stt: "model")
+    load_calls = []
+    monkeypatch.setattr(
+        voice_stt, "load_model", lambda stt: load_calls.append(stt) or "model"
+    )
     monkeypatch.setattr(
         voice_stt, "record_utterance", lambda mic, max_wait_seconds: None
     )
@@ -238,3 +243,7 @@ def test_record_and_transcribe_returns_none_without_transcribing_if_no_speech(
 
     assert result is None
     assert transcribe_calls == []
+    # Recording first (see `record_and_transcribe`'s docstring) means a
+    # timed-out wait with no speech should skip the model load entirely,
+    # not just the transcription -- no point paying for it unused.
+    assert load_calls == []
