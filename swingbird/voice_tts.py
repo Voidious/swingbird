@@ -83,7 +83,12 @@ _BYTES_PER_SAMPLE = 2  # S16_LE mono
 # real gap between chunks of the same paragraph gives the bridge time to
 # settle between rapid same-paragraph reopens, short enough to preserve the
 # "no pause within a paragraph" pacing `_PARAGRAPH_PAUSE_SECONDS` is for.
-_CHUNK_PAUSE_SECONDS = 0.05
+# On real Orange Pi hardware (2026-09-22), 0.05s no longer needed to be that
+# short -- there's no more underrun to avoid dwelling in, and Voidious heard
+# the boundary as an awkward clip ("like commas from within the previous
+# sentence") rather than a clean pause. Widened to read as an actual, if
+# brief, break.
+_CHUNK_PAUSE_SECONDS = 0.15
 
 # Simple and imperfect -- splits after `.`/`!`/`?` followed by whitespace,
 # so an abbreviation like "Mr." would also split. Matches this codebase's
@@ -191,9 +196,10 @@ def speak(
 ) -> None:
     """Synthesize `text` with Piper and play it on `output`'s device.
 
-    Blocking and synchronous on purpose -- nothing calls this from an
-    event loop yet (see module docstring), so there's no responsiveness
-    constraint to design around before §V.16 step 5 exists.
+    Blocking and synchronous on purpose -- `daemon.py`'s `_run_voice_turn`
+    runs it via `asyncio.to_thread` rather than awaiting it directly (see
+    module docstring), so there's no responsiveness constraint to design
+    around inside this function itself.
 
     `text` is split into paragraphs on blank lines (the same "\\n\\n"
     boundary recap.py's own prompts use to separate items), and each
@@ -234,19 +240,34 @@ def speak(
     `_PARAGRAPH_PAUSE_SECONDS` between different paragraphs) so the bridge
     gets a moment to settle between rapid reopens without adding an
     audible gap mid-sentence.
+
+    On real Orange Pi hardware (2026-09-22) the breakup this history fixed
+    was gone, but the *silence* between paragraphs read as much longer than
+    `_PARAGRAPH_PAUSE_SECONDS` (0.25s) -- because every paragraph used to be
+    synthesized right before it played, the actual gap a listener heard was
+    the sleep *plus* however long Piper took to synthesize the next
+    paragraph's audio, not the sleep alone. All paragraphs are synthesized
+    up front, before any of them play, so the only thing left between
+    paragraphs at playback time is the intended sleep. Trade-off: a long,
+    multi-paragraph reply now waits for the *whole* reply to synthesize
+    before speaking its first word, instead of only its first paragraph --
+    acceptable here since `_process`'s own LLM round trip already leaves a
+    silent gap before speech starts at all.
     """
     voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
     device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
     sample_rate = voice.config.sample_rate
 
     paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
-    for index, paragraph in enumerate(paragraphs):
-        chunks = _synthesize_chunks(voice, paragraph, sample_rate)
+    paragraph_chunks = [
+        _synthesize_chunks(voice, paragraph, sample_rate) for paragraph in paragraphs
+    ]
+    for index, chunks in enumerate(paragraph_chunks):
         for chunk_index, chunk_audio in enumerate(chunks):
             _play(chunk_audio, sample_rate, device)
             if chunk_index < len(chunks) - 1:
                 time.sleep(_CHUNK_PAUSE_SECONDS)
-        if index < len(paragraphs) - 1:
+        if index < len(paragraph_chunks) - 1:
             time.sleep(_PARAGRAPH_PAUSE_SECONDS)
 
 
