@@ -75,11 +75,13 @@ exactly like a fresh capture from `voice_stt.record_and_transcribe` --
 routing it through `_run_voice_exchange` (or speaking the low-confidence
 reply) again -- rather than falling through to its own post-reply cue and
 recording. Only when nothing interrupted a reply does the loop play the
-cue and record the follow-up as before, passing `voice.debounce_seconds`
-through as `record_and_transcribe`'s `mute_seconds` so the mic opens the
-instant the cue finishes (not after an extra sleep) while still not
-letting the reply's own trailing audio, or the cue itself, be misread as
-the user talking during that same window.
+cue and record the follow-up as before -- the mic opens the instant the
+cue finishes, same as the wake-word listen, with no extra wait: an
+earlier post-cue debounce (§V.12) was removed (2026-09-23) after live
+testing on a headset never showed the reply/cue bleed-into-mic problem it
+was meant to guard against, and it cost a real, reported regression --
+speech starting right at the cue got eaten -- to guard against a risk
+nobody had actually observed.
 """
 
 from __future__ import annotations
@@ -470,7 +472,6 @@ class Daemon:
                 voice.mic,
                 voice.stt,
                 voice.follow_up_window_seconds,
-                voice.debounce_seconds,
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 

@@ -100,7 +100,6 @@ def capture_until_silence(
     frames: list[np.ndarray],
     speech_started: bool,
     wait_frames: int,
-    mute_frames: int = 0,
 ) -> np.ndarray | None:
     """Keep reading frames from an already-open `record` stream (via
     `voice_audio`) until the first silence that follows detected speech,
@@ -119,13 +118,6 @@ def capture_until_silence(
     `False` and `wait_frames` worth of frames pass with no speech ever
     detected -- see `record_utterance`'s own docstring for why callers
     care about that distinction.
-
-    The first `mute_frames` frames (only while `speech_started` is still
-    `False`) are read and appended to `frames` same as any other, but
-    skip both the VAD check and the `wait_frames` timeout entirely -- see
-    `record_utterance`'s own docstring for why a caller wants audio
-    captured, but not trusted, for a brief window right as the stream
-    opens.
     """
     silent_frame_count = 0
     speech_frame_count = 0
@@ -134,8 +126,6 @@ def capture_until_silence(
     while True:
         frame = call_translating_stream_error(STTError, read_frame, record)
         frames.append(frame)
-        if not speech_started and len(frames) <= mute_frames:
-            continue
         if vad.predict(frame) >= VAD_SPEECH_THRESHOLD:
             speech_started = True
             silent_frame_count = 0
@@ -155,9 +145,7 @@ def capture_until_silence(
 
 
 def record_utterance(
-    mic: VoiceMicConfig,
-    max_wait_seconds: float = MAX_UTTERANCE_SECONDS,
-    mute_seconds: float = 0.0,
+    mic: VoiceMicConfig, max_wait_seconds: float = MAX_UTTERANCE_SECONDS
 ) -> np.ndarray | None:
     """Record one utterance from `mic`, via `voice_audio`'s `arecord`
     stream, stopping at the first silence that follows detected speech (or
@@ -175,29 +163,13 @@ def record_utterance(
     follow-up turn's caller tell "gave up waiting" apart from "captured a
     real (if quiet) utterance," which it needs to fall back to requiring
     the wake word again.
-
-    `mute_seconds` (default 0, i.e. no effect) opens the mic immediately
-    as always, but the first `mute_seconds` worth of captured audio skips
-    VAD detection entirely rather than being able to trigger "speech
-    started" -- `daemon.py`'s post-reply follow-up listen (§V.12) passes
-    its own `voice.debounce_seconds` here so a reply's own trailing audio
-    (or the cue right after it) can't be misread as the user talking,
-    *without* the mic missing genuine speech that starts right as the cue
-    finishes the way a `time.sleep` before opening the mic would -- see
-    `capture_until_silence`'s own docstring for the frame-level mechanics.
     """
     record = call_translating_stream_error(STTError, open_mic_stream, mic)
     vad = VAD()
     wait_frames = int(max_wait_seconds * SAMPLE_RATE / FRAME_SAMPLES)
-    mute_frames = int(mute_seconds * SAMPLE_RATE / FRAME_SAMPLES)
     try:
         return capture_until_silence(
-            record,
-            vad,
-            frames=[],
-            speech_started=False,
-            wait_frames=wait_frames,
-            mute_frames=mute_frames,
+            record, vad, frames=[], speech_started=False, wait_frames=wait_frames
         )
     finally:
         close_mic_stream(record)
@@ -228,15 +200,13 @@ def record_and_transcribe(
     mic: VoiceMicConfig,
     stt: VoiceSTTConfig,
     max_wait_seconds: float = MAX_UTTERANCE_SECONDS,
-    mute_seconds: float = 0.0,
 ) -> Transcript | None:
     """Record one utterance and transcribe it, or return `None` (skipping
     transcription) if `record_utterance` gave up waiting for speech to
-    start -- see its own docstring for `max_wait_seconds` and
-    `mute_seconds`. A captured utterance always yields a `Transcript`,
-    confident or not; callers decide what to do with a low-confidence one
-    (see `Transcript`'s own docstring) -- this function only captures and
-    transcribes.
+    start -- see its own docstring for `max_wait_seconds`. A captured
+    utterance always yields a `Transcript`, confident or not; callers
+    decide what to do with a low-confidence one (see `Transcript`'s own
+    docstring) -- this function only captures and transcribes.
 
     Records *before* loading the whisper model, not after -- only
     `transcribe()` below needs the model, but constructing a fresh
@@ -247,7 +217,7 @@ def record_and_transcribe(
     means the mic is live the instant the cue finishes, and the model-load
     cost lands after the utterance is already captured instead of before.
     """
-    audio = record_utterance(mic, max_wait_seconds, mute_seconds)
+    audio = record_utterance(mic, max_wait_seconds)
     if audio is None:
         return None
     model = load_model(stt)

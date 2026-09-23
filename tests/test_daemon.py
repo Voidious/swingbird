@@ -2690,12 +2690,9 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     )
 
     def fake_record_and_transcribe(
-        mic,
-        stt,
-        max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS,
-        mute_seconds=0.0,
+        mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS
     ):
-        stt_calls.append((mic, stt, max_wait_seconds, mute_seconds))
+        stt_calls.append((mic, stt, max_wait_seconds))
         return next(transcripts)
 
     monkeypatch.setattr(
@@ -2742,23 +2739,16 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         ("started", voice_config.voice.output),
         ("stopped", voice_config.voice.output),
     ]
-    # The initial wake-word listen passes no mute window; the follow-up
-    # listen (after the one uninterrupted reply) passes
-    # `voice.debounce_seconds` through as `record_and_transcribe`'s
-    # `mute_seconds`, instead of the daemon sleeping before it opens the
-    # mic -- see `_run_voice_turn`'s own docstring for why.
     assert stt_calls == [
         (
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.wake_word_window_seconds,
-            0.0,
         ),
         (
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.follow_up_window_seconds,
-            voice_config.voice.debounce_seconds,
         ),
     ]
     expected_reply = (
@@ -2793,7 +2783,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
         [daemon.voice_stt.Transcript(text="recap", is_confident=False), None]
     )
 
-    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None):
         return next(transcripts)
 
     monkeypatch.setattr(
@@ -2865,7 +2855,7 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
         ]
     )
 
-    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None):
         return next(transcripts)
 
     monkeypatch.setattr(
@@ -2923,7 +2913,7 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
         [T(text="recap", is_confident=True), T(text="recap", is_confident=True), None]
     )
 
-    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None):
         max_waits.append(max_wait_seconds)
         return next(transcripts)
 
@@ -2959,7 +2949,7 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     stt_transcripts = iter([T(text="recap", is_confident=True), None])
     stt_calls = []
 
-    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None):
         stt_calls.append(max_wait_seconds)
         return next(stt_transcripts)
 

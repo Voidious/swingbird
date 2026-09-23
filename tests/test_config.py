@@ -690,7 +690,6 @@ def test_voice_defaults_to_disabled(tmp_path):
     assert config.voice.tts is None
     assert config.voice.wake_word_window_seconds == 30
     assert config.voice.follow_up_window_seconds == 30
-    assert config.voice.debounce_seconds == 0.3
 
 
 def test_voice_section_not_a_table(tmp_path):
@@ -827,29 +826,5 @@ def test_voice_follow_up_window_seconds_rejects_invalid_values(tmp_path, value):
     with pytest.raises(
         ConfigError,
         match=r"\[voice\].follow_up_window_seconds must be a positive integer",
-    ):
-        load_config(write(tmp_path, text))
-
-
-def test_voice_debounce_seconds_is_configurable(tmp_path):
-    text = VALID + "\n[voice]\ndebounce_seconds = 0.5\n"
-    config = load_config(write(tmp_path, text))
-
-    assert config.voice.debounce_seconds == 0.5
-
-
-def test_voice_debounce_seconds_accepts_zero(tmp_path):
-    text = VALID + "\n[voice]\ndebounce_seconds = 0\n"
-    config = load_config(write(tmp_path, text))
-
-    assert config.voice.debounce_seconds == 0.0
-
-
-@pytest.mark.parametrize("value", ["-1", "-0.1", "true", '"0.3"'])
-def test_voice_debounce_seconds_rejects_invalid_values(tmp_path, value):
-    text = VALID + f"\n[voice]\ndebounce_seconds = {value}\n"
-    with pytest.raises(
-        ConfigError,
-        match=r"\[voice\].debounce_seconds must be a non-negative number",
     ):
         load_config(write(tmp_path, text))
