@@ -52,13 +52,13 @@ def test_speak_with_barge_in_returns_none_when_playback_finishes_uninterrupted(
 ):
     speak_calls = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         # Give the monitoring loop real time to poll a few frames (all
         # non-speech, via ConstantVAD(0.0) below) before playback "finishes"
         # on its own -- proving this path isn't just winning a race against
         # a monitor loop that never got to run at all.
         time.sleep(0.05)
-        speak_calls.append((text, tts, output, stop_event))
+        speak_calls.append((text, tts, output, stop_event, start_chunk))
 
     close_calls = _patch_barge_in_monitoring(monkeypatch, fake_speak)
 
@@ -72,10 +72,38 @@ def test_speak_with_barge_in_returns_none_when_playback_finishes_uninterrupted(
 
     assert result is None
     assert len(speak_calls) == 1
-    text, _tts, _output, stop_event = speak_calls[0]
+    text, _tts, _output, stop_event, start_chunk = speak_calls[0]
     assert text == "reply text"
     assert isinstance(stop_event, threading.Event)
+    assert start_chunk == 0
     assert close_calls == ["the-record"]
+
+
+def test_speak_with_barge_in_passes_start_chunk_through_to_speak(monkeypatch):
+    """A caller resuming a reply that was already interrupted once before
+    (`daemon.py`, after a chit_chat-classified barge-in -- see
+    `BargeInResult`'s own docstring) passes its own `start_chunk` in; the
+    very first playback attempt must honor it, not always start at 0.
+    """
+    speak_calls = []
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        speak_calls.append(start_chunk)
+        time.sleep(0.05)
+
+    _patch_barge_in_monitoring(monkeypatch, fake_speak)
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        start_chunk=5,
+    )
+
+    assert result is None
+    assert speak_calls == [5]
 
 
 def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
@@ -83,12 +111,16 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
 ):
     stop_events_seen = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         stop_events_seen.append(stop_event)
         # Blocks like a real interruptible `speak()` would, until the
         # monitoring loop below signals a barge-in -- proves the barge-in
         # is what stopped playback, not an unrelated natural finish.
         stop_event.wait(timeout=1.0)
+        # Simulates `speak()` reporting exactly where it stopped, so this
+        # test also proves that index reaches the returned `BargeInResult`
+        # rather than being lost or hardcoded to 0.
+        return 3
 
     close_calls = _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
     frame = np.array([1, 2, 3])
@@ -127,7 +159,7 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
         trigger_frames=1,
     )
 
-    assert result == expected
+    assert result == voice_barge_in.BargeInResult(transcript=expected, resume_chunk=3)
     assert stop_events_seen[0].is_set() is True
     assert capture_calls == [("the-record", [frame], True, 0)]
     assert transcribe_calls == [("the-model", canned_audio)]
@@ -137,6 +169,73 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
     assert "barge-in captured" in out
     assert "confident=True" in out
     assert "text='stop'" in out
+
+
+def _patch_barge_in_for_vad_tests(monkeypatch, fake_speak):
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.6))
+
+
+def test_speak_with_barge_in_uses_vad_threshold_for_the_trigger_decision(monkeypatch):
+    """A frame scoring below `vad_threshold` (even if above
+    `voice_stt.VAD_SPEECH_THRESHOLD`) must not trigger a barge-in -- this is
+    the confidence knob `config.VoiceConfig.barge_in_vad_threshold` tunes,
+    independent of `trigger_frames`' duration requirement.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_for_vad_tests(monkeypatch, fake_speak)
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=1,
+        vad_threshold=0.8,
+    )
+
+    # 0.6 never crosses 0.8, so playback just runs to completion -- no
+    # trigger, no capture, no transcript.
+    assert result is None
+
+
+def test_speak_with_barge_in_lowering_vad_threshold_makes_it_more_sensitive(
+    monkeypatch,
+):
+    """The same 0.6-scoring signal that `vad_threshold=0.8` ignores above
+    does trigger once `vad_threshold` is lowered to admit it -- proving
+    this is a real, live knob, not a value that's read and ignored.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        stop_event.wait(timeout=1.0)
+
+    _patch_barge_in_for_vad_tests(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    monkeypatch.setattr(
+        voice_barge_in,
+        "capture_until_silence",
+        lambda record, vad, frames, speech_started, wait_frames: np.array([0]),
+    )
+    expected = Transcript(text="stop", is_confident=True)
+    monkeypatch.setattr(voice_barge_in, "transcribe", lambda model, audio: expected)
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=1,
+        vad_threshold=0.5,
+    )
+
+    assert result == voice_barge_in.BargeInResult(transcript=expected, resume_chunk=0)
 
 
 def _patch_barge_in_capture(monkeypatch, vad_class):
@@ -162,7 +261,7 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
     one are still included in what gets captured, not discarded.
     """
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         stop_event.wait(timeout=1.0)
 
     _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
@@ -216,7 +315,7 @@ def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
     one-frame trigger.
     """
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         stop_event.wait(timeout=1.0)
 
     _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
@@ -247,7 +346,7 @@ def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
         trigger_frames=3,
     )
 
-    assert result == expected_transcript
+    assert result.transcript == expected_transcript
     # The blip's two frames reset the consecutive count -- capture only
     # happens once, seeded with every frame read (the blip plus the three
     # that actually triggered it).
@@ -294,23 +393,32 @@ def _run_false_trigger_barge_in(monkeypatch, voice_barge_in):
 def test_speak_with_barge_in_resumes_after_a_false_trigger(monkeypatch, capsys):
     """A captured interruption that STT doesn't trust (empty/low-
     confidence, per `voice_stt.transcribe`'s `vad_filter`) isn't real
-    speech -- `text` should be resumed from the start rather than lost,
-    matching the accidental-interruption reports from 2026-09-23.
+    speech -- `text` should be resumed from wherever it stopped rather
+    than lost or restarted from the beginning, matching the accidental-
+    interruption reports from 2026-09-23.
     """
     speak_calls = []
+    start_chunks = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         speak_calls.append(text)
+        start_chunks.append(start_chunk)
         if len(speak_calls) == 1:
-            # First attempt: blocks until barged into below.
+            # First attempt: blocks until barged into below, then reports
+            # (as a real interrupted `speak()` would) exactly which chunk
+            # it stopped on.
             stop_event.wait(timeout=1.0)
-        else:
-            # Resumed attempt: finishes on its own, uninterrupted.
-            time.sleep(0.05)
+            return 2
+        # Resumed attempt: finishes on its own, uninterrupted.
+        time.sleep(0.05)
+        return None
 
     _patch_barge_in_speak_stream_and_vad(monkeypatch, fake_speak)
     _run_false_trigger_barge_in(monkeypatch, voice_barge_in)
     assert speak_calls == ["reply text", "reply text"]
+    # The resumed attempt picks up from chunk 2 -- where the first attempt
+    # stopped -- not chunk 0.
+    assert start_chunks == [0, 2]
     assert "resuming reply" in capsys.readouterr().out
 
 
@@ -320,7 +428,7 @@ def test_speak_with_barge_in_resumes_on_a_dismiss_phrase(monkeypatch):
     """
     speak_calls = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         speak_calls.append(text)
         if len(speak_calls) == 1:
             stop_event.wait(timeout=1.0)
@@ -356,7 +464,7 @@ def test_speak_with_barge_in_gives_up_after_max_resume_attempts(monkeypatch):
     """
     speak_calls = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         speak_calls.append(text)
         stop_event.wait(timeout=1.0)
 
@@ -367,7 +475,7 @@ def test_speak_with_barge_in_gives_up_after_max_resume_attempts(monkeypatch):
 
 
 def test_speak_with_barge_in_reraises_playback_exception(monkeypatch):
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         raise RuntimeError("boom")
 
     close_calls = _patch_barge_in_monitoring(monkeypatch, fake_speak)
@@ -388,7 +496,7 @@ def test_speak_with_barge_in_reraises_playback_exception(monkeypatch):
 def test_speak_with_barge_in_raises_when_mic_wont_open(monkeypatch):
     speak_calls = []
 
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         speak_calls.append(stop_event)
         stop_event.wait(timeout=1.0)
 
@@ -419,7 +527,7 @@ def test_speak_with_barge_in_raises_when_mic_wont_open(monkeypatch):
 
 
 def test_speak_with_barge_in_raises_when_stream_ends_unexpectedly(monkeypatch):
-    def fake_speak(text, tts, output, stop_event=None):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         stop_event.wait(timeout=1.0)
 
     close_calls = _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)

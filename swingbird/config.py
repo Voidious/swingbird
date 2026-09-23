@@ -165,6 +165,7 @@ DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 30
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 30
 DEFAULT_BARGE_IN_TRIGGER_FRAMES = 4
+DEFAULT_BARGE_IN_VAD_THRESHOLD = 0.8
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,21 @@ class VoiceConfig:
     # right default depends on mic/headset/room, not something to lock
     # in from one test session.
     barge_in_trigger_frames: int = DEFAULT_BARGE_IN_TRIGGER_FRAMES
+    # §V.12: per-frame VAD confidence a barge-in's own trigger frames must
+    # clear before `voice_barge_in` treats it as the start of real speech --
+    # separate from, and stricter than, `voice_stt.VAD_SPEECH_THRESHOLD`
+    # (0.5), which endpoints a normal utterance (and this same
+    # interruption's own capture once triggered). Live testing (2026-09-23)
+    # found sustained background noise (a fan) could cross that lower
+    # threshold for enough *consecutive* frames to trigger even with
+    # barge_in_trigger_frames raised -- a duration-only fix can't help
+    # that, since the noise really did sustain. Higher values make barge-in
+    # less sensitive to a quiet/ambiguous signal; lower values bring it
+    # back down toward voice_stt's own threshold. Independent, visible,
+    # tunable knob for the same reason barge_in_trigger_frames is one -- the
+    # right default depends on mic/room, not something to lock in from one
+    # test session.
+    barge_in_vad_threshold: float = DEFAULT_BARGE_IN_VAD_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -472,6 +488,18 @@ def _parse_voice(raw: dict) -> VoiceConfig:
     ):
         raise ConfigError("[voice].barge_in_trigger_frames must be a positive integer")
 
+    barge_in_vad_threshold = section.get(
+        "barge_in_vad_threshold", DEFAULT_BARGE_IN_VAD_THRESHOLD
+    )
+    if (
+        isinstance(barge_in_vad_threshold, bool)
+        or not isinstance(barge_in_vad_threshold, (int, float))
+        or not 0.0 < barge_in_vad_threshold <= 1.0
+    ):
+        raise ConfigError(
+            "[voice].barge_in_vad_threshold must be a number between 0 and 1"
+        )
+
     return VoiceConfig(
         enabled=enabled,
         wake_word=wake_word,
@@ -482,6 +510,7 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         wake_word_window_seconds=wake_word_window_seconds,
         follow_up_window_seconds=follow_up_window_seconds,
         barge_in_trigger_frames=barge_in_trigger_frames,
+        barge_in_vad_threshold=barge_in_vad_threshold,
     )
 
 

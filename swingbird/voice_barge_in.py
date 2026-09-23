@@ -22,24 +22,28 @@ problem (§V.14) -- worth revisiting if a live run shows false triggers.
 
 A captured interruption isn't always real speech, though: a brief noise
 (a mouse click, sitting up in a chair, even breathing on a sensitive
-headset mic) can cross `VAD_SPEECH_THRESHOLD` for a moment with nothing
-real ever following it, and `voice_stt.transcribe`'s `vad_filter` then
-comes back not confident (or empty) -- live-tested 2026-09-23, three
-separate sessions, each losing a mid-reply reply outright once that
-happened, since the old behavior spoke a low-confidence apology over
-*nothing*, discarding `text` for good. `speak_with_barge_in` (the public
-entry point below) now treats that outcome, and an explicit "never
-mind"/"continue"/"resume" from the user, as *not* a real interruption --
-it resumes `text` from the start instead, up to `MAX_RESUME_ATTEMPTS`
-times, rather than losing it. Only a confident transcript that isn't one
-of those dismissal phrases is returned to `daemon.py` as a genuine
-barge-in.
+headset mic) can cross `vad_threshold` for a moment with nothing real
+ever following it, and `voice_stt.transcribe`'s `vad_filter` then comes
+back not confident (or empty) -- live-tested 2026-09-23, three separate
+sessions, each losing a mid-reply reply outright once that happened,
+since the old behavior spoke a low-confidence apology over *nothing*,
+discarding `text` for good. `speak_with_barge_in` (the public entry point
+below) now treats that outcome, and an explicit "never mind"/"continue"/
+"resume" from the user, as *not* a real interruption -- it resumes `text`
+from the chunk (`voice_tts.speak`'s own numbering) playback had reached,
+not the very beginning, up to `MAX_RESUME_ATTEMPTS` times, rather than
+losing it or making the user re-hear a long reply's already-spoken start.
+Only a confident transcript that isn't one of those dismissal phrases is
+returned to `daemon.py` (wrapped in a `BargeInResult`, carrying that same
+resume point) as a genuine barge-in -- which still might not be a real
+command once `daemon.py` routes it; see `BargeInResult`'s own docstring.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 from openwakeword.vad import VAD
@@ -58,7 +62,6 @@ from swingbird.voice_audio import (
     read_frame,
 )
 from swingbird.voice_stt import (
-    VAD_SPEECH_THRESHOLD,
     STTError,
     Transcript,
     capture_until_silence,
@@ -82,6 +85,47 @@ PRE_ROLL_FRAMES = 4
 # `voice_stt.MAX_UTTERANCE_SECONDS`'s role as its own module's
 # non-config-driven default, same reasoning.
 DEFAULT_TRIGGER_FRAMES = 4
+
+# Per-frame VAD confidence a barge-in's own trigger frames must clear --
+# separate from, and stricter than, `voice_stt.VAD_SPEECH_THRESHOLD` (0.5),
+# which this same interruption's own `capture_until_silence` still uses
+# once triggered (endpointing an already-confirmed utterance is a different,
+# lower-stakes decision than confirming one in the first place). A false
+# trigger during playback is costlier than a missed endpoint mid-capture --
+# it stops the reply and, per `daemon.py`'s chit_chat/resume handling,
+# either routes the noise as a command or has to resume the reply -- so the
+# *start* of a barge-in is held to a stricter bar than everything after it.
+# Independent of `trigger_frames`: that knob guards against a brief loud
+# transient (a mouse click) via duration, this one against a sustained but
+# ambiguous signal (fan noise, breathing) via confidence -- live-tested
+# background noise (2026-09-23) crossed `VAD_SPEECH_THRESHOLD` for enough
+# *consecutive* frames to trigger even at `trigger_frames=4`, which a purely
+# duration-based fix can't help. Not itself live-tested yet -- a considered
+# starting point, same as `trigger_frames`'s own initial default, worth
+# retuning once real hardware (§V.14) is in the loop. Fallback for a caller
+# with no `Config` around, same reasoning as `DEFAULT_TRIGGER_FRAMES`.
+DEFAULT_TRIGGER_VAD_THRESHOLD = 0.8
+
+
+@dataclass(frozen=True)
+class BargeInResult:
+    """A genuine (confident, non-dismissal) interruption of a spoken reply,
+    together with the chunk index (`voice_tts.speak`'s own numbering)
+    playback had reached when it stopped.
+
+    `daemon.py` needs `resume_chunk` for a reason `speak_with_barge_in`
+    itself doesn't: its own dismiss-phrase/false-trigger resume (see
+    `speak_with_barge_in`'s docstring) is fully internal, but a transcript
+    that *is* confident and not a dismissal still might not be a real
+    command once routed through the daemon's intent machinery -- a
+    chit_chat classification there means resuming this same reply from
+    `resume_chunk`, not losing it to the "that's outside what I handle"
+    reply. See `daemon._run_voice_exchange`.
+    """
+
+    transcript: Transcript
+    resume_chunk: int
+
 
 # Said (or heard, mistakenly) after a barge-in, these mean "that wasn't a
 # real command, keep going" rather than a new instruction -- matched
@@ -113,35 +157,47 @@ def speak_with_barge_in(
     mic: VoiceMicConfig,
     stt: VoiceSTTConfig,
     trigger_frames: int = DEFAULT_TRIGGER_FRAMES,
-) -> Transcript | None:
+    vad_threshold: float = DEFAULT_TRIGGER_VAD_THRESHOLD,
+    start_chunk: int = 0,
+) -> BargeInResult | None:
     """Speak `text` aloud, listening on `mic` at the same time for the
-    user talking over it -- resuming `text` from the start, rather than
-    losing it, if what gets captured turns out not to be a real
-    interruption (see module docstring).
+    user talking over it -- resuming `text` from wherever it stopped,
+    rather than losing it, if what gets captured turns out not to be a
+    real interruption (see module docstring).
 
     Runs `_speak_once_with_barge_in` for one playback-plus-listen pass. If
     that returns `None` (nothing interrupted playback), this returns
     `None` too. If it returns a confident `Transcript` that isn't a
-    dismissal phrase, that's a genuine barge-in -- returned as-is for
-    `daemon.py` to route as the next thing said. Otherwise (not
-    confident, or confident but a dismissal like "never mind") the
-    interruption wasn't real: `text` is spoken again from the beginning,
-    up to `MAX_RESUME_ATTEMPTS` times, before giving up and returning
-    `None` as if the reply had simply finished.
+    dismissal phrase, that's a genuine barge-in -- wrapped in a
+    `BargeInResult` (with where in `text` it stopped) for `daemon.py` to
+    route as the next thing said. Otherwise (not confident, or confident
+    but a dismissal like "never mind") the interruption wasn't real:
+    `text` resumes from that same chunk, up to `MAX_RESUME_ATTEMPTS`
+    times, before giving up and returning `None` as if the reply had
+    simply finished.
 
-    `trigger_frames` (Voice Mode design doc §V.12) is how many consecutive
-    VAD-positive frames a mid-playback signal must sustain before it's
-    trusted as the start of real speech rather than a transient -- see
-    `config.VoiceConfig.barge_in_trigger_frames`'s own docstring.
+    `start_chunk` lets a caller resume `text` from partway through --
+    `daemon.py` passes the `resume_chunk` off a previous `BargeInResult`
+    back in when a barge-in's own transcript turns out, once routed, not
+    to be a real command either (see `daemon._run_voice_exchange`).
+
+    `trigger_frames`/`vad_threshold` (Voice Mode design doc §V.12) are how
+    many consecutive frames a mid-playback signal must sustain, and how
+    confident each of those frames must score, before it's trusted as the
+    start of real speech rather than a transient -- see
+    `config.VoiceConfig.barge_in_trigger_frames`/`barge_in_vad_threshold`'s
+    own docstrings.
     """
+    chunk = start_chunk
     for _attempt in range(MAX_RESUME_ATTEMPTS + 1):
-        transcript = _speak_once_with_barge_in(
-            text, tts, output, mic, stt, trigger_frames
+        transcript, resume_chunk = _speak_once_with_barge_in(
+            text, tts, output, mic, stt, trigger_frames, vad_threshold, chunk
         )
         if transcript is None:
             return None
         if transcript.is_confident and not _is_dismiss_phrase(transcript.text):
-            return transcript
+            return BargeInResult(transcript=transcript, resume_chunk=resume_chunk or 0)
+        chunk = resume_chunk or 0
         print(
             "swingbird: barge-in wasn't a real interruption "
             f"(confident={transcript.is_confident}, text={transcript.text!r}), "
@@ -157,15 +213,19 @@ def _speak_once_with_barge_in(
     mic: VoiceMicConfig,
     stt: VoiceSTTConfig,
     trigger_frames: int,
-) -> Transcript | None:
+    vad_threshold: float,
+    start_chunk: int,
+) -> tuple[Transcript | None, int | None]:
     """One playback-plus-listen pass of `speak_with_barge_in` -- speaks
-    `text` on a background thread while this thread reads `mic`'s own
-    `arecord` stream frame by frame through the same VAD threshold
-    `voice_stt.record_utterance` uses.
+    `text` (from `start_chunk` on) on a background thread while this
+    thread reads `mic`'s own `arecord` stream frame by frame, and returns
+    `(transcript, resume_chunk)`: `resume_chunk` is wherever `speak`
+    stopped (`None` if it played through), independent of whether a
+    barge-in happened to be what stopped it.
 
     A frame only counts as the start of real speech once `trigger_frames`
-    *consecutive* frames have scored at or above `VAD_SPEECH_THRESHOLD` --
-    a single frame doing so (the original §V.12 behavior) was too quick to
+    *consecutive* frames have scored at or above `vad_threshold` -- a
+    single frame doing so (the original §V.12 behavior) was too quick to
     trip on a transient like a mouse click. Every frame read, speech-
     scoring or not, is kept in a rolling window sized to also hold
     `PRE_ROLL_FRAMES` frames *before* that run starts, so a quiet-onset
@@ -174,8 +234,10 @@ def _speak_once_with_barge_in(
     fire. Once it does, playback is stopped immediately (via
     `stop_event`) and the *same* mic stream keeps recording
     (`capture_until_silence`, seeded with that whole window) until the
-    interruption ends, then transcribes and returns it. Returns `None` if
-    playback finished with nothing said over it.
+    interruption ends, then transcribes and returns it. Returns `(None,
+    resume_chunk)` if playback finished with nothing said over it --
+    `resume_chunk` will be `None` too unless `speak` itself was cut off by
+    something other than a barge-in (see `finally`'s own comment).
 
     Both `aplay` (via `speak`'s own teardown) and this function's own
     `arecord` (via `close_mic_stream`) are always fully torn down before
@@ -193,10 +255,14 @@ def _speak_once_with_barge_in(
     stop_playback = threading.Event()
     playback_done = threading.Event()
     playback_errors: list[Exception] = []
+    resume_chunk: int | None = None
 
     def _run_playback() -> None:
+        nonlocal resume_chunk
         try:
-            speak(text, tts, output, stop_event=stop_playback)
+            resume_chunk = speak(
+                text, tts, output, stop_event=stop_playback, start_chunk=start_chunk
+            )
         except Exception as exc:  # noqa: BLE001 - re-raised on this thread below
             playback_errors.append(exc)
         finally:
@@ -215,7 +281,7 @@ def _speak_once_with_barge_in(
         while not playback_done.is_set():
             frame = call_translating_stream_error(STTError, read_frame, record)
             window.append(frame)
-            if vad.predict(frame) < VAD_SPEECH_THRESHOLD:
+            if vad.predict(frame) < vad_threshold:
                 consecutive_speech_frames = 0
                 continue
             consecutive_speech_frames += 1
@@ -249,4 +315,4 @@ def _speak_once_with_barge_in(
 
     if playback_errors:
         raise playback_errors[0]
-    return transcript
+    return transcript, resume_chunk

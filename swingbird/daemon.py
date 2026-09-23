@@ -69,19 +69,29 @@ window (§V.11).
 Every voice reply plays through `voice_barge_in.speak_with_barge_in`
 rather than `voice_tts.speak` directly (§V.12): it listens on the mic
 concurrently with playback so the user can start talking over a reply
-instead of having to wait it out, and returns the interrupting utterance's
-own `Transcript` when that happens. `_run_voice_turn`'s loop treats that
-exactly like a fresh capture from `voice_stt.record_and_transcribe` --
-routing it through `_run_voice_exchange` (or speaking the low-confidence
-reply) again -- rather than falling through to its own post-reply cue and
-recording. Only when nothing interrupted a reply does the loop play the
-cue and record the follow-up as before -- the mic opens the instant the
-cue finishes, same as the wake-word listen, with no extra wait: an
-earlier post-cue debounce (§V.12) was removed (2026-09-23) after live
-testing on a headset never showed the reply/cue bleed-into-mic problem it
-was meant to guard against, and it cost a real, reported regression --
-speech starting right at the cue got eaten -- to guard against a risk
-nobody had actually observed.
+instead of having to wait it out, and returns a `BargeInResult` (the
+interrupting utterance's own `Transcript`, plus where in the reply
+playback stopped) when that happens. `_run_voice_turn`'s loop treats the
+transcript exactly like a fresh capture from
+`voice_stt.record_and_transcribe` -- routing it through
+`_run_voice_exchange` (or speaking the low-confidence reply) again --
+rather than falling through to its own post-reply cue and recording. Only
+when nothing interrupted a reply does the loop play the cue and record
+the follow-up as before -- the mic opens the instant the cue finishes,
+same as the wake-word listen, with no extra wait: an earlier post-cue
+debounce (§V.12) was removed (2026-09-23) after live testing on a headset
+never showed the reply/cue bleed-into-mic problem it was meant to guard
+against, and it cost a real, reported regression -- speech starting right
+at the cue got eaten -- to guard against a risk nobody had actually
+observed.
+
+A confident, non-dismissal barge-in transcript still isn't guaranteed to
+be a real command once it reaches `_process` -- live testing (2026-09-23)
+found short interruptions routinely came back `chit_chat`, and speaking
+`_CHIT_CHAT_REPLY` on top of the reply it had just cut off, permanently
+losing that reply, was worse than just resuming it. `_run_voice_exchange`
+threads the interrupted reply's own text and stop point (`_PendingResume`)
+into the next exchange for exactly that case -- see its own docstring.
 """
 
 from __future__ import annotations
@@ -91,7 +101,7 @@ import asyncio
 import contextlib
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from swingbird import outbound, voice_barge_in, voice_cues, voice_stt, voice_wake
 from swingbird.audit import AuditLog
@@ -150,6 +160,12 @@ _CHIT_CHAT_REPLY = (
     "That's outside what I handle -- ask me for a recap, or to dispatch an "
     "instruction to a project channel."
 )
+# Posted (not spoken) in place of the usual reply DM+footer when a barge-in
+# transcript resolves to _CHIT_CHAT_REPLY and there's a reply to resume (see
+# `_PendingResume`/`_run_voice_exchange`) -- keeps the DM thread coherent
+# (the transcript DM above it would otherwise sit with no reply at all)
+# without narrating the "wasn't a command" apology out loud a second time.
+_RESUMED_AFTER_NON_COMMAND_REPLY = "(Didn't sound like a command -- picking back up.)"
 _ACTIONABLE_ERRORS = (
     RouterError,
     PendingActionError,
@@ -158,6 +174,23 @@ _ACTIONABLE_ERRORS = (
     LLMError,
     outbound.RelayError,
 )
+
+
+@dataclass(frozen=True)
+class _PendingResume:
+    """The reply a barge-in just interrupted, and where in it
+    (`voice_tts.speak`'s own chunk numbering) playback stopped -- carried
+    from one `_run_voice_exchange` call to the next within `_run_voice_turn`
+    so that if the interrupting transcript turns out, once routed, not to
+    be a real command either (`_process` returns `_CHIT_CHAT_REPLY`), that
+    reply can resume from `resume_chunk` instead of being lost to the
+    "that's outside what I handle" apology. See `_run_voice_exchange`'s own
+    docstring for why this is scoped to barge-ins specifically, not every
+    chit_chat classification.
+    """
+
+    text: str
+    resume_chunk: int
 
 
 class DaemonError(Exception):
@@ -407,19 +440,24 @@ class Daemon:
         misheard word can't accidentally read as a recap/dispatch/confirm.
         The owner instead just hears `voice_stt.LOW_CONFIDENCE_REPLY`
         spoken back, and the turn keeps listening exactly like it would
-        after a normal reply.
+        after a normal reply. Nothing about that apology is ever worth
+        resuming, so `resume` is unconditionally cleared on this path.
 
         `listen_for_wake_word` runs off-thread for the same reason
         `_run_voice_exchange`'s blocking calls do -- see its docstring.
 
         Every reply (confident-exchange or low-confidence apology) speaks
         through `voice_barge_in.speak_with_barge_in` (§V.12), which returns
-        the interrupting `Transcript` if the user talked over it. That
-        transcript becomes `transcript` for the *next* loop iteration
-        directly -- skipping the cue/debounce/record below entirely, since
-        the mic was already listening and already captured it -- exactly as
-        if it had come from `record_and_transcribe`. Only a reply nobody
-        interrupted falls through to the normal cue-then-listen path.
+        a `BargeInResult` if the user talked over it. That result's own
+        `transcript` becomes `transcript` for the *next* loop iteration
+        directly -- skipping the cue/record below entirely, since the mic
+        was already listening and already captured it -- exactly as if it
+        had come from `record_and_transcribe`; its `resume_chunk` (wrapped
+        in `resume`) is threaded into the *next* `_run_voice_exchange` call
+        in case that transcript, once routed, turns out not to be a real
+        command either -- see that method's own docstring. Only a reply
+        nobody interrupted falls through to the normal cue-then-listen
+        path.
 
         A `voice_cues.play_listening_started` chime plays every time the
         mic is about to start a *fresh* deliberate listen (after the wake
@@ -451,11 +489,14 @@ class Daemon:
             voice.stt,
             voice.wake_word_window_seconds,
         )
+        resume: _PendingResume | None = None
         while transcript is not None:
             if transcript.is_confident:
-                barge_in = await self._run_voice_exchange(transcript.text)
+                barge_in, resume = await self._run_voice_exchange(
+                    transcript.text, resume
+                )
             else:
-                barge_in = await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     voice_barge_in.speak_with_barge_in,
                     voice_stt.LOW_CONFIDENCE_REPLY,
                     voice.tts,
@@ -463,7 +504,10 @@ class Daemon:
                     voice.mic,
                     voice.stt,
                     voice.barge_in_trigger_frames,
+                    voice.barge_in_vad_threshold,
                 )
+                barge_in = result.transcript if result is not None else None
+                resume = None
             if barge_in is not None:
                 transcript = barge_in
                 continue
@@ -476,14 +520,34 @@ class Daemon:
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 
-    async def _run_voice_exchange(self, transcript: str) -> voice_stt.Transcript | None:
+    async def _run_voice_exchange(
+        self, transcript: str, resume: _PendingResume | None
+    ) -> tuple[voice_stt.Transcript | None, _PendingResume | None]:
         """Route one already-captured `transcript` through the exact same
         intent machinery a typed DM uses -- the first fully voice-driven
         exchange (§V.16 step 5), and every exchange after it within the
         same wake word's follow-up window (§V.11). Returns the barge-in
-        `Transcript` if the user talked over the spoken reply, or `None` if
-        nothing interrupted it -- see `_run_voice_turn`'s own docstring for
-        how that return value is used.
+        `Transcript` (or `None` if nothing interrupted the spoken reply)
+        alongside a `_PendingResume` for that reply (or `None` to match) --
+        see `_run_voice_turn`'s own docstring for how both are used.
+
+        `resume`, when set, is the reply a *previous* barge-in interrupted
+        -- passed in so that if `transcript` (that interruption's own
+        words) turns out, once routed here, not to be a real command
+        either (`_process` returns `_CHIT_CHAT_REPLY`), the interrupted
+        reply resumes from `resume.resume_chunk` instead of being lost to
+        the "that's outside what I handle" apology on top of it (Voidious,
+        2026-09-23: "I couldn't trigger the 'nevermind' path ... anything
+        long enough to get transcribed would get interpreted as not a
+        command"). This is deliberately narrower than "never speak
+        _CHIT_CHAT_REPLY" -- a wake-word-initiated turn with nothing
+        in-flight to resume (`resume is None`) still gets the normal
+        apology, since there's nothing more useful to do with an
+        out-of-scope request that didn't interrupt anything. A short DM
+        note stands in for the usual reply+footer on this path (the
+        transcript DM above it was already posted before routing revealed
+        this wasn't a command, so it can't be un-posted) -- nothing is
+        spoken for it, unlike a normal reply.
 
         Mirrors `_handle_event`'s to_thread structure for the same reason:
         `_process` and `speak_with_barge_in` are both blocking calls (an
@@ -506,25 +570,44 @@ class Daemon:
             self._process, transcript, self._dm_id, event_id
         )
         self._start_pending_watch()
-        # §V.8: the reply DM appends the transcript as a footer so it reads
-        # on its own -- e.g. in a push notification, or scrolled past its
-        # paired transcript message -- rather than relying on thread
-        # position alone to show which command it's answering.
-        await asyncio.to_thread(
-            outbound.send_message,
-            self._dm_id,
-            f"{reply}\n\n-- {transcript}",
-            reply_to=event_id,
-        )
-        return await asyncio.to_thread(
+
+        if reply == _CHIT_CHAT_REPLY and resume is not None:
+            await asyncio.to_thread(
+                outbound.send_message,
+                self._dm_id,
+                _RESUMED_AFTER_NON_COMMAND_REPLY,
+                reply_to=event_id,
+            )
+            spoken_text = resume.text
+            start_chunk = resume.resume_chunk
+        else:
+            # §V.8: the reply DM appends the transcript as a footer so it
+            # reads on its own -- e.g. in a push notification, or scrolled
+            # past its paired transcript message -- rather than relying on
+            # thread position alone to show which command it's answering.
+            await asyncio.to_thread(
+                outbound.send_message,
+                self._dm_id,
+                f"{reply}\n\n-- {transcript}",
+                reply_to=event_id,
+            )
+            spoken_text = render_for_speech(reply)
+            start_chunk = 0
+
+        result = await asyncio.to_thread(
             voice_barge_in.speak_with_barge_in,
-            render_for_speech(reply),
+            spoken_text,
             voice.tts,
             voice.output,
             voice.mic,
             voice.stt,
             voice.barge_in_trigger_frames,
+            voice.barge_in_vad_threshold,
+            start_chunk,
         )
+        if result is None:
+            return None, None
+        return result.transcript, _PendingResume(spoken_text, result.resume_chunk)
 
     def _start_pending_watch(self) -> None:
         """Consume `_pending_watch` (set by `_confirm`, running off-thread

@@ -240,14 +240,19 @@ def test_speak_splits_a_long_paragraph_into_duration_capped_chunks(
     ]
 
 
+def _setup_voice_and_aplay(monkeypatch, fake_voice, popen_count=1):
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    fake_popens = [FakePopen(returncode=0) for _ in range(popen_count)]
+    popen_calls, sleep_calls = _mock_aplay_and_sleep(monkeypatch, fake_popens)
+    return fake_popens, popen_calls, sleep_calls
+
+
 def test_speak_single_chunk_paragraph_has_no_pause_inserted(tmp_path, monkeypatch):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
     fake_voice = FakeVoice(
         chunks=None, sample_rate=1, chunks_by_text={"One.": [FakeChunk(b"aa")]}
     )
-    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
-    fake_popens = [FakePopen(returncode=0)]
-    popen_calls, sleep_calls = _mock_aplay_and_sleep(monkeypatch, fake_popens)
+    (_, popen_calls, sleep_calls) = _setup_voice_and_aplay(monkeypatch, fake_voice)
 
     speak(
         "One.",
@@ -420,7 +425,20 @@ def test_play_terminates_aplay_immediately_when_stop_event_set_mid_write(
     assert fake_popen.stdin.closed
 
 
-def test_speak_skips_remaining_paragraphs_once_stop_event_set(tmp_path, monkeypatch):
+def test_speak_returns_none_when_played_through_uninterrupted(tmp_path, monkeypatch):
+    (_, _fake_popen) = _setup_test_voice_and_popen(tmp_path, monkeypatch)
+
+    result = speak(
+        "hello",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+    )
+
+    assert result is None
+
+
+def _setup_voice_with_stop_event(tmp_path, monkeypatch):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
     fake_voice = FakeVoice(
         chunks=None,
@@ -433,6 +451,89 @@ def test_speak_skips_remaining_paragraphs_once_stop_event_set(tmp_path, monkeypa
     monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
     stop_event = threading.Event()
     popen_calls = []
+    return fake_voice, stop_event, popen_calls
+
+
+def _popen_ctor_that_sets_stop_event(popen_calls, stop_event):
+    """A `subprocess.Popen` fake whose first write to the child's stdin sets
+    `stop_event` right after writing -- simulates `_play` writing audio to
+    `aplay` and the barge-in monitor thread stopping playback mid-write."""
+
+    def fake_ctor(args, stdin=None):
+        popen = FakePopen(returncode=0)
+        popen_calls.append(popen)
+        original_write = popen.stdin.write
+
+        def write_and_trigger_stop(data):
+            original_write(data)
+            stop_event.set()
+
+        popen.stdin.write = write_and_trigger_stop
+        return popen
+
+    return fake_ctor
+
+
+def test_speak_returns_the_chunk_index_it_stopped_on(tmp_path, monkeypatch):
+    (_, stop_event, popen_calls) = _setup_voice_with_stop_event(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        voice_tts.subprocess,
+        "Popen",
+        _popen_ctor_that_sets_stop_event(popen_calls, stop_event),
+    )
+    monkeypatch.setattr(voice_tts.time, "sleep", lambda seconds: None)
+
+    result = speak(
+        "first item\n\nsecond item",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        stop_event=stop_event,
+    )
+
+    # Stopped mid-first-chunk (index 0 of the flattened, whole-reply
+    # sequence) -- "second item" (index 1) never played.
+    assert result == 0
+    assert len(popen_calls) == 1
+
+
+def test_speak_resumes_from_start_chunk_skipping_earlier_chunks(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice(
+        chunks=None,
+        sample_rate=1,
+        chunks_by_text={
+            "first item": [FakeChunk(b"aa")],
+            "second item": [FakeChunk(b"bb")],
+        },
+    )
+    fake_popens, popen_calls, sleep_calls = _setup_voice_and_aplay(
+        monkeypatch, fake_voice
+    )
+
+    result = speak(
+        "first item\n\nsecond item",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        start_chunk=1,
+    )
+
+    # Both paragraphs are still synthesized (needed to know each chunk's
+    # audio and pause), but only chunk index 1 ("second item") plays --
+    # chunk 0 ("first item") is skipped entirely, not just muted.
+    assert fake_voice.synthesize_calls == ["first item", "second item"]
+    assert len(popen_calls) == 1
+    assert bytes(fake_popens[0].stdin.written) == b"bb"
+    assert sleep_calls == []
+    assert result is None
+
+
+def test_speak_skips_remaining_paragraphs_once_stop_event_set(tmp_path, monkeypatch):
+    fake_voice, stop_event, popen_calls = _setup_voice_with_stop_event(
+        tmp_path, monkeypatch
+    )
 
     def fake_ctor(args, stdin=None):
         popen = FakePopen(returncode=0)

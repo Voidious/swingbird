@@ -2699,12 +2699,12 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     speak_calls = []
+
+    def fake_speak_with_barge_in(*args):
+        speak_calls.append(args)
+
     monkeypatch.setattr(
-        daemon.voice_barge_in,
-        "speak_with_barge_in",
-        lambda text, tts, output, mic, stt, trigger_frames: speak_calls.append(
-            (text, tts, output, mic, stt, trigger_frames)
-        ),
+        daemon.voice_barge_in, "speak_with_barge_in", fake_speak_with_barge_in
     )
     cue_calls = []
     monkeypatch.setattr(
@@ -2770,6 +2770,8 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.barge_in_trigger_frames,
+            voice_config.voice.barge_in_vad_threshold,
+            0,
         )
     ]
 
@@ -2791,12 +2793,12 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
         daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     speak_calls = []
+
+    def fake_speak_with_barge_in(*args):
+        speak_calls.append(args)
+
     monkeypatch.setattr(
-        daemon.voice_barge_in,
-        "speak_with_barge_in",
-        lambda text, tts, output, mic, stt, trigger_frames: speak_calls.append(
-            (text, tts, output, mic, stt, trigger_frames)
-        ),
+        daemon.voice_barge_in, "speak_with_barge_in", fake_speak_with_barge_in
     )
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_started", lambda output: None
@@ -2823,6 +2825,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.barge_in_trigger_frames,
+            voice_config.voice.barge_in_vad_threshold,
         )
     ]
 
@@ -2834,7 +2837,7 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt, trigger_frames: None,
+        lambda *args: None,
     )
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_started", lambda output: None
@@ -2900,7 +2903,7 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt, trigger_frames: None,
+        lambda *args: None,
     )
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_started", lambda output: None
@@ -2960,14 +2963,22 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     )
     # The reply to "recap" gets barged into once (returning the "stop"
     # transcript); the reply to that "stop" exchange finishes uninterrupted.
-    barge_in_results = iter([T(text="stop", is_confident=True), None])
+    barge_in_results = iter(
+        [
+            daemon.voice_barge_in.BargeInResult(
+                transcript=T(text="stop", is_confident=True), resume_chunk=1
+            ),
+            None,
+        ]
+    )
     speak_calls = []
+
+    def fake_speak_with_barge_in(text, *_rest):
+        speak_calls.append(text)
+        return next(barge_in_results)
+
     monkeypatch.setattr(
-        daemon.voice_barge_in,
-        "speak_with_barge_in",
-        lambda text, tts, output, mic, stt, trigger_frames: (
-            speak_calls.append(text) or next(barge_in_results)
-        ),
+        daemon.voice_barge_in, "speak_with_barge_in", fake_speak_with_barge_in
     )
     cue_calls = []
     monkeypatch.setattr(
@@ -3003,6 +3014,98 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
         voice_config.voice.follow_up_window_seconds,
     ]
     assert cue_calls == ["started", "started", "stopped"]
+
+
+def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
+    tmp_path, monkeypatch
+):
+    """Voidious, 2026-09-23: "I couldn't trigger the 'nevermind' path ...
+    anything long enough to get transcribed would get interpreted as not a
+    command." A genuine (confident) barge-in transcript that turns out,
+    once routed, to be `chit_chat` shouldn't lose the reply it interrupted
+    to the "that's outside what I handle" apology -- it should resume that
+    reply from where it stopped instead.
+    """
+    monkeypatch.setattr(
+        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+    )
+    T = daemon.voice_stt.Transcript
+    stt_transcripts = iter([T(text="dispatch it", is_confident=True), None])
+
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None):
+        return next(stt_transcripts)
+
+    monkeypatch.setattr(
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
+    )
+
+    speak_calls = []
+
+    def fake_speak_with_barge_in(text, *rest):
+        # `_run_voice_exchange` always passes start_chunk as the last
+        # positional argument (0 for a fresh reply, non-zero when resuming).
+        speak_calls.append((text, rest[-1]))
+        if len(speak_calls) == 1:
+            return daemon.voice_barge_in.BargeInResult(
+                transcript=T(text="mumble mumble", is_confident=True),
+                resume_chunk=4,
+            )
+        return None
+
+    monkeypatch.setattr(
+        daemon.voice_barge_in, "speak_with_barge_in", fake_speak_with_barge_in
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_started", lambda output: None
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_stopped", lambda output: None
+    )
+    sent = _sent(monkeypatch)
+    llm = FakeLLM(
+        json_response=[
+            {
+                "intent": "dispatch",
+                "channel": "backend",
+                "target_agent": "Codex",
+                "message": "fix it",
+            },
+            {"intent": "chit_chat"},
+        ]
+    )
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, llm, config=voice_config)
+
+    asyncio.run(bot._run_voice_turn())
+
+    dispatch_reply = (
+        "About to relay to backend (for Codex): 'fix it'. Confirm to send, or cancel."
+    )
+    # `render_for_speech` un-reprs the quoted instruction for TTS -- the
+    # spoken text differs slightly from the DM-posted `dispatch_reply`.
+    spoken_dispatch_reply = (
+        "About to relay to backend (for Codex): fix it. Confirm to send, or cancel."
+    )
+    # The dispatch confirmation prompt is spoken normally the first time
+    # (start_chunk=0); once barged into by "mumble mumble" -- which routes
+    # to chit_chat, not a real command -- the *same* prompt resumes from
+    # resume_chunk (4), not chunk 0 and not the chit_chat apology.
+    assert speak_calls == [
+        (spoken_dispatch_reply, 0),
+        (spoken_dispatch_reply, 4),
+    ]
+    assert sent == [
+        (("dm-chan", "dispatch it"), {}),
+        (
+            ("dm-chan", f"{dispatch_reply}\n\n-- dispatch it"),
+            {"reply_to": "reply-evt"},
+        ),
+        (("dm-chan", "mumble mumble"), {}),
+        (
+            ("dm-chan", daemon._RESUMED_AFTER_NON_COMMAND_REPLY),
+            {"reply_to": "reply-evt"},
+        ),
+    ]
 
 
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(

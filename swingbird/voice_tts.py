@@ -228,8 +228,11 @@ def speak(
     output: VoiceOutputConfig,
     models_dir: Path = DEFAULT_MODELS_DIR,
     stop_event: threading.Event | None = None,
-) -> None:
+    start_chunk: int = 0,
+) -> int | None:
     """Synthesize `text` with Piper and play it on `output`'s device.
+    Returns the index of the chunk playback stopped on if `stop_event` cut
+    it short, or `None` if it played through to the end.
 
     `stop_event`, when given (Voice Mode design doc §V.12's barge-in),
     lets a caller -- `voice_barge_in.speak_with_barge_in`, monitoring the
@@ -240,6 +243,19 @@ def speak(
     so a chunk already mid-playback stops within one
     `_STOP_POLL_SECONDS` slice; either way, once set, `speak` returns
     without playing any later chunk/paragraph or sleeping between them.
+
+    `start_chunk`/the return value (Voice Mode design doc §V.12): every
+    chunk across the whole reply is numbered in one flat sequence,
+    regardless of which paragraph it's in, and `start_chunk` skips
+    straight to that index without (re-)playing anything before it.
+    Resuming a reply after a false barge-in trigger used to always restart
+    `text` from the very beginning -- for a long reply, that meant
+    re-hearing everything already heard before the interruption (Voidious,
+    2026-09-23). `voice_barge_in.speak_with_barge_in` instead passes back
+    in whatever index this returned, so a resume picks up from the chunk
+    that got cut off, not chunk zero. `text` is still synthesized in full
+    on a resume (see below for why up-front synthesis already happens
+    regardless) -- only *playback* is skipped ahead.
 
     Blocking and synchronous on purpose -- `daemon.py`'s `_run_voice_turn`
     runs it via `asyncio.to_thread` rather than awaiting it directly (see
@@ -307,17 +323,31 @@ def speak(
     paragraph_chunks = [
         _synthesize_chunks(voice, paragraph, sample_rate) for paragraph in paragraphs
     ]
-    for index, chunks in enumerate(paragraph_chunks):
-        for chunk_index, chunk_audio in enumerate(chunks):
-            if stop_event is not None and stop_event.is_set():
-                return
-            _play(chunk_audio, sample_rate, device, stop_event)
-            if stop_event is not None and stop_event.is_set():
-                return
-            if chunk_index < len(chunks) - 1:
-                time.sleep(_CHUNK_PAUSE_SECONDS)
-        if index < len(paragraph_chunks) - 1:
-            time.sleep(_PARAGRAPH_PAUSE_SECONDS)
+    # Flattened into one (audio, pause-after) sequence, numbered start to
+    # finish across paragraph boundaries, so `start_chunk`/the return value
+    # can address "how far into this whole reply" with a single index
+    # rather than a (paragraph, chunk) pair.
+    chunks: list[tuple[bytes, float]] = []
+    for index, para_chunks in enumerate(paragraph_chunks):
+        for chunk_index, chunk_audio in enumerate(para_chunks):
+            if chunk_index < len(para_chunks) - 1:
+                pause = _CHUNK_PAUSE_SECONDS
+            elif index < len(paragraph_chunks) - 1:
+                pause = _PARAGRAPH_PAUSE_SECONDS
+            else:
+                pause = 0.0
+            chunks.append((chunk_audio, pause))
+
+    for chunk_index in range(start_chunk, len(chunks)):
+        if stop_event is not None and stop_event.is_set():
+            return chunk_index
+        chunk_audio, pause = chunks[chunk_index]
+        _play(chunk_audio, sample_rate, device, stop_event)
+        if stop_event is not None and stop_event.is_set():
+            return chunk_index
+        if pause:
+            time.sleep(pause)
+    return None
 
 
 def _main() -> None:  # pragma: no cover -- manual smoke test, see §V.16 step 2
