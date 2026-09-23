@@ -115,12 +115,16 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
 
     monkeypatch.setattr(voice_barge_in, "transcribe", fake_transcribe)
 
+    # trigger_frames=1 keeps this test focused on the stop/capture/
+    # transcribe flow -- the consecutive-frame debounce itself has its own
+    # dedicated test below.
     result = voice_barge_in.speak_with_barge_in(
         "reply text",
         VoiceTTSConfig(voice="v"),
         VoiceOutputConfig(),
         VoiceMicConfig(),
         VoiceSTTConfig(),
+        trigger_frames=1,
     )
 
     assert result == expected
@@ -133,6 +137,21 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
     assert "barge-in captured" in out
     assert "confident=True" in out
     assert "text='stop'" in out
+
+
+def _patch_barge_in_capture(monkeypatch, vad_class):
+    monkeypatch.setattr(voice_barge_in, "VAD", vad_class)
+
+    capture_calls = []
+    monkeypatch.setattr(
+        voice_barge_in,
+        "capture_until_silence",
+        lambda record, vad, frames, speech_started, wait_frames: (
+            capture_calls.append(frames) or np.array([0])
+        ),
+    )
+    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    return capture_calls
 
 
 def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
@@ -159,29 +178,27 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
         def predict(self, frame):
             return next(scores)
 
-    monkeypatch.setattr(voice_barge_in, "VAD", ScriptedVAD)
-
-    capture_calls = []
-    monkeypatch.setattr(
-        voice_barge_in,
-        "capture_until_silence",
-        lambda record, vad, frames, speech_started, wait_frames: (
-            capture_calls.append(frames) or np.array([0])
-        ),
-    )
-    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    capture_calls = _patch_barge_in_capture(monkeypatch, ScriptedVAD)
     monkeypatch.setattr(
         voice_barge_in,
         "transcribe",
-        lambda model, audio: Transcript(text="", is_confident=False),
+        lambda model, audio: Transcript(text="stop", is_confident=True),
     )
 
+    # trigger_frames=1 preserves the original single-frame trigger for
+    # this test -- it's about pre-roll seeding, not the consecutive-frame
+    # debounce, which has its own dedicated test below. A confident,
+    # non-dismissal transcript keeps this to one attempt: a low-confidence
+    # one would make `speak_with_barge_in` resume (see the resume tests
+    # below), calling `speak` (and exhausting this same one-shot
+    # VAD/read_frame scripting) a second time.
     voice_barge_in.speak_with_barge_in(
         "reply text",
         VoiceTTSConfig(voice="v"),
         VoiceOutputConfig(),
         VoiceMicConfig(),
         VoiceSTTConfig(),
+        trigger_frames=1,
     )
 
     # Only the most recent PRE_ROLL_FRAMES quiet frames are kept (the
@@ -189,6 +206,164 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
     expected = quiet_frames[-voice_barge_in.PRE_ROLL_FRAMES :] + [trigger_frame]
     assert len(capture_calls) == 1
     assert [f.tolist() for f in capture_calls[0]] == [f.tolist() for f in expected]
+
+
+def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
+    """A two-frame blip that drops back below threshold shouldn't stop
+    playback -- only `trigger_frames` *consecutive* speech-scoring frames
+    should. Live-tested 2026-09-23: a single mouse click, or sitting up in
+    a chair, was enough to interrupt playback under the original
+    one-frame trigger.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None):
+        stop_event.wait(timeout=1.0)
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+
+    frames = [np.array([i]) for i in range(6)]
+    frames_read = iter(frames)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: next(frames_read))
+    # A two-frame blip (below trigger_frames=3), then three consecutive
+    # frames that do cross it.
+    scores = iter([0.9, 0.9, 0.0, 0.9, 0.9, 0.9])
+
+    class ScriptedVAD:
+        def predict(self, frame):
+            return next(scores)
+
+    capture_calls = _patch_barge_in_capture(monkeypatch, ScriptedVAD)
+    expected_transcript = Transcript(text="stop", is_confident=True)
+    monkeypatch.setattr(
+        voice_barge_in, "transcribe", lambda model, audio: expected_transcript
+    )
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=3,
+    )
+
+    assert result == expected_transcript
+    # The blip's two frames reset the consecutive count -- capture only
+    # happens once, seeded with every frame read (the blip plus the three
+    # that actually triggered it).
+    assert len(capture_calls) == 1
+    assert [f.tolist() for f in capture_calls[0]] == [f.tolist() for f in frames]
+
+
+def _patch_barge_in_speak_stream_and_vad(monkeypatch, fake_speak):
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    vad_instances = iter([ConstantVAD(0.9), ConstantVAD(0.0)])
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: next(vad_instances))
+
+
+def _patch_barge_in_mic_and_capture_stubs(monkeypatch, voice_barge_in):
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    monkeypatch.setattr(
+        voice_barge_in,
+        "capture_until_silence",
+        lambda record, vad, frames, speech_started, wait_frames: np.array([0]),
+    )
+
+
+def _run_false_trigger_barge_in(monkeypatch, voice_barge_in):
+    _patch_barge_in_mic_and_capture_stubs(monkeypatch, voice_barge_in)
+    monkeypatch.setattr(
+        voice_barge_in,
+        "transcribe",
+        lambda model, audio: Transcript(text="", is_confident=False),
+    )
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=1,
+    )
+
+    assert result is None
+
+
+def test_speak_with_barge_in_resumes_after_a_false_trigger(monkeypatch, capsys):
+    """A captured interruption that STT doesn't trust (empty/low-
+    confidence, per `voice_stt.transcribe`'s `vad_filter`) isn't real
+    speech -- `text` should be resumed from the start rather than lost,
+    matching the accidental-interruption reports from 2026-09-23.
+    """
+    speak_calls = []
+
+    def fake_speak(text, tts, output, stop_event=None):
+        speak_calls.append(text)
+        if len(speak_calls) == 1:
+            # First attempt: blocks until barged into below.
+            stop_event.wait(timeout=1.0)
+        else:
+            # Resumed attempt: finishes on its own, uninterrupted.
+            time.sleep(0.05)
+
+    _patch_barge_in_speak_stream_and_vad(monkeypatch, fake_speak)
+    _run_false_trigger_barge_in(monkeypatch, voice_barge_in)
+    assert speak_calls == ["reply text", "reply text"]
+    assert "resuming reply" in capsys.readouterr().out
+
+
+def test_speak_with_barge_in_resumes_on_a_dismiss_phrase(monkeypatch):
+    """A confident "never mind"/"continue"/etc. means "that wasn't a real
+    command, keep going" -- resume `text`, don't route it as a command.
+    """
+    speak_calls = []
+
+    def fake_speak(text, tts, output, stop_event=None):
+        speak_calls.append(text)
+        if len(speak_calls) == 1:
+            stop_event.wait(timeout=1.0)
+        else:
+            time.sleep(0.05)
+
+    _patch_barge_in_speak_stream_and_vad(monkeypatch, fake_speak)
+    _patch_barge_in_mic_and_capture_stubs(monkeypatch, voice_barge_in)
+    monkeypatch.setattr(
+        voice_barge_in,
+        "transcribe",
+        lambda model, audio: Transcript(text="Never mind.", is_confident=True),
+    )
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=1,
+    )
+
+    assert result is None
+    assert speak_calls == ["reply text", "reply text"]
+
+
+def test_speak_with_barge_in_gives_up_after_max_resume_attempts(monkeypatch):
+    """A persistently noisy room shouldn't keep swingbird re-speaking the
+    same reply forever -- after `MAX_RESUME_ATTEMPTS` straight false
+    triggers, this gives up and returns `None`, same as an uninterrupted
+    reply.
+    """
+    speak_calls = []
+
+    def fake_speak(text, tts, output, stop_event=None):
+        speak_calls.append(text)
+        stop_event.wait(timeout=1.0)
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.9))
+    _run_false_trigger_barge_in(monkeypatch, voice_barge_in)
+    assert len(speak_calls) == voice_barge_in.MAX_RESUME_ATTEMPTS + 1
 
 
 def test_speak_with_barge_in_reraises_playback_exception(monkeypatch):

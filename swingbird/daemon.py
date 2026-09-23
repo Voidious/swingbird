@@ -462,6 +462,7 @@ class Daemon:
                     voice.output,
                     voice.mic,
                     voice.stt,
+                    voice.barge_in_trigger_frames,
                 )
             if barge_in is not None:
                 transcript = barge_in
@@ -522,6 +523,7 @@ class Daemon:
             voice.output,
             voice.mic,
             voice.stt,
+            voice.barge_in_trigger_frames,
         )
 
     def _start_pending_watch(self) -> None:

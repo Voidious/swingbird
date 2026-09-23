@@ -164,6 +164,7 @@ DEFAULT_OUTPUT_TYPE = "onboard"
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 30
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 30
+DEFAULT_BARGE_IN_TRIGGER_FRAMES = 4
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,18 @@ class VoiceConfig:
     # in-utterance-vs-between-utterances distinction as
     # wake_word_window_seconds above.
     follow_up_window_seconds: int = DEFAULT_FOLLOW_UP_WINDOW_SECONDS
+    # §V.12: how many consecutive VAD-positive frames (~80ms each) a
+    # mid-playback signal must sustain before `voice_barge_in` treats it
+    # as a genuine interruption rather than a brief transient -- live
+    # testing (2026-09-23) found a single loud frame (a mouse click,
+    # sitting up in a chair) was enough to stop playback under the
+    # original one-frame trigger. Higher values make barge-in less
+    # sensitive (slower to react, fewer false positives from incidental
+    # noise); lower values make it more sensitive. A visible, tunable
+    # knob for the same reason wake_word_window_seconds is one -- the
+    # right default depends on mic/headset/room, not something to lock
+    # in from one test session.
+    barge_in_trigger_frames: int = DEFAULT_BARGE_IN_TRIGGER_FRAMES
 
 
 @dataclass(frozen=True)
@@ -449,6 +462,16 @@ def _parse_voice(raw: dict) -> VoiceConfig:
     ):
         raise ConfigError("[voice].follow_up_window_seconds must be a positive integer")
 
+    barge_in_trigger_frames = section.get(
+        "barge_in_trigger_frames", DEFAULT_BARGE_IN_TRIGGER_FRAMES
+    )
+    if (
+        isinstance(barge_in_trigger_frames, bool)
+        or not isinstance(barge_in_trigger_frames, int)
+        or barge_in_trigger_frames <= 0
+    ):
+        raise ConfigError("[voice].barge_in_trigger_frames must be a positive integer")
+
     return VoiceConfig(
         enabled=enabled,
         wake_word=wake_word,
@@ -458,6 +481,7 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         tts=_parse_voice_tts(section.get("tts"), enabled=enabled),
         wake_word_window_seconds=wake_word_window_seconds,
         follow_up_window_seconds=follow_up_window_seconds,
+        barge_in_trigger_frames=barge_in_trigger_frames,
     )
 
 

@@ -690,6 +690,7 @@ def test_voice_defaults_to_disabled(tmp_path):
     assert config.voice.tts is None
     assert config.voice.wake_word_window_seconds == 30
     assert config.voice.follow_up_window_seconds == 30
+    assert config.voice.barge_in_trigger_frames == 4
 
 
 def test_voice_section_not_a_table(tmp_path):
@@ -826,5 +827,22 @@ def test_voice_follow_up_window_seconds_rejects_invalid_values(tmp_path, value):
     with pytest.raises(
         ConfigError,
         match=r"\[voice\].follow_up_window_seconds must be a positive integer",
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_barge_in_trigger_frames_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nbarge_in_trigger_frames = 6\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.barge_in_trigger_frames == 6
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"6"'])
+def test_voice_barge_in_trigger_frames_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nbarge_in_trigger_frames = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].barge_in_trigger_frames must be a positive integer",
     ):
         load_config(write(tmp_path, text))

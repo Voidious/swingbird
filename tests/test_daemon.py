@@ -2702,8 +2702,8 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt: speak_calls.append(
-            (text, tts, output, mic, stt)
+        lambda text, tts, output, mic, stt, trigger_frames: speak_calls.append(
+            (text, tts, output, mic, stt, trigger_frames)
         ),
     )
     cue_calls = []
@@ -2769,6 +2769,7 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
             voice_config.voice.output,
             voice_config.voice.mic,
             voice_config.voice.stt,
+            voice_config.voice.barge_in_trigger_frames,
         )
     ]
 
@@ -2793,8 +2794,8 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt: speak_calls.append(
-            (text, tts, output, mic, stt)
+        lambda text, tts, output, mic, stt, trigger_frames: speak_calls.append(
+            (text, tts, output, mic, stt, trigger_frames)
         ),
     )
     monkeypatch.setattr(
@@ -2821,6 +2822,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
             voice_config.voice.output,
             voice_config.voice.mic,
             voice_config.voice.stt,
+            voice_config.voice.barge_in_trigger_frames,
         )
     ]
 
@@ -2832,7 +2834,7 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt: None,
+        lambda text, tts, output, mic, stt, trigger_frames: None,
     )
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_started", lambda output: None
@@ -2898,7 +2900,7 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt: None,
+        lambda text, tts, output, mic, stt, trigger_frames: None,
     )
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_started", lambda output: None
@@ -2963,7 +2965,7 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     monkeypatch.setattr(
         daemon.voice_barge_in,
         "speak_with_barge_in",
-        lambda text, tts, output, mic, stt: (
+        lambda text, tts, output, mic, stt, trigger_frames: (
             speak_calls.append(text) or next(barge_in_results)
         ),
     )
