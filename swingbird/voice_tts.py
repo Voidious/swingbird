@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -90,6 +91,16 @@ _BYTES_PER_SAMPLE = 2  # S16_LE mono
 # brief, break.
 _CHUNK_PAUSE_SECONDS = 0.15
 
+# `_play` writes a chunk's audio to `aplay`'s stdin in slices this long,
+# rather than one call for the whole chunk, so a `stop_event` (Voice Mode
+# design doc §V.12's barge-in) set mid-chunk stops playback within one
+# slice instead of only at the next chunk/paragraph boundary -- up to
+# `_MAX_CONTINUOUS_SECONDS` (8s) of latency otherwise. Same order of
+# magnitude as `_ALSA_PERIOD_TIME_MICROSECONDS` (0.1s) so this doesn't
+# change how `aplay` itself is fed relative to what its own buffering
+# already assumes.
+_STOP_POLL_SECONDS = 0.1
+
 # Simple and imperfect -- splits after `.`/`!`/`?` followed by whitespace,
 # so an abbreviation like "Mr." would also split. Matches this codebase's
 # existing rule-based approach to spoken text (see `voice_render.py`'s own
@@ -123,10 +134,25 @@ def _voice_model_path(voice_name: str, models_dir: Path) -> Path:
     return path
 
 
-def _play(audio: bytes, sample_rate: int, device: str) -> None:
+def _play(
+    audio: bytes,
+    sample_rate: int,
+    device: str,
+    stop_event: threading.Event | None = None,
+) -> None:
     """Play one already-synthesized PCM buffer through its own `aplay`
     invocation -- see `speak`'s docstring for why `speak` calls this once
     per paragraph rather than once for a whole reply.
+
+    Writes `audio` to `aplay`'s stdin in `_STOP_POLL_SECONDS`-sized slices
+    rather than one call, checking `stop_event` before each one -- when
+    it's set (Voice Mode design doc §V.12's barge-in), `aplay` is
+    `terminate()`d immediately rather than left to drain the rest of the
+    buffer, so an interrupting utterance doesn't have to wait out however
+    much of this chunk was left. `stop_event=None` (every caller before
+    §V.12) never checks, so playback always runs to completion exactly as
+    before -- just written in the same slices either way, which doesn't
+    change what's heard.
     """
     try:
         play = subprocess.Popen(
@@ -153,9 +179,17 @@ def _play(audio: bytes, sample_rate: int, device: str) -> None:
     except FileNotFoundError as exc:
         raise TTSError("aplay not found on PATH (install alsa-utils)") from exc
 
-    play.stdin.write(audio)
-    play.stdin.close()
-    play.wait()
+    slice_bytes = max(1, int(_STOP_POLL_SECONDS * sample_rate)) * _BYTES_PER_SAMPLE
+    try:
+        for offset in range(0, len(audio), slice_bytes):
+            if stop_event is not None and stop_event.is_set():
+                play.terminate()
+                return
+            play.stdin.write(audio[offset : offset + slice_bytes])
+    finally:
+        play.stdin.close()
+        play.wait()
+
     if play.returncode != 0:
         raise TTSError(f"aplay exited with code {play.returncode}")
 
@@ -193,8 +227,19 @@ def speak(
     tts: VoiceTTSConfig,
     output: VoiceOutputConfig,
     models_dir: Path = DEFAULT_MODELS_DIR,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Synthesize `text` with Piper and play it on `output`'s device.
+
+    `stop_event`, when given (Voice Mode design doc §V.12's barge-in),
+    lets a caller -- `voice_barge_in.speak_with_barge_in`, monitoring the
+    mic concurrently -- stop an in-progress reply the instant the user
+    starts talking over it, rather than waiting for the current chunk, let
+    alone the whole reply, to finish. Checked before playing each chunk
+    (skipping it entirely if already set) and passed into `_play` itself
+    so a chunk already mid-playback stops within one
+    `_STOP_POLL_SECONDS` slice; either way, once set, `speak` returns
+    without playing any later chunk/paragraph or sleeping between them.
 
     Blocking and synchronous on purpose -- `daemon.py`'s `_run_voice_turn`
     runs it via `asyncio.to_thread` rather than awaiting it directly (see
@@ -264,7 +309,11 @@ def speak(
     ]
     for index, chunks in enumerate(paragraph_chunks):
         for chunk_index, chunk_audio in enumerate(chunks):
-            _play(chunk_audio, sample_rate, device)
+            if stop_event is not None and stop_event.is_set():
+                return
+            _play(chunk_audio, sample_rate, device, stop_event)
+            if stop_event is not None and stop_event.is_set():
+                return
             if chunk_index < len(chunks) - 1:
                 time.sleep(_CHUNK_PAUSE_SECONDS)
         if index < len(paragraph_chunks) - 1:

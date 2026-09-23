@@ -23,6 +23,7 @@ AGENTS.md).
 from __future__ import annotations
 
 import argparse
+import subprocess
 from dataclasses import dataclass
 
 import numpy as np
@@ -93,6 +94,56 @@ def load_model(stt: VoiceSTTConfig) -> WhisperModel:
     return WhisperModel(stt.model, device="cpu", compute_type=COMPUTE_TYPE)
 
 
+def capture_until_silence(
+    record: subprocess.Popen,
+    vad: VAD,
+    frames: list[np.ndarray],
+    speech_started: bool,
+    wait_frames: int,
+) -> np.ndarray | None:
+    """Keep reading frames from an already-open `record` stream (via
+    `voice_audio`) until the first silence that follows detected speech,
+    or `MAX_UTTERANCE_SECONDS` of total speech, whichever comes first --
+    the shared tail of `record_utterance`'s own loop below and
+    `voice_barge_in.speak_with_barge_in`'s mid-playback capture (§V.12),
+    which both need to finish an utterance out to the same
+    `SILENCE_FRAMES_TO_STOP`/`MAX_UTTERANCE_SECONDS` limits, just starting
+    from different places: `record_utterance` starts with nothing captured
+    and speech not yet begun, while a barge-in has already seen one
+    speech-triggering frame (`frames`/`speech_started` seed that) and
+    doesn't need `wait_frames`' "give up waiting" behavior at all, since
+    speech has already started by definition.
+
+    Returns `None`, not a silent/empty array, if `speech_started` is
+    `False` and `wait_frames` worth of frames pass with no speech ever
+    detected -- see `record_utterance`'s own docstring for why callers
+    care about that distinction.
+    """
+    silent_frame_count = 0
+    speech_frame_count = 0
+    max_speech_frames = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
+
+    while True:
+        frame = call_translating_stream_error(STTError, read_frame, record)
+        frames.append(frame)
+        if vad.predict(frame) >= VAD_SPEECH_THRESHOLD:
+            speech_started = True
+            silent_frame_count = 0
+        elif speech_started:
+            silent_frame_count += 1
+            if silent_frame_count >= SILENCE_FRAMES_TO_STOP:
+                break
+
+        if speech_started:
+            speech_frame_count += 1
+            if speech_frame_count >= max_speech_frames:
+                break
+        elif len(frames) >= wait_frames:
+            return None
+
+    return np.concatenate(frames)
+
+
 def record_utterance(
     mic: VoiceMicConfig, max_wait_seconds: float = MAX_UTTERANCE_SECONDS
 ) -> np.ndarray | None:
@@ -114,37 +165,14 @@ def record_utterance(
     the wake word again.
     """
     record = call_translating_stream_error(STTError, open_mic_stream, mic)
-
     vad = VAD()
-    frames: list[np.ndarray] = []
-    speech_started = False
-    silent_frame_count = 0
-    speech_frame_count = 0
     wait_frames = int(max_wait_seconds * SAMPLE_RATE / FRAME_SAMPLES)
-    max_speech_frames = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
-
     try:
-        while True:
-            frame = call_translating_stream_error(STTError, read_frame, record)
-            frames.append(frame)
-            if vad.predict(frame) >= VAD_SPEECH_THRESHOLD:
-                speech_started = True
-                silent_frame_count = 0
-            elif speech_started:
-                silent_frame_count += 1
-                if silent_frame_count >= SILENCE_FRAMES_TO_STOP:
-                    break
-
-            if speech_started:
-                speech_frame_count += 1
-                if speech_frame_count >= max_speech_frames:
-                    break
-            elif len(frames) >= wait_frames:
-                return None
+        return capture_until_silence(
+            record, vad, frames=[], speech_started=False, wait_frames=wait_frames
+        )
     finally:
         close_mic_stream(record)
-
-    return np.concatenate(frames)
 
 
 def transcribe(model: WhisperModel, audio: np.ndarray) -> Transcript:

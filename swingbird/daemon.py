@@ -65,6 +65,20 @@ uses, via the same `thread_id`/`event_id` shape `_process` already takes
 for that reason (see `_process`'s own docstring); `_run_voice_turn` can run
 several exchanges back-to-back within one wake word, per its own follow-up
 window (§V.11).
+
+Every voice reply plays through `voice_barge_in.speak_with_barge_in`
+rather than `voice_tts.speak` directly (§V.12): it listens on the mic
+concurrently with playback so the user can start talking over a reply
+instead of having to wait it out, and returns the interrupting utterance's
+own `Transcript` when that happens. `_run_voice_turn`'s loop treats that
+exactly like a fresh capture from `voice_stt.record_and_transcribe` --
+routing it through `_run_voice_exchange` (or speaking the low-confidence
+reply) again -- rather than falling through to its own post-reply cue and
+recording. Only when nothing interrupted a reply does the loop play the
+cue, wait out `voice.debounce_seconds` (letting the reply's own trailing
+audio, and the cue right after it, actually finish leaving the speaker
+before trusting what the mic hears next), and record the follow-up as
+before.
 """
 
 from __future__ import annotations
@@ -76,7 +90,7 @@ import os
 import time
 from dataclasses import replace
 
-from swingbird import outbound, voice_cues, voice_stt, voice_tts, voice_wake
+from swingbird import outbound, voice_barge_in, voice_cues, voice_stt, voice_wake
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
 from swingbird.closed_items import ClosedItemStore
@@ -395,12 +409,27 @@ class Daemon:
         `listen_for_wake_word` runs off-thread for the same reason
         `_run_voice_exchange`'s blocking calls do -- see its docstring.
 
+        Every reply (confident-exchange or low-confidence apology) speaks
+        through `voice_barge_in.speak_with_barge_in` (§V.12), which returns
+        the interrupting `Transcript` if the user talked over it. That
+        transcript becomes `transcript` for the *next* loop iteration
+        directly -- skipping the cue/debounce/record below entirely, since
+        the mic was already listening and already captured it -- exactly as
+        if it had come from `record_and_transcribe`. Only a reply nobody
+        interrupted falls through to the normal cue-then-listen path.
+
         A `voice_cues.play_listening_started` chime plays every time the
-        mic is about to start listening (after the wake word, and again
-        after each reply -- confident or not -- while the follow-up window
-        stays open), and `play_listening_stopped` plays once, when the
+        mic is about to start a *fresh* deliberate listen (after the wake
+        word, and again after an uninterrupted reply while the follow-up
+        window stays open) -- not after a barge-in, which was already
+        listening throughout. `play_listening_stopped` plays once, when the
         window finally elapses and this turn ends -- see `voice_cues.py`'s
-        own docstring.
+        own docstring. `voice.debounce_seconds` (§V.12) is waited out right
+        after that cue and before the mic is trusted, so the reply's own
+        trailing audio (and the cue itself) has time to actually finish
+        leaving the speaker first -- see `VoiceConfig.debounce_seconds`'s
+        own docstring for why that's not needed on the barge-in path, which
+        never stopped listening in the first place.
         """
         voice = self._config.voice
         await asyncio.to_thread(
@@ -418,15 +447,21 @@ class Daemon:
         )
         while transcript is not None:
             if transcript.is_confident:
-                await self._run_voice_exchange(transcript.text)
+                barge_in = await self._run_voice_exchange(transcript.text)
             else:
-                await asyncio.to_thread(
-                    voice_tts.speak,
+                barge_in = await asyncio.to_thread(
+                    voice_barge_in.speak_with_barge_in,
                     voice_stt.LOW_CONFIDENCE_REPLY,
                     voice.tts,
                     voice.output,
+                    voice.mic,
+                    voice.stt,
                 )
+            if barge_in is not None:
+                transcript = barge_in
+                continue
             await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
+            await asyncio.to_thread(time.sleep, voice.debounce_seconds)
             transcript = await asyncio.to_thread(
                 voice_stt.record_and_transcribe,
                 voice.mic,
@@ -435,16 +470,20 @@ class Daemon:
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 
-    async def _run_voice_exchange(self, transcript: str) -> None:
+    async def _run_voice_exchange(self, transcript: str) -> voice_stt.Transcript | None:
         """Route one already-captured `transcript` through the exact same
         intent machinery a typed DM uses -- the first fully voice-driven
         exchange (§V.16 step 5), and every exchange after it within the
-        same wake word's follow-up window (§V.11).
+        same wake word's follow-up window (§V.11). Returns the barge-in
+        `Transcript` if the user talked over the spoken reply, or `None` if
+        nothing interrupted it -- see `_run_voice_turn`'s own docstring for
+        how that return value is used.
 
         Mirrors `_handle_event`'s to_thread structure for the same reason:
-        `_process` and `speak` are both blocking calls (an LLM call, or
-        subprocess audio I/O), so each runs off-thread to keep servicing
-        the inbound WebSocket's read/keepalive traffic while it's in flight.
+        `_process` and `speak_with_barge_in` are both blocking calls (an
+        LLM call, or subprocess audio I/O), so each runs off-thread to keep
+        servicing the inbound WebSocket's read/keepalive traffic while it's
+        in flight.
         """
         voice = self._config.voice
         # §V.3: voice shares the DM's thread id, every turn posts its own
@@ -471,8 +510,13 @@ class Daemon:
             f"{reply}\n\n-- {transcript}",
             reply_to=event_id,
         )
-        await asyncio.to_thread(
-            voice_tts.speak, render_for_speech(reply), voice.tts, voice.output
+        return await asyncio.to_thread(
+            voice_barge_in.speak_with_barge_in,
+            render_for_speech(reply),
+            voice.tts,
+            voice.output,
+            voice.mic,
+            voice.stt,
         )
 
     def _start_pending_watch(self) -> None:

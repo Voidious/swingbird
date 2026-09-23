@@ -164,6 +164,7 @@ DEFAULT_OUTPUT_TYPE = "onboard"
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 30
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 30
+DEFAULT_DEBOUNCE_SECONDS = 0.3
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,19 @@ class VoiceConfig:
     # in-utterance-vs-between-utterances distinction as
     # wake_word_window_seconds above.
     follow_up_window_seconds: int = DEFAULT_FOLLOW_UP_WINDOW_SECONDS
+    # §V.12: how long to wait after a reply's playback (and its
+    # "listening started" cue) actually stops before the next follow-up
+    # recording starts trusting what it hears. `aplay`'s own `wait()`
+    # returning only confirms the process exited, not that the ALSA/Pulse
+    # bridge has finished draining the last of that audio out the speaker
+    # (the same gap `voice_tts.speak`'s own history of underrun fixes kept
+    # running into) -- without this, the tail of swingbird's own voice (or
+    # the cue tone right after it) can leak into a mic that's already
+    # recording and read as the start of a user utterance. Distinct from
+    # mid-reply barge-in (also §V.12), which listens *during* playback on
+    # purpose; this only delays the *next* deliberate listen once playback
+    # has actually finished.
+    debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -449,6 +463,14 @@ def _parse_voice(raw: dict) -> VoiceConfig:
     ):
         raise ConfigError("[voice].follow_up_window_seconds must be a positive integer")
 
+    debounce_seconds = section.get("debounce_seconds", DEFAULT_DEBOUNCE_SECONDS)
+    if (
+        isinstance(debounce_seconds, bool)
+        or not isinstance(debounce_seconds, (int, float))
+        or debounce_seconds < 0
+    ):
+        raise ConfigError("[voice].debounce_seconds must be a non-negative number")
+
     return VoiceConfig(
         enabled=enabled,
         wake_word=wake_word,
@@ -458,6 +480,7 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         tts=_parse_voice_tts(section.get("tts"), enabled=enabled),
         wake_word_window_seconds=wake_word_window_seconds,
         follow_up_window_seconds=follow_up_window_seconds,
+        debounce_seconds=float(debounce_seconds),
     )
 
 

@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from swingbird import voice_tts
@@ -46,9 +48,13 @@ class FakePopen:
         self.returncode = returncode
         self.stdin = FakeStdin()
         self.args = None
+        self.terminated = False
 
     def wait(self):
         pass
+
+    def terminate(self):
+        self.terminated = True
 
 
 def _mock_piper_voice_and_popen(monkeypatch, fake_voice):
@@ -254,13 +260,20 @@ def test_speak_single_chunk_paragraph_has_no_pause_inserted(tmp_path, monkeypatc
     assert sleep_calls == []
 
 
-def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
+def _setup_test_voice_and_popen(tmp_path, monkeypatch, chunks=None):
+    if chunks is None:
+        chunks = [FakeChunk(b"abc")]
     (tmp_path / "test-voice.onnx").write_bytes(b"")
-    fake_voice = FakeVoice([FakeChunk(b"abc")], sample_rate=22050)
+    fake_voice = FakeVoice(chunks, sample_rate=22050)
     _, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
     monkeypatch.setattr(
         voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
     )
+    return fake_voice, fake_popen
+
+
+def test_speak_single_paragraph_has_no_silence_inserted(tmp_path, monkeypatch):
+    fake_voice, fake_popen = _setup_test_voice_and_popen(tmp_path, monkeypatch)
 
     speak(
         "just one paragraph",
@@ -335,3 +348,121 @@ def test_speak_raises_when_aplay_exits_nonzero(tmp_path, monkeypatch):
             VoiceOutputConfig(),
             models_dir=tmp_path,
         )
+
+
+def test_speak_stops_immediately_when_stop_event_already_set(tmp_path, monkeypatch):
+    _mock_piper_voice_with_model(tmp_path, monkeypatch)
+
+    def fail_if_called(args, stdin=None):
+        raise AssertionError("aplay should never start when stop_event is set")
+
+    monkeypatch.setattr(voice_tts.subprocess, "Popen", fail_if_called)
+    stop_event = threading.Event()
+    stop_event.set()
+
+    speak(
+        "hi",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        stop_event=stop_event,
+    )
+
+
+def test_speak_plays_fully_when_stop_event_never_set(tmp_path, monkeypatch):
+    (_, fake_popen) = _setup_test_voice_and_popen(tmp_path, monkeypatch)
+
+    speak(
+        "hello",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        stop_event=threading.Event(),
+    )
+
+    assert bytes(fake_popen.stdin.written) == b"abc"
+    assert fake_popen.terminated is False
+
+
+def test_play_terminates_aplay_immediately_when_stop_event_set_mid_write(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice([FakeChunk(b"aabbcc")], sample_rate=1)
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    fake_popen = FakePopen(returncode=0)
+    monkeypatch.setattr(
+        voice_tts.subprocess, "Popen", lambda args, stdin=None: fake_popen
+    )
+    stop_event = threading.Event()
+    write_calls = []
+    original_write = fake_popen.stdin.write
+
+    def write_and_trigger_stop(data):
+        write_calls.append(bytes(data))
+        original_write(data)
+        stop_event.set()
+
+    fake_popen.stdin.write = write_and_trigger_stop
+
+    speak(
+        "hi",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        stop_event=stop_event,
+    )
+
+    # Only the first 2-byte slice (of 3) was written before the next
+    # iteration's stop_event check terminated aplay instead of writing more.
+    assert write_calls == [b"aa"]
+    assert fake_popen.terminated is True
+    assert fake_popen.stdin.closed
+
+
+def test_speak_skips_remaining_paragraphs_once_stop_event_set(tmp_path, monkeypatch):
+    (tmp_path / "test-voice.onnx").write_bytes(b"")
+    fake_voice = FakeVoice(
+        chunks=None,
+        sample_rate=1,
+        chunks_by_text={
+            "first item": [FakeChunk(b"aa")],
+            "second item": [FakeChunk(b"bb")],
+        },
+    )
+    monkeypatch.setattr(voice_tts.PiperVoice, "load", lambda path: fake_voice)
+    stop_event = threading.Event()
+    popen_calls = []
+
+    def fake_ctor(args, stdin=None):
+        popen = FakePopen(returncode=0)
+        popen_calls.append(popen)
+        original_write = popen.stdin.write
+
+        def write_and_trigger_stop(data):
+            original_write(data)
+            stop_event.set()
+
+        popen.stdin.write = write_and_trigger_stop
+        return popen
+
+    monkeypatch.setattr(voice_tts.subprocess, "Popen", fake_ctor)
+    sleep_calls = []
+    monkeypatch.setattr(voice_tts.time, "sleep", sleep_calls.append)
+
+    speak(
+        "first item\n\nsecond item",
+        VoiceTTSConfig(voice="test-voice"),
+        VoiceOutputConfig(),
+        models_dir=tmp_path,
+        stop_event=stop_event,
+    )
+
+    # Both paragraphs get synthesized up front regardless (see `speak`'s own
+    # docstring on why), but only the first paragraph's single chunk ever
+    # played (its whole 2-byte buffer fit in one slice) -- speak() noticed
+    # stop_event was set right after and returned before playing "second
+    # item" at all, or sleeping either the chunk or paragraph pause.
+    assert len(popen_calls) == 1
+    assert fake_voice.synthesize_calls == ["first item", "second item"]
+    assert sleep_calls == []

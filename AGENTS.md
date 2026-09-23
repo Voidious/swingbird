@@ -127,6 +127,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `voice_audio.py` | Shared `arecord` mic-capture plumbing (frame size, device mapping) used by both `voice_wake.py` and `voice_stt.py`, so the two don't duplicate (and drift on) the same audio format. |
 | `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Called by `daemon.py`'s `_run_voice_turn` right after the wake word fires; also reachable standalone via its own `__main__` smoke-test CLI. |
 | `voice_cues.py` | Short synthesized tones marking voice-turn listening boundaries: one when the mic starts listening (wake word registered, or a follow-up window is still open), a different one when listening actually stops and the wake word is required again. Called by `daemon.py`'s `_run_voice_turn`. |
+| `voice_barge_in.py` | Speaks a reply via `voice_tts.speak` while concurrently monitoring the mic for the user talking over it (§V.12); stops playback and returns the interrupting utterance's `Transcript` if so, or `None` if the reply finished uninterrupted. Called by `daemon.py`'s `_run_voice_exchange`/`_run_voice_turn` everywhere a voice reply is spoken. |
 
 ## Tests
 
