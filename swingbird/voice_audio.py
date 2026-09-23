@@ -24,6 +24,19 @@ SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # S16_LE
 CHUNK_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE
 
+# How long `close_mic_stream` gives a SIGTERM'd `arecord` to actually exit
+# before escalating to SIGKILL -- see its own docstring for why a bare
+# `wait()` with no timeout is unsafe here: an `arecord` that gets stuck
+# mid-teardown (observed live, 2026-09-23 -- SIGTERM's own "Aborted by
+# signal Terminated" line printed, but the process never followed up with
+# its usual second `pcm_read` error line or actually exited) hangs
+# `process.wait()` forever, which hangs everything downstream of it --
+# the whole voice loop, silently, with no exception and nothing further
+# printed. Short enough that a real hang doesn't stall a turn for long,
+# long enough that ordinary teardown (order-of-milliseconds per every
+# prior live test) never comes close to it.
+_TERMINATE_TIMEOUT_SECONDS = 2.0
+
 # Mirrors voice_tts.py's `_ALSA_DEVICE_BY_OUTPUT_TYPE` for the input side:
 # "onboard" is the ALSA/Pulse default input (the WSL dev machine today,
 # the Orange Pi's onboard mic later); "usb" is the reSpeaker XVF3800
@@ -65,7 +78,8 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
 
 
 def close_mic_stream(process: subprocess.Popen) -> None:
-    """Terminate `process` and block until it has actually exited.
+    """Terminate `process` and block until it has actually exited (or force
+    it to, past `_TERMINATE_TIMEOUT_SECONDS`).
 
     `voice_wake.py` and `voice_stt.py` both used to call `process.terminate()`
     alone in their `finally` blocks and return immediately -- but a SIGTERM'd
@@ -79,9 +93,21 @@ def close_mic_stream(process: subprocess.Popen) -> None:
     open stalling on a mic device that hadn't finished releasing. Waiting
     here makes `listen_for_wake_word`/`record_utterance` block until the mic
     device is actually free before their caller can open anything else.
+
+    A bare `wait()` (no timeout) turned out not to be safe, though: a live
+    barge-in run (2026-09-23) showed `arecord` printing its "Aborted by
+    signal Terminated" line and then never finishing its own teardown (no
+    follow-up `pcm_read` error line, no actual exit) -- `wait()` blocked
+    forever, which silently hung the entire voice loop with no exception
+    and nothing further printed, mimicking a dead mic from the outside.
+    SIGKILL after `_TERMINATE_TIMEOUT_SECONDS` bounds that.
     """
     process.terminate()
-    process.wait()
+    try:
+        process.wait(timeout=_TERMINATE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def read_frame(process: subprocess.Popen) -> np.ndarray:

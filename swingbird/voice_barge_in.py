@@ -12,13 +12,6 @@ rest of what the user is saying, exactly as if they'd said it after a
 normal wake-word/follow-up cue. `daemon.py` calls `speak_with_barge_in`
 everywhere it used to call `voice_tts.speak` directly for a voice reply.
 
-Post-TTS debounce (also §V.12) is a separate, simpler concern handled in
-`daemon.py` itself, not here: it only matters once playback has actually
-finished with no interruption, to keep its own trailing audio (or the
-"listening started" cue right after it) from being misread as the start
-of the *next* listen -- see `VoiceConfig.debounce_seconds`'s own
-docstring. This module only ever runs while playback is still live.
-
 No debounce against swingbird's own voice is applied *during* playback
 here, unlike after it: real acoustic echo cancellation is out of scope,
 so on a setup where the speaker audibly leaks into the mic (e.g. WSLg's
@@ -30,7 +23,9 @@ problem (§V.14) -- worth revisiting if a live run shows false triggers.
 from __future__ import annotations
 
 import threading
+from collections import deque
 
+import numpy as np
 from openwakeword.vad import VAD
 
 from swingbird.config import (
@@ -56,6 +51,15 @@ from swingbird.voice_stt import (
 )
 from swingbird.voice_tts import speak
 
+# VAD doesn't confidently score a frame as speech from its very first
+# 80ms -- a quiet-onset word (live-tested: "what are the other items?"
+# came back as just "the other items.", 2026-09-23) can take 1-3 frames
+# before crossing VAD_SPEECH_THRESHOLD, and those frames were never kept
+# anywhere before the trigger. Buffering this many frames *before* a
+# trigger and seeding the capture with all of them (not just the
+# triggering frame) recovers that lead-in instead of clipping it.
+PRE_ROLL_FRAMES = 4
+
 
 def speak_with_barge_in(
     text: str,
@@ -73,11 +77,13 @@ def speak_with_barge_in(
     like speech before playback finishes on its own, this stops playback
     immediately (via `stop_event`) and keeps recording on the *same*
     stream until that utterance ends (`capture_until_silence`, seeded with
-    the triggering frame so nothing between "speech detected" and "started
-    capturing" is lost), then transcribes and returns it. Returns `None`
-    if playback finished with nothing said over it -- the normal case,
-    telling `daemon.py` to fall back to its usual cue-then-listen flow for
-    the next turn instead.
+    the last `PRE_ROLL_FRAMES` non-speech frames plus the triggering one,
+    not just the triggering frame alone, so a quiet-onset word VAD hadn't
+    yet confidently scored as speech isn't clipped from the start of what
+    gets captured), then transcribes and returns it. Returns `None` if
+    playback finished with nothing said over it -- the normal case, telling
+    `daemon.py` to fall back to its usual cue-then-listen flow for the next
+    turn instead.
 
     Both `aplay` (via `speak`'s own teardown) and this function's own
     `arecord` (via `close_mic_stream`) are always fully torn down before
@@ -112,14 +118,20 @@ def speak_with_barge_in(
     try:
         record = call_translating_stream_error(STTError, open_mic_stream, mic)
         vad = VAD()
+        pre_roll: deque[np.ndarray] = deque(maxlen=PRE_ROLL_FRAMES)
         while not playback_done.is_set():
             frame = call_translating_stream_error(STTError, read_frame, record)
             if vad.predict(frame) < VAD_SPEECH_THRESHOLD:
+                pre_roll.append(frame)
                 continue
             print("swingbird: barge-in detected, capturing interruption...")
             stop_playback.set()
             audio = capture_until_silence(
-                record, vad, frames=[frame], speech_started=True, wait_frames=0
+                record,
+                vad,
+                frames=[*pre_roll, frame],
+                speech_started=True,
+                wait_frames=0,
             )
             model = load_model(stt)
             transcript = transcribe(model, audio)

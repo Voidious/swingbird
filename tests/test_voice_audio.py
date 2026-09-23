@@ -109,12 +109,34 @@ def test_close_mic_stream_terminates_then_waits():
         def terminate(self):
             calls.append("terminate")
 
-        def wait(self):
-            calls.append("wait")
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
 
     close_mic_stream(FakeProcess())
 
-    assert calls == ["terminate", "wait"]
+    assert calls == ["terminate", ("wait", voice_audio._TERMINATE_TIMEOUT_SECONDS)]
+
+
+def test_close_mic_stream_kills_when_terminate_does_not_finish_in_time():
+    calls = []
+
+    class FakeProcess:
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            if timeout is not None:
+                raise voice_audio.subprocess.TimeoutExpired(
+                    cmd="arecord", timeout=timeout
+                )
+            calls.append("wait-after-kill")
+
+        def kill(self):
+            calls.append("kill")
+
+    close_mic_stream(FakeProcess())
+
+    assert calls == ["terminate", "kill", "wait-after-kill"]
 
 
 def test_call_translating_stream_error_returns_value_on_success():

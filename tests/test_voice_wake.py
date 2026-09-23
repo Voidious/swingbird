@@ -27,7 +27,7 @@ class FakeProcess:
     def terminate(self):
         self.terminated = True
 
-    def wait(self):
+    def wait(self, timeout=None):
         self.waited = True
 
 
