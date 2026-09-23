@@ -79,7 +79,7 @@ def test_speak_with_barge_in_returns_none_when_playback_finishes_uninterrupted(
 
 
 def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
-    monkeypatch,
+    monkeypatch, capsys
 ):
     stop_events_seen = []
 
@@ -128,6 +128,11 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
     assert capture_calls == [("the-record", [frame], True, 0)]
     assert transcribe_calls == [("the-model", canned_audio)]
     assert close_calls == ["the-record"]
+    out = capsys.readouterr().out
+    assert "barge-in detected" in out
+    assert "barge-in captured" in out
+    assert "confident=True" in out
+    assert "text='stop'" in out
 
 
 def test_speak_with_barge_in_reraises_playback_exception(monkeypatch):

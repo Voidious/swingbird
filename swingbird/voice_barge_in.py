@@ -40,6 +40,7 @@ from swingbird.config import (
     VoiceTTSConfig,
 )
 from swingbird.voice_audio import (
+    SAMPLE_RATE,
     call_translating_stream_error,
     close_mic_stream,
     open_mic_stream,
@@ -82,6 +83,14 @@ def speak_with_barge_in(
     `arecord` (via `close_mic_stream`) are always fully torn down before
     returning, whichever path is taken -- no stale subprocess left holding
     either device for whatever opens next.
+
+    Prints when a barge-in triggers, and again once the interruption is
+    captured and transcribed (with its duration/confidence/text) -- this
+    module otherwise runs silently, so a live run's console log couldn't
+    previously distinguish "never triggered," "triggered but stuck inside
+    `capture_until_silence`" (e.g. VAD never seeing enough silence to stop,
+    on hardware where playback bleeds into the mic), and "triggered,
+    captured, but the daemon did something unexpected with the result."
     """
     stop_playback = threading.Event()
     playback_done = threading.Event()
@@ -107,12 +116,17 @@ def speak_with_barge_in(
             frame = call_translating_stream_error(STTError, read_frame, record)
             if vad.predict(frame) < VAD_SPEECH_THRESHOLD:
                 continue
+            print("swingbird: barge-in detected, capturing interruption...")
             stop_playback.set()
             audio = capture_until_silence(
                 record, vad, frames=[frame], speech_started=True, wait_frames=0
             )
             model = load_model(stt)
             transcript = transcribe(model, audio)
+            print(
+                f"swingbird: barge-in captured {len(audio) / SAMPLE_RATE:.1f}s, "
+                f"confident={transcript.is_confident}, text={transcript.text!r}"
+            )
             break
     finally:
         # Set unconditionally, not just on the barge-in path above: if the
