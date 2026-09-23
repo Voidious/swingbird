@@ -2690,9 +2690,12 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     )
 
     def fake_record_and_transcribe(
-        mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS
+        mic,
+        stt,
+        max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS,
+        mute_seconds=0.0,
     ):
-        stt_calls.append((mic, stt, max_wait_seconds))
+        stt_calls.append((mic, stt, max_wait_seconds, mute_seconds))
         return next(transcripts)
 
     monkeypatch.setattr(
@@ -2717,8 +2720,6 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         "play_listening_stopped",
         lambda output: cue_calls.append(("stopped", output)),
     )
-    sleep_calls = []
-    monkeypatch.setattr(daemon.time, "sleep", sleep_calls.append)
     sent = []
     event_ids = iter(["transcript-evt", "reply-evt"])
     monkeypatch.setattr(
@@ -2741,20 +2742,23 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         ("started", voice_config.voice.output),
         ("stopped", voice_config.voice.output),
     ]
-    # The reply's own speak_with_barge_in call returned `None` (no
-    # barge-in), so the debounce wait ran exactly once, before the one
-    # follow-up recording.
-    assert sleep_calls == [voice_config.voice.debounce_seconds]
+    # The initial wake-word listen passes no mute window; the follow-up
+    # listen (after the one uninterrupted reply) passes
+    # `voice.debounce_seconds` through as `record_and_transcribe`'s
+    # `mute_seconds`, instead of the daemon sleeping before it opens the
+    # mic -- see `_run_voice_turn`'s own docstring for why.
     assert stt_calls == [
         (
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.wake_word_window_seconds,
+            0.0,
         ),
         (
             voice_config.voice.mic,
             voice_config.voice.stt,
             voice_config.voice.follow_up_window_seconds,
+            voice_config.voice.debounce_seconds,
         ),
     ]
     expected_reply = (
@@ -2788,12 +2792,12 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
     transcripts = iter(
         [daemon.voice_stt.Transcript(text="recap", is_confident=False), None]
     )
+
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+        return next(transcripts)
+
     monkeypatch.setattr(
-        daemon.voice_stt,
-        "record_and_transcribe",
-        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: next(
-            transcripts
-        ),
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     speak_calls = []
     monkeypatch.setattr(
@@ -2809,7 +2813,6 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_stopped", lambda output: None
     )
-    monkeypatch.setattr(daemon.time, "sleep", lambda seconds: None)
     sent = _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     voice_config = _voice_config()
@@ -2847,7 +2850,6 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_stopped", lambda output: None
     )
-    monkeypatch.setattr(daemon.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
     _sent(monkeypatch)
     # A `None` after each real transcript ends that turn's follow-up loop
@@ -2862,12 +2864,12 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
             None,
         ]
     )
+
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+        return next(transcripts)
+
     monkeypatch.setattr(
-        daemon.voice_stt,
-        "record_and_transcribe",
-        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: next(
-            transcripts
-        ),
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     dispatch_llm = FakeLLM(
         json_response={
@@ -2914,19 +2916,19 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     monkeypatch.setattr(
         daemon.voice_cues, "play_listening_stopped", lambda output: None
     )
-    monkeypatch.setattr(daemon.time, "sleep", lambda seconds: None)
     _sent(monkeypatch)
     max_waits = []
     T = daemon.voice_stt.Transcript
     transcripts = iter(
         [T(text="recap", is_confident=True), T(text="recap", is_confident=True), None]
     )
+
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+        max_waits.append(max_wait_seconds)
+        return next(transcripts)
+
     monkeypatch.setattr(
-        daemon.voice_stt,
-        "record_and_transcribe",
-        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: (
-            max_waits.append(max_wait_seconds) or next(transcripts)
-        ),
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     voice_config = _voice_config()
@@ -2956,12 +2958,13 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     T = daemon.voice_stt.Transcript
     stt_transcripts = iter([T(text="recap", is_confident=True), None])
     stt_calls = []
+
+    def fake_record_and_transcribe(mic, stt, max_wait_seconds=None, mute_seconds=0.0):
+        stt_calls.append(max_wait_seconds)
+        return next(stt_transcripts)
+
     monkeypatch.setattr(
-        daemon.voice_stt,
-        "record_and_transcribe",
-        lambda mic, stt, max_wait_seconds=daemon.voice_stt.MAX_UTTERANCE_SECONDS: (
-            stt_calls.append(max_wait_seconds) or next(stt_transcripts)
-        ),
+        daemon.voice_stt, "record_and_transcribe", fake_record_and_transcribe
     )
     # The reply to "recap" gets barged into once (returning the "stop"
     # transcript); the reply to that "stop" exchange finishes uninterrupted.
@@ -2985,8 +2988,6 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
         "play_listening_stopped",
         lambda output: cue_calls.append("stopped"),
     )
-    sleep_calls = []
-    monkeypatch.setattr(daemon.time, "sleep", sleep_calls.append)
     _sent(monkeypatch)
     llm = FakeLLM(json_response={"intent": "chit_chat"})
     voice_config = _voice_config()
@@ -3000,9 +3001,9 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     )
     # Both "recap" and the barge-in "stop" got a full exchange (each one
     # speaks its own reply), but the barge-in transcript itself skipped
-    # straight back into the loop -- no extra cue, no debounce wait, and no
-    # extra `record_and_transcribe` call for it. Only the wake-word listen
-    # and the one follow-up listen after the *uninterrupted* second reply
+    # straight back into the loop -- no extra cue and no extra
+    # `record_and_transcribe` call for it. Only the wake-word listen and
+    # the one follow-up listen after the *uninterrupted* second reply
     # actually recorded anything.
     assert speak_calls == [expected_reply, expected_reply]
     assert stt_calls == [
@@ -3010,7 +3011,6 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
         voice_config.voice.follow_up_window_seconds,
     ]
     assert cue_calls == ["started", "started", "stopped"]
-    assert sleep_calls == [voice_config.voice.debounce_seconds]
 
 
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(

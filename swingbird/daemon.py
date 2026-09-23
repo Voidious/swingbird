@@ -75,10 +75,11 @@ exactly like a fresh capture from `voice_stt.record_and_transcribe` --
 routing it through `_run_voice_exchange` (or speaking the low-confidence
 reply) again -- rather than falling through to its own post-reply cue and
 recording. Only when nothing interrupted a reply does the loop play the
-cue, wait out `voice.debounce_seconds` (letting the reply's own trailing
-audio, and the cue right after it, actually finish leaving the speaker
-before trusting what the mic hears next), and record the follow-up as
-before.
+cue and record the follow-up as before, passing `voice.debounce_seconds`
+through as `record_and_transcribe`'s `mute_seconds` so the mic opens the
+instant the cue finishes (not after an extra sleep) while still not
+letting the reply's own trailing audio, or the cue itself, be misread as
+the user talking during that same window.
 """
 
 from __future__ import annotations
@@ -424,11 +425,14 @@ class Daemon:
         window stays open) -- not after a barge-in, which was already
         listening throughout. `play_listening_stopped` plays once, when the
         window finally elapses and this turn ends -- see `voice_cues.py`'s
-        own docstring. `voice.debounce_seconds` (§V.12) is waited out right
-        after that cue and before the mic is trusted, so the reply's own
-        trailing audio (and the cue itself) has time to actually finish
-        leaving the speaker first -- see `VoiceConfig.debounce_seconds`'s
-        own docstring for why that's not needed on the barge-in path, which
+        own docstring. The follow-up listen passes `voice.debounce_seconds`
+        (§V.12) to `record_and_transcribe` as `mute_seconds`, so the mic
+        opens the moment the cue finishes -- not after an extra wait -- but
+        audio from that same window can't trigger "speech started," giving
+        the reply's own trailing audio (and the cue itself) room to finish
+        leaving the speaker without either eating the user's own first word
+        or being misheard as it -- see `voice_stt.record_utterance`'s own
+        docstring for why that's not needed on the barge-in path, which
         never stopped listening in the first place.
         """
         voice = self._config.voice
@@ -461,12 +465,12 @@ class Daemon:
                 transcript = barge_in
                 continue
             await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
-            await asyncio.to_thread(time.sleep, voice.debounce_seconds)
             transcript = await asyncio.to_thread(
                 voice_stt.record_and_transcribe,
                 voice.mic,
                 voice.stt,
                 voice.follow_up_window_seconds,
+                voice.debounce_seconds,
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 

@@ -197,6 +197,35 @@ def test_record_utterance_ignores_max_wait_once_speech_has_started(monkeypatch):
     )
 
 
+def test_record_utterance_mute_seconds_ignores_early_speech_but_keeps_audio(
+    monkeypatch,
+):
+    _, fake_vad = _setup_record_utterance(monkeypatch)
+    mute_frames = int(0.3 * 16000 / FRAME_SAMPLES)
+    # VAD is never even consulted for the first `mute_frames` frames -- if
+    # it were, this too-short `scores` list (one entry per *evaluated*
+    # frame only) would raise `IndexError` from `FakeVAD.predict`'s
+    # `pop(0)` well before the real speech-triggering frame at the end.
+    fake_vad.scores = [0.0] * 2 + [0.9] + [0.0] * voice_stt.SILENCE_FRAMES_TO_STOP
+
+    audio = record_utterance(VoiceMicConfig(), mute_seconds=0.3)
+
+    # The muted frames are still captured into the returned audio -- only
+    # VAD evaluation skipped them, not recording itself.
+    assert len(audio) == FRAME_SAMPLES * (
+        mute_frames + 2 + 1 + voice_stt.SILENCE_FRAMES_TO_STOP
+    )
+
+
+def test_record_utterance_mute_seconds_defaults_to_no_effect(monkeypatch):
+    _, fake_vad = _setup_record_utterance(monkeypatch)
+    fake_vad.scores = [0.9] + [0.0] * voice_stt.SILENCE_FRAMES_TO_STOP
+
+    audio = record_utterance(VoiceMicConfig())
+
+    assert len(audio) == FRAME_SAMPLES * (1 + voice_stt.SILENCE_FRAMES_TO_STOP)
+
+
 def test_record_utterance_raises_when_mic_stream_wont_open(monkeypatch):
     def raise_not_found(mic):
         raise MicStreamError("arecord not found on PATH (install alsa-utils)")
@@ -234,8 +263,8 @@ def test_record_and_transcribe_records_then_loads_model_then_transcribes(
     monkeypatch.setattr(
         voice_stt,
         "record_utterance",
-        lambda mic, max_wait_seconds: (
-            calls.append(("record", mic, max_wait_seconds))
+        lambda mic, max_wait_seconds, mute_seconds: (
+            calls.append(("record", mic, max_wait_seconds, mute_seconds))
             or np.zeros(1, dtype=np.int16)
         ),
     )
@@ -247,10 +276,10 @@ def test_record_and_transcribe_records_then_loads_model_then_transcribes(
 
     mic = VoiceMicConfig()
     stt = VoiceSTTConfig(model="small")
-    result = record_and_transcribe(mic, stt, max_wait_seconds=5.0)
+    result = record_and_transcribe(mic, stt, max_wait_seconds=5.0, mute_seconds=0.3)
 
     assert result == expected
-    assert calls[0] == ("record", mic, 5.0)
+    assert calls[0] == ("record", mic, 5.0, 0.3)
     assert calls[1] == ("load", stt)
     assert calls[2][0] == "transcribe"
     assert calls[2][1] == "model"
@@ -264,7 +293,7 @@ def test_record_and_transcribe_returns_none_without_transcribing_if_no_speech(
         voice_stt, "load_model", lambda stt: load_calls.append(stt) or "model"
     )
     monkeypatch.setattr(
-        voice_stt, "record_utterance", lambda mic, max_wait_seconds: None
+        voice_stt, "record_utterance", lambda mic, max_wait_seconds, mute_seconds: None
     )
     transcribe_calls = []
     monkeypatch.setattr(
