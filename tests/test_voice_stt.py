@@ -27,8 +27,8 @@ class FakeWhisperModel:
         self.transcribe_calls = []
         self.segments = [FakeSegment("hello"), FakeSegment("world")]
 
-    def transcribe(self, audio, beam_size=5):
-        self.transcribe_calls.append((audio, beam_size))
+    def transcribe(self, audio, beam_size=5, vad_filter=False):
+        self.transcribe_calls.append((audio, beam_size, vad_filter))
         return self.segments, object()
 
 
@@ -82,8 +82,15 @@ def test_transcribe_joins_segment_text_and_normalizes_audio():
     result = transcribe(model, audio)
 
     assert result == Transcript(text="hello world", is_confident=True)
-    normalized, beam_size = model.transcribe_calls[0]
+    normalized, beam_size, vad_filter = model.transcribe_calls[0]
     assert beam_size == 5
+    # §V.12 live bug, 2026-09-23: a captured buffer with no real speech in
+    # it (background noise briefly crossing the recording VAD's own
+    # threshold) can still get a fluent, confident-looking hallucination
+    # ("Thank you.") out of Whisper if handed to it raw. Filtering with
+    # Whisper's own bundled VAD first means that buffer yields zero
+    # segments instead, landing on the no-segments not-confident path.
+    assert vad_filter is True
     assert normalized.dtype == np.float32
     assert normalized[0] == pytest.approx(32767 / 32768.0)
     assert normalized[1] == pytest.approx(-1.0)

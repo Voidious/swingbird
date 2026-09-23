@@ -183,9 +183,27 @@ def transcribe(model: WhisperModel, audio: np.ndarray) -> Transcript:
     first place) is treated as not confident rather than crashing on an
     empty `min()` -- same "reject rather than guess" outcome as a real
     low-`avg_logprob` segment, just a different way of getting there.
+
+    `vad_filter=True` runs faster-whisper's own bundled Silero VAD over
+    `audio` before decoding, trimming any stretch it doesn't think is
+    speech. `record_utterance`/`speak_with_barge_in`'s own VAD only gates
+    *when* to start and stop recording (one 80ms frame crossing
+    `VAD_SPEECH_THRESHOLD` is enough to call it "speech started," per
+    their own docstrings) -- it doesn't re-check whether the resulting
+    buffer actually contains speech throughout. A brief noise spike (live-
+    tested: background fan noise, 2026-09-23) can trigger that start
+    without ever being followed by real speech, and Whisper, asked to
+    transcribe a buffer of mostly near-silence, doesn't reliably emit
+    nothing -- it can hallucinate a short, fluent, plausible phrase (that
+    session: "Thank you.") with a perfectly good `avg_logprob`, since the
+    model is genuinely "confident" in the language-model pattern it
+    invented, not in having heard it. `vad_filter` catches this upstream
+    of that: a buffer with no real speech in it yields zero segments,
+    landing on the same not-confident path as below, rather than reaching
+    decoding at all.
     """
     normalized = audio.astype(np.float32) / 32768.0
-    segments, _info = model.transcribe(normalized, beam_size=5)
+    segments, _info = model.transcribe(normalized, beam_size=5, vad_filter=True)
     texts = []
     avg_logprobs = []
     for segment in segments:
