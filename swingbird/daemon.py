@@ -109,7 +109,16 @@ right away rather than sitting through the rest of that wait's own
 timeout. A summary queued while a voice turn is actively running (TTS
 playing, barge-in capturing, the follow-up window listening) waits
 instead for `_wait_for_wake_word`'s own loop to come back around once
-that turn ends -- see both methods' docstrings.
+that turn ends -- see both methods' docstrings. Speaking a summary also
+goes through `speak_with_barge_in`, so the owner can talk over it
+(2026-09-24) -- a real command barge-in there feeds straight into a fresh
+voice turn (see `_run_voice_turn`'s own docstring) rather than being lost.
+
+A stop phrase ("stop"/"cancel"/etc., handled entirely inside
+`voice_barge_in.speak_with_barge_in`) ends whatever reply it interrupted
+-- any reply, not just proactive summaries -- without resuming it and
+without routing it as a command, same as if that reply had simply
+finished playing on its own (Voidious, 2026-09-24).
 """
 
 from __future__ import annotations
@@ -127,7 +136,6 @@ from swingbird import (
     voice_barge_in,
     voice_cues,
     voice_stt,
-    voice_tts,
     voice_wake,
 )
 from swingbird.audit import AuditLog
@@ -514,35 +522,39 @@ class Daemon:
         window stays open) -- not after a barge-in, which was already
         listening throughout. `play_listening_stopped` plays once, when the
         window finally elapses and this turn ends -- see `voice_cues.py`'s
-        own docstring. The follow-up listen passes `voice.debounce_seconds`
-        (§V.12) to `record_and_transcribe` as `mute_seconds`, so the mic
-        opens the moment the cue finishes -- not after an extra wait -- but
-        audio from that same window can't trigger "speech started," giving
-        the reply's own trailing audio (and the cue itself) room to finish
-        leaving the speaker without either eating the user's own first word
-        or being misheard as it -- see `voice_stt.record_utterance`'s own
-        docstring for why that's not needed on the barge-in path, which
-        never stopped listening in the first place.
+        own docstring. The mic opens the moment the cue finishes -- no
+        extra debounce wait -- since live testing (2026-09-23) never
+        showed the reply/cue bleed-into-mic problem a post-cue debounce
+        was meant to guard against, and it cost a real regression (speech
+        starting right at the cue got eaten) to guard against a risk
+        nobody had actually observed; see the module docstring.
 
         The wake-word wait itself goes through `_wait_for_wake_word`, not
         `voice_wake.listen_for_wake_word` directly, so a proactive
         agent-reply summary (§V.9) queued while idle gets spoken before
         (or, if one arrives mid-wait, right in the middle of) listening for
-        the wake word -- see that method's own docstring.
+        the wake word -- see that method's own docstring. If speaking one
+        of those summaries is itself barged in on with a real command (not
+        a dismissal or stop phrase -- see `voice_barge_in.py`),
+        `_wait_for_wake_word` returns that transcript instead of `None`;
+        this skips the cue/record below entirely and feeds it straight
+        into the loop, exactly like a barge-in on a normal reply does,
+        rather than waiting for the wake word to fire for real.
         """
         voice = self._config.voice
-        await self._wait_for_wake_word()
-        await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
-        # The first exchange after the wake word waits up to
-        # wake_word_window_seconds for speech to start; later ones in this
-        # same turn use the longer follow-up window instead.
-        transcript = await asyncio.to_thread(
-            voice_stt.record_and_transcribe,
-            voice.mic,
-            voice.stt,
-            voice.wake_word_window_seconds,
-        )
+        transcript = await self._wait_for_wake_word()
         resume: _PendingResume | None = None
+        if transcript is None:
+            await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
+            # The first exchange after the wake word waits up to
+            # wake_word_window_seconds for speech to start; later ones in
+            # this same turn use the longer follow-up window instead.
+            transcript = await asyncio.to_thread(
+                voice_stt.record_and_transcribe,
+                voice.mic,
+                voice.stt,
+                voice.wake_word_window_seconds,
+            )
         while transcript is not None:
             if transcript.is_confident:
                 barge_in, resume = await self._run_voice_exchange(
@@ -573,11 +585,14 @@ class Daemon:
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
 
-    async def _wait_for_wake_word(self) -> None:
+    async def _wait_for_wake_word(self) -> voice_stt.Transcript | None:
         """Block until the wake word fires, speaking any queued proactive
         agent-reply summaries (§V.9) first -- both the ones already waiting
         from an earlier, busy voice turn, and any that arrive while this
-        very wait is in progress.
+        very wait is in progress. Returns `None` once the wake word
+        actually fires, or a `Transcript` if speaking one of those
+        summaries was itself barged in on with a real command -- see
+        `_speak_pending_proactive`'s own docstring.
 
         This is the one place in the daemon that's genuinely idle -- no
         TTS, no capture, no follow-up window -- so it's the one place
@@ -588,11 +603,16 @@ class Daemon:
         it -- `listen_for_wake_word` returns `False`, not the wake word
         firing) or a real wake word can fire while one is still queued from
         moments ago; either way, looping back to the top drains the queue
-        again before committing to "the wake word actually fired."
+        again before committing to "the wake word actually fired." A real
+        barge-in on a summary returns immediately instead of looping back,
+        since `daemon.py`'s caller (`_run_voice_turn`) needs to act on it
+        right away, same as any other barge-in.
         """
         voice = self._config.voice
         while True:
-            await self._speak_pending_proactive()
+            barge_in = await self._speak_pending_proactive()
+            if barge_in is not None:
+                return barge_in
             stop_event = threading.Event()
             self._idle_stop_event = stop_event
             try:
@@ -605,13 +625,41 @@ class Daemon:
             finally:
                 self._idle_stop_event = None
             if detected:
-                return
+                return None
 
-    async def _speak_pending_proactive(self) -> None:
+    async def _speak_pending_proactive(self) -> voice_stt.Transcript | None:
+        """Speak every queued proactive summary in order, through
+        `voice_barge_in.speak_with_barge_in` (§V.12) like any other voice
+        reply, so the owner can talk over one -- Voidious, 2026-09-24: "I
+        do think it should be" barge-in-able, since the most likely reason
+        to interrupt is just to stop it talking (a stop phrase, handled
+        inside `speak_with_barge_in` itself -- see its own docstring), but
+        occasionally to give a fresh instruction instead.
+
+        A dismissal or stop phrase resumes or ends that one summary same
+        as always and this loop moves on to the next queued item (if any).
+        A genuine barge-in stops here and returns that `Transcript`
+        directly -- the summary itself isn't resumed afterward (unlike a
+        normal reply's chit_chat handling), since there's no DM/footer for
+        it to resume into and any remaining queued summaries just wait for
+        the next idle moment, same as if this one had finished normally.
+        """
         voice = self._config.voice
         while self._pending_proactive:
             text = self._pending_proactive.pop(0)
-            await asyncio.to_thread(voice_tts.speak, text, voice.tts, voice.output)
+            result = await asyncio.to_thread(
+                voice_barge_in.speak_with_barge_in,
+                text,
+                voice.tts,
+                voice.output,
+                voice.mic,
+                voice.stt,
+                voice.barge_in_trigger_frames,
+                voice.barge_in_vad_threshold,
+            )
+            if result is not None:
+                return result.transcript
+        return None
 
     def _queue_proactive_summary(self, channel_id: str, summary: str) -> None:
         """Queue `summary` -- an async agent reply's own summary,

@@ -138,7 +138,7 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
         voice_barge_in, "capture_until_silence", fake_capture_until_silence
     )
     monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
-    expected = Transcript(text="stop", is_confident=True)
+    expected = Transcript(text="give me a recap", is_confident=True)
     transcribe_calls = []
 
     def fake_transcribe(model, audio):
@@ -168,7 +168,7 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
     assert "barge-in detected" in out
     assert "barge-in captured" in out
     assert "confident=True" in out
-    assert "text='stop'" in out
+    assert "text='give me a recap'" in out
 
 
 def _patch_barge_in_for_vad_tests(monkeypatch, fake_speak):
@@ -204,6 +204,16 @@ def test_speak_with_barge_in_uses_vad_threshold_for_the_trigger_decision(monkeyp
     assert result is None
 
 
+def _patch_barge_in_vad_transcription_stubs(monkeypatch, fake_speak):
+    _patch_barge_in_for_vad_tests(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    monkeypatch.setattr(
+        voice_barge_in,
+        "capture_until_silence",
+        lambda record, vad, frames, speech_started, wait_frames: np.array([0]),
+    )
+
+
 def test_speak_with_barge_in_lowering_vad_threshold_makes_it_more_sensitive(
     monkeypatch,
 ):
@@ -215,14 +225,8 @@ def test_speak_with_barge_in_lowering_vad_threshold_makes_it_more_sensitive(
     def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
         stop_event.wait(timeout=1.0)
 
-    _patch_barge_in_for_vad_tests(monkeypatch, fake_speak)
-    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
-    monkeypatch.setattr(
-        voice_barge_in,
-        "capture_until_silence",
-        lambda record, vad, frames, speech_started, wait_frames: np.array([0]),
-    )
-    expected = Transcript(text="stop", is_confident=True)
+    _patch_barge_in_vad_transcription_stubs(monkeypatch, fake_speak)
+    expected = Transcript(text="give me a recap", is_confident=True)
     monkeypatch.setattr(voice_barge_in, "transcribe", lambda model, audio: expected)
 
     result = voice_barge_in.speak_with_barge_in(
@@ -236,6 +240,40 @@ def test_speak_with_barge_in_lowering_vad_threshold_makes_it_more_sensitive(
     )
 
     assert result == voice_barge_in.BargeInResult(transcript=expected, resume_chunk=0)
+
+
+def test_speak_with_barge_in_ends_reply_without_resuming_on_a_stop_phrase(
+    monkeypatch, capsys
+):
+    """A confident "stop" transcript is a real interruption, but unlike a
+    genuine command it doesn't come back as a `BargeInResult`, and unlike
+    a dismissal phrase it doesn't resume `text` either -- `speak` is only
+    ever called once, and the reply just ends, same as playing through.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        stop_event.wait(timeout=1.0)
+        return 2
+
+    _patch_barge_in_vad_transcription_stubs(monkeypatch, fake_speak)
+    monkeypatch.setattr(
+        voice_barge_in,
+        "transcribe",
+        lambda model, audio: Transcript(text="Stop.", is_confident=True),
+    )
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_frames=1,
+        vad_threshold=0.5,
+    )
+
+    assert result is None
+    assert "barge-in was a stop request" in capsys.readouterr().out
 
 
 def _patch_barge_in_capture(monkeypatch, vad_class):
@@ -281,7 +319,7 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
     monkeypatch.setattr(
         voice_barge_in,
         "transcribe",
-        lambda model, audio: Transcript(text="stop", is_confident=True),
+        lambda model, audio: Transcript(text="give me a recap", is_confident=True),
     )
 
     # trigger_frames=1 preserves the original single-frame trigger for
@@ -332,7 +370,7 @@ def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
             return next(scores)
 
     capture_calls = _patch_barge_in_capture(monkeypatch, ScriptedVAD)
-    expected_transcript = Transcript(text="stop", is_confident=True)
+    expected_transcript = Transcript(text="give me a recap", is_confident=True)
     monkeypatch.setattr(
         voice_barge_in, "transcribe", lambda model, audio: expected_transcript
     )

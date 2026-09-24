@@ -33,10 +33,16 @@ below) now treats that outcome, and an explicit "never mind"/"continue"/
 from the chunk (`voice_tts.speak`'s own numbering) playback had reached,
 not the very beginning, up to `MAX_RESUME_ATTEMPTS` times, rather than
 losing it or making the user re-hear a long reply's already-spoken start.
-Only a confident transcript that isn't one of those dismissal phrases is
-returned to `daemon.py` (wrapped in a `BargeInResult`, carrying that same
-resume point) as a genuine barge-in -- which still might not be a real
-command once `daemon.py` routes it; see `BargeInResult`'s own docstring.
+A confident transcript that *is* one of a separate set of stop phrases
+("stop"/"cancel"/etc., Voidious 2026-09-24) is also not routed as a
+command, but for the opposite reason -- it's a real interruption, just one
+that means "I'm done listening to this," so `text` isn't resumed either;
+the reply simply ends there, same as if it had finished playing on its
+own. Only a confident transcript that's neither a dismissal nor a stop
+phrase is returned to `daemon.py` (wrapped in a `BargeInResult`, carrying
+that same resume point) as a genuine barge-in -- which still might not be
+a real command once `daemon.py` routes it; see `BargeInResult`'s own
+docstring.
 """
 
 from __future__ import annotations
@@ -136,6 +142,17 @@ _DISMISS_PHRASES = frozenset(
     {"never mind", "nevermind", "continue", "resume", "keep going", "go on"}
 )
 
+# Said after a barge-in, these mean "stop talking, but don't resume and
+# don't treat this as a command either" (Voidious, 2026-09-24: "the most
+# likely thing you're going to be barging in about is just to stop
+# talking"). Matched the same way as `_DISMISS_PHRASES` -- case-
+# insensitively, trailing punctuation stripped, exact phrase not
+# substring. Unlike a dismissal, which resumes `text` on the assumption
+# the interruption wasn't real, a stop phrase *is* real -- it just isn't
+# routed through `_process` as a command, and the reply it cut off is
+# simply over, same as if it had finished playing on its own.
+_STOP_PHRASES = frozenset({"stop", "stop talking", "cancel", "abort"})
+
 # How many times `speak_with_barge_in` will resume the same reply from the
 # start after a false trigger or dismissal before giving up and letting
 # the turn end normally, as if the reply had played through uninterrupted.
@@ -148,6 +165,10 @@ MAX_RESUME_ATTEMPTS = 3
 
 def _is_dismiss_phrase(text: str) -> bool:
     return text.strip().lower().rstrip(".!?,") in _DISMISS_PHRASES
+
+
+def _is_stop_phrase(text: str) -> bool:
+    return text.strip().lower().rstrip(".!?,") in _STOP_PHRASES
 
 
 def speak_with_barge_in(
@@ -167,14 +188,17 @@ def speak_with_barge_in(
 
     Runs `_speak_once_with_barge_in` for one playback-plus-listen pass. If
     that returns `None` (nothing interrupted playback), this returns
-    `None` too. If it returns a confident `Transcript` that isn't a
-    dismissal phrase, that's a genuine barge-in -- wrapped in a
-    `BargeInResult` (with where in `text` it stopped) for `daemon.py` to
-    route as the next thing said. Otherwise (not confident, or confident
-    but a dismissal like "never mind") the interruption wasn't real:
-    `text` resumes from that same chunk, up to `MAX_RESUME_ATTEMPTS`
-    times, before giving up and returning `None` as if the reply had
-    simply finished.
+    `None` too. A confident transcript is one of three things: a stop
+    phrase like "stop"/"cancel" (real interruption, but `text` simply ends
+    here -- this returns `None`, exactly as if playback had finished on
+    its own, so the caller doesn't resume it or route it as a command); a
+    dismissal phrase like "never mind" (not treated as real -- `text`
+    resumes from that same chunk); or anything else, a genuine barge-in --
+    wrapped in a `BargeInResult` (with where in `text` it stopped) for
+    `daemon.py` to route as the next thing said. A non-confident
+    transcript is treated the same as a dismissal -- resumed, not routed.
+    Resuming happens up to `MAX_RESUME_ATTEMPTS` times before giving up and
+    returning `None` as if the reply had simply finished.
 
     `start_chunk` lets a caller resume `text` from partway through --
     `daemon.py` passes the `resume_chunk` off a previous `BargeInResult`
@@ -195,8 +219,14 @@ def speak_with_barge_in(
         )
         if transcript is None:
             return None
-        if transcript.is_confident and not _is_dismiss_phrase(transcript.text):
-            return BargeInResult(transcript=transcript, resume_chunk=resume_chunk or 0)
+        if transcript.is_confident:
+            if _is_stop_phrase(transcript.text):
+                print("swingbird: barge-in was a stop request, ending reply...")
+                return None
+            if not _is_dismiss_phrase(transcript.text):
+                return BargeInResult(
+                    transcript=transcript, resume_chunk=resume_chunk or 0
+                )
         chunk = resume_chunk or 0
         print(
             "swingbird: barge-in wasn't a real interruption "

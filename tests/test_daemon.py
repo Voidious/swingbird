@@ -2767,13 +2767,14 @@ def test_wait_for_wake_word_speaks_queued_proactive_summaries_first(
     )
     speak_calls = []
     monkeypatch.setattr(
-        daemon.voice_tts,
-        "speak",
-        lambda text, tts, output: speak_calls.append(text),
+        daemon.voice_barge_in,
+        "speak_with_barge_in",
+        lambda text, *_rest: speak_calls.append(text) or None,
     )
 
-    asyncio.run(bot._wait_for_wake_word())
+    result = asyncio.run(bot._wait_for_wake_word())
 
+    assert result is None
     assert speak_calls == ["Update from backend: done."]
     assert bot._pending_proactive == []
     assert wake_calls == [1]
@@ -2799,15 +2800,52 @@ def test_wait_for_wake_word_loops_back_after_being_interrupted(tmp_path, monkeyp
     monkeypatch.setattr(daemon.voice_wake, "listen_for_wake_word", fake_listen)
     speak_calls = []
     monkeypatch.setattr(
-        daemon.voice_tts,
-        "speak",
-        lambda text, tts, output: speak_calls.append(text),
+        daemon.voice_barge_in,
+        "speak_with_barge_in",
+        lambda text, *_rest: speak_calls.append(text) or None,
     )
 
-    asyncio.run(bot._wait_for_wake_word())
+    result = asyncio.run(bot._wait_for_wake_word())
 
+    assert result is None
     assert speak_calls == ["Update from backend: done."]
     assert bot._pending_proactive == []
+
+
+def test_wait_for_wake_word_returns_a_barge_in_on_a_proactive_summary(
+    tmp_path, monkeypatch
+):
+    """A real command barging in on a proactive summary (§V.9) is handed
+    back to the caller directly, instead of looping back to listen for the
+    wake word -- `_run_voice_turn` feeds it straight into a voice turn.
+    """
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+    bot._pending_proactive = ["Update from backend: done.", "Update: unspoken."]
+    wake_calls = []
+    monkeypatch.setattr(
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+    )
+    T = daemon.voice_stt.Transcript
+    barged_in = daemon.voice_barge_in.BargeInResult(
+        transcript=T(text="give me a recap", is_confident=True), resume_chunk=0
+    )
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_barge_in,
+        "speak_with_barge_in",
+        lambda text, *_rest: speak_calls.append(text) or barged_in,
+    )
+
+    result = asyncio.run(bot._wait_for_wake_word())
+
+    assert result == barged_in.transcript
+    assert speak_calls == ["Update from backend: done."]
+    # The second queued summary is left for the next idle moment -- never
+    # spoken, never dropped.
+    assert bot._pending_proactive == ["Update: unspoken."]
+    assert wake_calls == []
 
 
 def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
@@ -2909,6 +2947,77 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
             0,
         )
     ]
+
+
+def test_run_voice_turn_skips_wake_word_and_recording_on_a_proactive_barge_in(
+    tmp_path, monkeypatch
+):
+    """A real command barging in on a proactive summary (§V.9) is fed
+    straight into the exchange loop by `_wait_for_wake_word` -- the wake
+    word is never listened for, and there's no fresh cue/recording, since
+    the mic was already listening and already captured it.
+    """
+    wake_calls = []
+    monkeypatch.setattr(
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+    )
+    record_calls = []
+    monkeypatch.setattr(
+        daemon.voice_stt,
+        "record_and_transcribe",
+        lambda mic, stt, max_wait_seconds=None: (
+            record_calls.append(max_wait_seconds) or None
+        ),
+    )
+    T = daemon.voice_stt.Transcript
+    barged_in = daemon.voice_barge_in.BargeInResult(
+        transcript=T(text="give me a recap", is_confident=True), resume_chunk=0
+    )
+    speak_calls = []
+
+    def fake_speak_with_barge_in(text, *rest):
+        speak_calls.append(text)
+        # First call speaks the queued proactive summary and is barged in
+        # on; the second is the real exchange's own reply, uninterrupted.
+        return barged_in if len(speak_calls) == 1 else None
+
+    monkeypatch.setattr(
+        daemon.voice_barge_in, "speak_with_barge_in", fake_speak_with_barge_in
+    )
+    cue_calls = []
+    monkeypatch.setattr(
+        daemon.voice_cues,
+        "play_listening_started",
+        lambda output: cue_calls.append(output),
+    )
+    monkeypatch.setattr(
+        daemon.voice_cues, "play_listening_stopped", lambda output: None
+    )
+    monkeypatch.setattr(outbound, "send_message", lambda *a, **k: "evt-id")
+    llm = FakeLLM(json_response={"intent": "chit_chat"})
+    voice_config = _voice_config()
+    bot = _daemon(tmp_path, llm, config=voice_config)
+    bot._pending_proactive = ["Update from backend: done."]
+
+    asyncio.run(bot._run_voice_turn())
+
+    expected_reply = (
+        "That's outside what I handle -- ask me for a recap, or to dispatch "
+        "an instruction to a project channel."
+    )
+    assert wake_calls == []
+    # First call speaks the proactive summary (barged in on); second is
+    # the barge-in's own transcript, routed and spoken as a real exchange.
+    assert speak_calls == [
+        "Update from backend: done.",
+        daemon.render_for_speech(expected_reply),
+    ]
+    # One "started" cue -- for the follow-up listen after the exchange,
+    # not a second one for the (skipped) wake-word-triggered recording.
+    assert cue_calls == [voice_config.voice.output]
+    assert record_calls == [voice_config.voice.follow_up_window_seconds]
 
 
 def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
