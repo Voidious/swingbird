@@ -748,6 +748,12 @@ def test_voice_mic_rejects_invalid_device(tmp_path, value):
         load_config(write(tmp_path, text))
 
 
+def test_voice_mic_resolves_xvf3800_preset(tmp_path):
+    text = VALID + '\n[voice.mic]\ndevice = "xvf3800"\n'
+    config = load_config(write(tmp_path, text))
+    assert config.voice.mic.device == "plughw:CARD=Array,DEV=0"
+
+
 def test_voice_output_section_not_a_table(tmp_path):
     text = VALID + "\n[voice]\noutput = 5\n"
     with pytest.raises(ConfigError, match=r"\[voice.output\] must be a table"):
@@ -761,6 +767,12 @@ def test_voice_output_rejects_invalid_device(tmp_path, value):
         ConfigError, match=r"\[voice.output\].device must be a non-empty string"
     ):
         load_config(write(tmp_path, text))
+
+
+def test_voice_output_resolves_xvf3800_preset(tmp_path):
+    text = VALID + '\n[voice.output]\ndevice = "xvf3800"\n'
+    config = load_config(write(tmp_path, text))
+    assert config.voice.output.device == "plughw:CARD=Array,DEV=0"
 
 
 def test_voice_stt_section_not_a_table(tmp_path):

@@ -93,7 +93,9 @@ name = "swingbird"
 # mic/speaker) by setting it to that device's ALSA name instead, found via
 # `arecord -l`/`aplay -l` on the target machine -- put that in your
 # .swingbird.toml, since it's specific to your hardware, not a shippable
-# default.
+# default. "xvf3800" is a named shortcut for Seeed's reSpeaker XVF3800 (see
+# `_DEVICE_PRESETS` in config.py) -- use that instead of the raw ALSA string
+# if you have one.
 # [voice.mic]
 # device = "default"
 #

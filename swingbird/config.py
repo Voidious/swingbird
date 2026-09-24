@@ -159,6 +159,14 @@ _SUPPORTED_STT_MODELS = ("small", "small.en")
 DEFAULT_WAKE_WORD = "swingbird"
 DEFAULT_MIC_DEVICE = "default"
 DEFAULT_OUTPUT_DEVICE = "default"
+
+# Named shortcuts for `device`, resolved to a real ALSA `-D` string before
+# validation. Seeed's reSpeaker XVF3800 always reports itself to ALSA under
+# the fixed card name "Array" (from its USB descriptor, not enumeration
+# order), so this name is stable across reboots/replugs/other USB devices
+# coming and going -- verified against Voidious's Orange Pi (`arecord -l`/
+# `aplay -l` both show `card 3: Array [reSpeaker XVF3800 4-Mic Array]`).
+_DEVICE_PRESETS = {"xvf3800": "plughw:CARD=Array,DEV=0"}
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 15
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
@@ -175,11 +183,11 @@ class VoiceMicConfig:
     bridge, the Orange Pi's onboard codec, a specific USB array's card
     name, ...) and can't be hardcoded across machines. Defaults to
     "default" (the ALSA/Pulse default input) so a fresh checkout captures
-    from whatever the host's system default is; a known device name (e.g.
-    a USB mic's ALSA card, such as the reSpeaker XVF3800) is a plain
-    string like "plughw:CARD=ArrayUAC10,DEV=0", found via `arecord -l` on
-    the target machine and set in `.swingbird.toml`, not shipped as a
-    default here.
+    from whatever the host's system default is; a known device name is a
+    plain string like "plughw:CARD=ArrayUAC10,DEV=0", found via `arecord -l`
+    on the target machine and set in `.swingbird.toml`, not shipped as a
+    default here. "xvf3800" is a named shortcut (see `_DEVICE_PRESETS`) for
+    Seeed's reSpeaker XVF3800, resolved to its real ALSA device string.
     """
 
     device: str = DEFAULT_MIC_DEVICE
@@ -525,7 +533,7 @@ def _parse_voice_mic(section: object) -> VoiceMicConfig:
     device = section.get("device", DEFAULT_MIC_DEVICE)
     if not isinstance(device, str) or not device.strip():
         raise ConfigError("[voice.mic].device must be a non-empty string")
-    return VoiceMicConfig(device=device)
+    return VoiceMicConfig(device=_DEVICE_PRESETS.get(device, device))
 
 
 def _parse_voice_output(section: object) -> VoiceOutputConfig:
@@ -534,7 +542,7 @@ def _parse_voice_output(section: object) -> VoiceOutputConfig:
     device = section.get("device", DEFAULT_OUTPUT_DEVICE)
     if not isinstance(device, str) or not device.strip():
         raise ConfigError("[voice.output].device must be a non-empty string")
-    return VoiceOutputConfig(device=device)
+    return VoiceOutputConfig(device=_DEVICE_PRESETS.get(device, device))
 
 
 def _parse_voice_stt(section: object) -> VoiceSTTConfig:
