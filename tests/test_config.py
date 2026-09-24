@@ -690,7 +690,7 @@ def test_voice_defaults_to_disabled(tmp_path):
     assert config.voice.tts is None
     assert config.voice.wake_word_window_seconds == 30
     assert config.voice.follow_up_window_seconds == 30
-    assert config.voice.barge_in_trigger_frames == 4
+    assert config.voice.barge_in_trigger_frames == 3
     assert config.voice.barge_in_vad_threshold == 0.8
 
 
