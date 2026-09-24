@@ -31,7 +31,7 @@ class FakeProcess:
         self.stdout = FakeStdout(chunks)
 
 
-def test_open_mic_stream_onboard_targets_default_device(monkeypatch):
+def test_open_mic_stream_defaults_to_default_device(monkeypatch):
     popen_calls = []
     monkeypatch.setattr(
         voice_audio.subprocess,
@@ -39,7 +39,7 @@ def test_open_mic_stream_onboard_targets_default_device(monkeypatch):
         lambda args, stdout=None: popen_calls.append(args) or FakeProcess(),
     )
 
-    open_mic_stream(VoiceMicConfig(type="onboard"))
+    open_mic_stream(VoiceMicConfig())
 
     assert popen_calls == [
         [
@@ -59,7 +59,7 @@ def test_open_mic_stream_onboard_targets_default_device(monkeypatch):
     ]
 
 
-def test_open_mic_stream_usb_targets_usb_device(monkeypatch):
+def test_open_mic_stream_targets_configured_device(monkeypatch):
     popen_calls = []
     monkeypatch.setattr(
         voice_audio.subprocess,
@@ -67,9 +67,11 @@ def test_open_mic_stream_usb_targets_usb_device(monkeypatch):
         lambda args, stdout=None: popen_calls.append(args) or FakeProcess(),
     )
 
-    open_mic_stream(VoiceMicConfig(type="usb"))
+    open_mic_stream(VoiceMicConfig(device="plughw:CARD=ArrayUAC10,DEV=0"))
 
-    assert popen_calls[0][popen_calls[0].index("-D") + 1] == "usb"
+    assert (
+        popen_calls[0][popen_calls[0].index("-D") + 1] == "plughw:CARD=ArrayUAC10,DEV=0"
+    )
 
 
 def test_open_mic_stream_raises_when_arecord_not_found(monkeypatch):

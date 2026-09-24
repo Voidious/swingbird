@@ -37,24 +37,14 @@ CHUNK_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE
 # prior live test) never comes close to it.
 _TERMINATE_TIMEOUT_SECONDS = 2.0
 
-# Mirrors voice_tts.py's `_ALSA_DEVICE_BY_OUTPUT_TYPE` for the input side:
-# "onboard" is the ALSA/Pulse default input (the WSL dev machine today,
-# the Orange Pi's onboard mic later); "usb" is the reSpeaker XVF3800
-# array, a placeholder device name now so wiring in the real one later is
-# a one-line change.
-_ALSA_DEVICE_BY_MIC_TYPE = {
-    "onboard": "default",
-    "usb": "usb",
-}
-
 
 class MicStreamError(Exception):
     """Raised when `arecord` can't start, or its stream ends unexpectedly."""
 
 
 def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
-    """Start `arecord` capturing raw PCM from `mic`'s device to stdout."""
-    device = _ALSA_DEVICE_BY_MIC_TYPE[mic.type]
+    """Start `arecord` capturing raw PCM from `mic.device` to stdout."""
+    device = mic.device
     try:
         return subprocess.Popen(
             [

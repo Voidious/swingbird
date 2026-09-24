@@ -67,12 +67,15 @@ def test_play_listening_started_targets_onboard_device_by_default(monkeypatch):
     assert fake_popen.stdin.closed
 
 
-def test_play_listening_started_targets_usb_device(monkeypatch):
+def test_play_listening_started_targets_configured_device(monkeypatch):
     fake_popen = _mock_popen(monkeypatch)
 
-    play_listening_started(VoiceOutputConfig(type="usb"))
+    play_listening_started(VoiceOutputConfig(device="plughw:CARD=ArrayUAC10,DEV=0"))
 
-    assert fake_popen.args[fake_popen.args.index("-D") + 1] == "usb"
+    assert (
+        fake_popen.args[fake_popen.args.index("-D") + 1]
+        == "plughw:CARD=ArrayUAC10,DEV=0"
+    )
 
 
 def test_listening_started_and_stopped_tones_differ(monkeypatch):

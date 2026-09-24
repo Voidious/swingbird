@@ -118,7 +118,7 @@ def test_speak_raises_when_model_download_fails(tmp_path, monkeypatch):
         )
 
 
-def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypatch):
+def test_speak_happy_path_writes_all_chunks_to_default_device(tmp_path, monkeypatch):
     (tmp_path / "test-voice.onnx").write_bytes(b"")
     fake_voice = FakeVoice([FakeChunk(b"abc"), FakeChunk(b"def")], sample_rate=22050)
     load_calls, fake_popen = _mock_piper_voice_and_popen(monkeypatch, fake_voice)
@@ -132,7 +132,7 @@ def test_speak_happy_path_writes_all_chunks_to_onboard_device(tmp_path, monkeypa
     speak(
         "hello",
         VoiceTTSConfig(voice="test-voice"),
-        VoiceOutputConfig(type="onboard"),
+        VoiceOutputConfig(),
         models_dir=tmp_path,
     )
 
@@ -298,7 +298,7 @@ def _mock_piper_voice_with_model(tmp_path, monkeypatch):
     return fake_voice
 
 
-def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):
+def test_speak_targets_configured_device(tmp_path, monkeypatch):
     _mock_piper_voice_with_model(tmp_path, monkeypatch)
     fake_popen = FakePopen(returncode=0)
     monkeypatch.setattr(
@@ -310,11 +310,14 @@ def test_speak_usb_output_targets_usb_device(tmp_path, monkeypatch):
     speak(
         "hello",
         VoiceTTSConfig(voice="test-voice"),
-        VoiceOutputConfig(type="usb"),
+        VoiceOutputConfig(device="plughw:CARD=ArrayUAC10,DEV=0"),
         models_dir=tmp_path,
     )
 
-    assert fake_popen.args[fake_popen.args.index("-D") + 1] == "usb"
+    assert (
+        fake_popen.args[fake_popen.args.index("-D") + 1]
+        == "plughw:CARD=ArrayUAC10,DEV=0"
+    )
     assert bytes(fake_popen.stdin.written) == b"x"
     assert fake_popen.stdin.closed
 

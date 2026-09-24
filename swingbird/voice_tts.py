@@ -33,18 +33,6 @@ from swingbird.config import VoiceOutputConfig, VoiceTTSConfig, load_config
 
 DEFAULT_MODELS_DIR = Path("voice_models")
 
-# §V.6's output.type is a config-selected device, not just documentation:
-# VoiceOutputConfig's docstring calls both "onboard" and "usb" permanent
-# code paths, even though only "onboard" (the ALSA/Pulse default device)
-# is exercised for real before the Orange Pi + XVF3800 arrives (§V.14).
-# "usb" is a distinct placeholder now so wiring in the real device name
-# later is a one-line change here, not a reshape of this module's
-# interface.
-_ALSA_DEVICE_BY_OUTPUT_TYPE = {
-    "onboard": "default",
-    "usb": "usb",
-}
-
 # A brief silence between recap items/paragraphs reads as more natural at
 # the pace this codebase otherwise keeps -- Voidious asked for "even like
 # .2 or .3 seconds" (2026-09-21) after finding back-to-back items in a
@@ -316,7 +304,7 @@ def speak(
     silent gap before speech starts at all.
     """
     voice = PiperVoice.load(str(_voice_model_path(tts.voice, models_dir)))
-    device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
+    device = output.device
     sample_rate = voice.config.sample_rate
 
     paragraphs = [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]

@@ -72,7 +72,7 @@ def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
     frames = iter([frame, frame])
     monkeypatch.setattr(voice_wake, "read_frame", lambda process: next(frames))
 
-    mic = VoiceMicConfig(type="usb")
+    mic = VoiceMicConfig(device="plughw:CARD=ArrayUAC10,DEV=0")
     detected = listen_for_wake_word("hey_jarvis", mic)
 
     assert detected is True

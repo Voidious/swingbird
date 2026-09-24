@@ -87,11 +87,18 @@ name = "swingbird"
 # wake_word_window_seconds = 15
 # follow_up_window_seconds = 15
 #
+# mic/output "device" is a raw ALSA/Pulse `-D` device name, passed straight
+# to `arecord`/`aplay` -- "default" (the system default input/output) works
+# out of the box on most machines. Point at a specific device (e.g. a USB
+# mic/speaker) by setting it to that device's ALSA name instead, found via
+# `arecord -l`/`aplay -l` on the target machine -- put that in your
+# .swingbird.toml, since it's specific to your hardware, not a shippable
+# default.
 # [voice.mic]
-# type = "onboard"
+# device = "default"
 #
 # [voice.output]
-# type = "onboard"
+# device = "default"
 #
 # [voice.stt]
 # model = "small"

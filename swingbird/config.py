@@ -154,13 +154,11 @@ class RecapConfig:
     closed_item_window_days: int = DEFAULT_CLOSED_ITEM_WINDOW_DAYS
 
 
-_SUPPORTED_MIC_TYPES = ("onboard", "usb")
-_SUPPORTED_OUTPUT_TYPES = ("onboard", "usb")
 _SUPPORTED_STT_MODELS = ("small", "small.en")
 
 DEFAULT_WAKE_WORD = "swingbird"
-DEFAULT_MIC_TYPE = "onboard"
-DEFAULT_OUTPUT_TYPE = "onboard"
+DEFAULT_MIC_DEVICE = "default"
+DEFAULT_OUTPUT_DEVICE = "default"
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 15
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
@@ -171,23 +169,30 @@ DEFAULT_BARGE_IN_VAD_THRESHOLD = 0.8
 @dataclass(frozen=True)
 class VoiceMicConfig:
     """Which physical mic input the wake-word/VAD/STT pipeline listens on
-    (Voice Mode design doc §V.6). Both types are permanent, tested code
-    paths, not a prototype-vs-production split: "onboard" is the WSL dev
-    machine's default input today and the Orange Pi's onboard mic later;
-    "usb" is the reSpeaker XVF3800 array, the final product's primary
-    input on real hardware.
+    (Voice Mode design doc §V.6): an ALSA/Pulse `-D` device name passed
+    straight through to `arecord`, not a fixed enum -- the right value
+    depends entirely on the host's own audio setup (WSL's ALSA-to-Pulse
+    bridge, the Orange Pi's onboard codec, a specific USB array's card
+    name, ...) and can't be hardcoded across machines. Defaults to
+    "default" (the ALSA/Pulse default input) so a fresh checkout captures
+    from whatever the host's system default is; a known device name (e.g.
+    a USB mic's ALSA card, such as the reSpeaker XVF3800) is a plain
+    string like "plughw:CARD=ArrayUAC10,DEV=0", found via `arecord -l` on
+    the target machine and set in `.swingbird.toml`, not shipped as a
+    default here.
     """
 
-    type: str = DEFAULT_MIC_TYPE
+    device: str = DEFAULT_MIC_DEVICE
 
 
 @dataclass(frozen=True)
 class VoiceOutputConfig:
     """Which physical audio output Piper's speech plays on (§V.6),
-    mirroring `VoiceMicConfig`'s input-side split for the same reason.
+    mirroring `VoiceMicConfig`'s input-side design for the same reason --
+    `aplay -l` is `arecord -l`'s equivalent for finding a device name.
     """
 
-    type: str = DEFAULT_OUTPUT_TYPE
+    device: str = DEFAULT_OUTPUT_DEVICE
 
 
 @dataclass(frozen=True)
@@ -517,25 +522,19 @@ def _parse_voice(raw: dict) -> VoiceConfig:
 def _parse_voice_mic(section: object) -> VoiceMicConfig:
     if not isinstance(section, dict):
         raise ConfigError("[voice.mic] must be a table")
-    mic_type = section.get("type", DEFAULT_MIC_TYPE)
-    if mic_type not in _SUPPORTED_MIC_TYPES:
-        raise ConfigError(
-            f"[voice.mic].type must be one of {_SUPPORTED_MIC_TYPES!r}, "
-            f"got {mic_type!r}"
-        )
-    return VoiceMicConfig(type=mic_type)
+    device = section.get("device", DEFAULT_MIC_DEVICE)
+    if not isinstance(device, str) or not device.strip():
+        raise ConfigError("[voice.mic].device must be a non-empty string")
+    return VoiceMicConfig(device=device)
 
 
 def _parse_voice_output(section: object) -> VoiceOutputConfig:
     if not isinstance(section, dict):
         raise ConfigError("[voice.output] must be a table")
-    output_type = section.get("type", DEFAULT_OUTPUT_TYPE)
-    if output_type not in _SUPPORTED_OUTPUT_TYPES:
-        raise ConfigError(
-            f"[voice.output].type must be one of {_SUPPORTED_OUTPUT_TYPES!r}, "
-            f"got {output_type!r}"
-        )
-    return VoiceOutputConfig(type=output_type)
+    device = section.get("device", DEFAULT_OUTPUT_DEVICE)
+    if not isinstance(device, str) or not device.strip():
+        raise ConfigError("[voice.output].device must be a non-empty string")
+    return VoiceOutputConfig(device=device)
 
 
 def _parse_voice_stt(section: object) -> VoiceSTTConfig:

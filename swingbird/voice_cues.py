@@ -22,13 +22,6 @@ import numpy as np
 
 from swingbird.config import VoiceOutputConfig
 
-# Mirrors voice_tts.py's own device mapping -- kept as a separate two-line
-# literal rather than a cross-module import of its private constant.
-_ALSA_DEVICE_BY_OUTPUT_TYPE = {
-    "onboard": "default",
-    "usb": "usb",
-}
-
 SAMPLE_RATE = 16000
 _DURATION_SECONDS = 0.08
 # Quiet by design -- a startle-volume beep defeats "light". Both cues share
@@ -66,7 +59,7 @@ def _tone(frequency: float) -> bytes:
 
 
 def _play(pcm: bytes, output: VoiceOutputConfig) -> None:
-    device = _ALSA_DEVICE_BY_OUTPUT_TYPE[output.type]
+    device = output.device
     try:
         play = subprocess.Popen(
             [

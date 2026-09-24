@@ -684,8 +684,8 @@ def test_voice_defaults_to_disabled(tmp_path):
 
     assert config.voice.enabled is False
     assert config.voice.wake_word == "swingbird"
-    assert config.voice.mic.type == "onboard"
-    assert config.voice.output.type == "onboard"
+    assert config.voice.mic.device == "default"
+    assert config.voice.output.device == "default"
     assert config.voice.stt.model == "small"
     assert config.voice.tts is None
     assert config.voice.wake_word_window_seconds == 15
@@ -709,8 +709,8 @@ def test_voice_enabled_with_tts_configures_fully(tmp_path):
     text = (
         VALID
         + '\n[voice]\nenabled = true\nwake_word = "birdie"\n'
-        + '\n[voice.mic]\ntype = "usb"\n'
-        + '\n[voice.output]\ntype = "usb"\n'
+        + '\n[voice.mic]\ndevice = "plughw:CARD=ArrayUAC10,DEV=0"\n'
+        + '\n[voice.output]\ndevice = "plughw:CARD=ArrayUAC10,DEV=0"\n'
         + '\n[voice.stt]\nmodel = "small.en"\n'
         + '\n[voice.tts]\nvoice = "en_US-lessac-medium"\n'
     )
@@ -718,8 +718,8 @@ def test_voice_enabled_with_tts_configures_fully(tmp_path):
 
     assert config.voice.enabled is True
     assert config.voice.wake_word == "birdie"
-    assert config.voice.mic.type == "usb"
-    assert config.voice.output.type == "usb"
+    assert config.voice.mic.device == "plughw:CARD=ArrayUAC10,DEV=0"
+    assert config.voice.output.device == "plughw:CARD=ArrayUAC10,DEV=0"
     assert config.voice.stt.model == "small.en"
     assert config.voice.tts.voice == "en_US-lessac-medium"
 
@@ -739,9 +739,12 @@ def test_voice_mic_section_not_a_table(tmp_path):
         load_config(write(tmp_path, text))
 
 
-def test_voice_mic_rejects_unsupported_type(tmp_path):
-    text = VALID + '\n[voice.mic]\ntype = "bluetooth"\n'
-    with pytest.raises(ConfigError, match=r"\[voice.mic\].type must be one of"):
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_voice_mic_rejects_invalid_device(tmp_path, value):
+    text = VALID + f"\n[voice.mic]\ndevice = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.mic\].device must be a non-empty string"
+    ):
         load_config(write(tmp_path, text))
 
 
@@ -751,9 +754,12 @@ def test_voice_output_section_not_a_table(tmp_path):
         load_config(write(tmp_path, text))
 
 
-def test_voice_output_rejects_unsupported_type(tmp_path):
-    text = VALID + '\n[voice.output]\ntype = "bluetooth"\n'
-    with pytest.raises(ConfigError, match=r"\[voice.output\].type must be one of"):
+@pytest.mark.parametrize("value", ['""', '"   "', "5", "true"])
+def test_voice_output_rejects_invalid_device(tmp_path, value):
+    text = VALID + f"\n[voice.output]\ndevice = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.output\].device must be a non-empty string"
+    ):
         load_config(write(tmp_path, text))
 
 
