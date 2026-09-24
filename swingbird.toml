@@ -74,18 +74,18 @@ name = "swingbird"
 # wake_word must currently name one of openWakeWord's bundled pretrained
 # phrases (e.g. "hey_jarvis" -- see voice_wake.py) -- "swingbird" is the
 # intended eventual value once a custom model exists (§V.13), not a
-# working one yet. wake_word_window_seconds (default 30) is how long
+# working one yet. wake_word_window_seconds (default 15) is how long
 # swingbird waits for you to start speaking right after the wake word
 # fires before giving up and requiring it again. follow_up_window_seconds
-# (default 30) is how long swingbird keeps listening for a follow-up
+# (default 15) is how long swingbird keeps listening for a follow-up
 # command after a reply before requiring the wake word again. Every reply
 # also listens for the user talking over it (barge-in, §V.12) the whole
 # time it's playing.
 # [voice]
 # enabled = true
 # wake_word = "hey_jarvis"
-# wake_word_window_seconds = 30
-# follow_up_window_seconds = 30
+# wake_word_window_seconds = 15
+# follow_up_window_seconds = 15
 #
 # [voice.mic]
 # type = "onboard"
