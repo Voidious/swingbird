@@ -1,5 +1,5 @@
-provider = "moonshot"
-model = "kimi-k2.7-code"
+provider = "openai"
+model = "gpt-5.6-terra"
 max_function_length = 75
 max_file_lines = 1250
 max_duplicate_seq_len = 20
