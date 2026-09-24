@@ -12,6 +12,7 @@ import contextlib
 import dataclasses
 import json
 import sys
+import threading
 import time
 
 import pytest
@@ -2118,6 +2119,47 @@ def test_confirm_summarizes_the_working_agents_reply(tmp_path, monkeypatch):
     assert bot._reply_watches == {}
 
 
+def test_confirm_queues_the_same_summary_for_proactive_speech_when_voice_enabled(
+    tmp_path, monkeypatch
+):
+    """§V.9: `_await_and_summarize` queues the same summary it just DMed to
+    be spoken proactively once voice is idle -- but only when voice mode is
+    enabled at all (see `_voice_config`; default `CONFIG` used everywhere
+    else in this file has it disabled, which is what
+    `test_confirm_summarizes_the_working_agents_reply` above already
+    exercises for the disabled side of this same branch)."""
+    _, store = _setup_dispatch_test(monkeypatch)
+    dispatch_llm = FakeLLM(
+        json_response={
+            "intent": "dispatch",
+            "channel": "backend",
+            "target_agent": "Codex",
+            "message": "fix it",
+        },
+        text_response="Fixed the bug and added a regression test.",
+    )
+    bot = _daemon(tmp_path, dispatch_llm, store=store, config=_voice_config())
+
+    async def scenario():
+        await bot._handle_event(_event(event_id="evt-1"))
+        bot._llm._json_response = {"intent": "confirm"}
+        await bot._handle_event(_event(event_id="evt-2"))
+        reply_event = _event(
+            pubkey="codex-pubkey",
+            content="Fixed the bug and added a regression test.",
+            tags=[["h", "chan-1"], ["e", "posted-evt", "", "reply"]],
+            event_id="reply-1",
+        )
+        await bot._handle_event(reply_event)
+        await asyncio.sleep(0.05)  # let the background summarize task finish
+
+    asyncio.run(scenario())
+
+    assert bot._pending_proactive == [
+        "Update from backend: Fixed the bug and added a regression test."
+    ]
+
+
 def test_reply_summary_failure_is_logged_not_raised(tmp_path, monkeypatch, capsys):
     _sent(monkeypatch)
     monkeypatch.setattr(outbound, "relay_dispatch", lambda *a: "posted-evt")
@@ -2675,6 +2717,99 @@ def _voice_config(config=None, **voice_overrides):
     return dataclasses.replace(base, voice=VoiceConfig(**voice_overrides))
 
 
+def test_channel_name_resolves_a_configured_channel_and_falls_back_to_none(tmp_path):
+    bot = _daemon(tmp_path, FakeLLM())
+
+    assert bot._channel_name("chan-1") == "backend"
+    assert bot._channel_name("no-such-channel") is None
+
+
+def test_queue_proactive_summary_interrupts_an_idle_wait(tmp_path):
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+    stop_event = threading.Event()
+    bot._idle_stop_event = stop_event
+
+    bot._queue_proactive_summary("chan-1", "Fixed the bug.")
+
+    assert bot._pending_proactive == ["Update from backend: Fixed the bug."]
+    assert stop_event.is_set()
+
+
+def test_queue_proactive_summary_does_not_touch_a_stop_event_when_not_idle(tmp_path):
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+
+    bot._queue_proactive_summary("chan-2", "Needs your input.")
+
+    assert bot._pending_proactive == ["Update from frontend: Needs your input."]
+    assert bot._idle_stop_event is None
+
+
+def test_queue_proactive_summary_uses_a_generic_prefix_for_an_unknown_channel(
+    tmp_path,
+):
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+
+    bot._queue_proactive_summary("no-such-channel", "Something happened.")
+
+    assert bot._pending_proactive == ["Update: Something happened."]
+
+
+def test_wait_for_wake_word_speaks_queued_proactive_summaries_first(
+    tmp_path, monkeypatch
+):
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+    bot._pending_proactive = ["Update from backend: done."]
+    wake_calls = []
+    monkeypatch.setattr(
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+    )
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_tts,
+        "speak",
+        lambda text, tts, output: speak_calls.append(text),
+    )
+
+    asyncio.run(bot._wait_for_wake_word())
+
+    assert speak_calls == ["Update from backend: done."]
+    assert bot._pending_proactive == []
+    assert wake_calls == [1]
+    assert bot._idle_stop_event is None
+
+
+def test_wait_for_wake_word_loops_back_after_being_interrupted(tmp_path, monkeypatch):
+    """A proactive summary queued *during* an idle wait (§V.9) sets
+    `_idle_stop_event`, so `listen_for_wake_word` returns `False` -- the
+    loop must come back around, speak it, and listen again rather than
+    mistaking that for the wake word firing."""
+    bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
+    results = iter([False, True])
+
+    def fake_listen(wake_word, mic, stop_event):
+        result = next(results)
+        if result is False:
+            # Simulate a summary arriving mid-wait, exactly like
+            # `_queue_proactive_summary` would from a concurrent task.
+            bot._pending_proactive.append("Update from backend: done.")
+        return result
+
+    monkeypatch.setattr(daemon.voice_wake, "listen_for_wake_word", fake_listen)
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_tts,
+        "speak",
+        lambda text, tts, output: speak_calls.append(text),
+    )
+
+    asyncio.run(bot._wait_for_wake_word())
+
+    assert speak_calls == ["Update from backend: done."]
+    assert bot._pending_proactive == []
+
+
 def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     tmp_path, monkeypatch
 ):
@@ -2682,7 +2817,7 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic: wake_calls.append((wake_word, mic)),
+        lambda wake_word, mic, stop_event: wake_calls.append((wake_word, mic)) or True,
     )
     stt_calls = []
     transcripts = iter(
@@ -2780,7 +2915,9 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: True,
     )
     transcripts = iter(
         [daemon.voice_stt.Transcript(text="recap", is_confident=False), None]
@@ -2832,7 +2969,9 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
 
 def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: True,
     )
     monkeypatch.setattr(
         daemon.voice_barge_in,
@@ -2898,7 +3037,7 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic: wake_calls.append((wake_word, mic)),
+        lambda wake_word, mic, stop_event: wake_calls.append((wake_word, mic)) or True,
     )
     monkeypatch.setattr(
         daemon.voice_barge_in,
@@ -2948,7 +3087,9 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: True,
     )
     T = daemon.voice_stt.Transcript
     stt_transcripts = iter([T(text="recap", is_confident=True), None])
@@ -3027,7 +3168,9 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
     reply from where it stopped instead.
     """
     monkeypatch.setattr(
-        daemon.voice_wake, "listen_for_wake_word", lambda wake_word, mic: None
+        daemon.voice_wake,
+        "listen_for_wake_word",
+        lambda wake_word, mic, stop_event: True,
     )
     T = daemon.voice_stt.Transcript
     stt_transcripts = iter([T(text="dispatch it", is_confident=True), None])
@@ -3110,7 +3253,7 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(
     tmp_path, monkeypatch, capsys
 ):
-    def _fail(wake_word, mic):
+    def _fail(wake_word, mic, stop_event):
         raise RuntimeError("mic gone")
 
     monkeypatch.setattr(daemon.voice_wake, "listen_for_wake_word", _fail)

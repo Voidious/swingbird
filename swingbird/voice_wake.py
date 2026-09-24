@@ -25,6 +25,7 @@ read the same `arecord` stream off the same device.
 from __future__ import annotations
 
 import argparse
+import threading
 
 import openwakeword
 from openwakeword.model import Model
@@ -72,22 +73,39 @@ def load_model(wake_word: str) -> tuple[Model, str]:
     return model, score_key
 
 
-def listen_for_wake_word(wake_word: str, mic: VoiceMicConfig) -> None:
-    """Block until `wake_word` is detected once on `mic`'s device.
+def listen_for_wake_word(
+    wake_word: str, mic: VoiceMicConfig, stop_event: threading.Event | None = None
+) -> bool:
+    """Block until `wake_word` is detected once on `mic`'s device, or
+    `stop_event` is set first. Returns `True` for the former, `False` for
+    the latter.
+
+    `stop_event` (Voice Mode design doc §V.9), when given, lets
+    `daemon.py`'s `_wait_for_wake_word` interrupt an otherwise-idle wait
+    the moment a proactive agent-reply summary needs speaking, rather than
+    making it sit through the rest of this call's own indefinite wait
+    first -- checked once per frame (~80ms), the same cadence
+    `voice_barge_in`'s own VAD polling already runs at, so the extra
+    latency to notice it's set is negligible. `None` (the default)
+    preserves the original "block forever until the wake word fires"
+    behavior for callers -- standalone smoke testing (`_main`, below) --
+    that have no reason to interrupt it.
 
     Blocking and synchronous on purpose -- nothing calls this from an
-    event loop yet (see module docstring), so there's no responsiveness
-    constraint to design around before §V.16 step 5 exists.
+    event loop directly (see module docstring); `daemon.py` always runs it
+    via `asyncio.to_thread`, so there's no responsiveness constraint to
+    design around inside this function itself.
     """
     model, score_key = load_model(wake_word)
 
     record = call_translating_stream_error(WakeWordError, open_mic_stream, mic)
 
     try:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             frame = call_translating_stream_error(WakeWordError, read_frame, record)
             if model.predict(frame)[score_key] >= DETECTION_THRESHOLD:
-                return
+                return True
+        return False
     finally:
         close_mic_stream(record)
 

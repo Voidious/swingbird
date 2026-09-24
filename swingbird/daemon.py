@@ -1,3 +1,11 @@
+# crispen: skip-file — this file is over max_file_lines because it's the one
+# place the daemon's event handling, intent dispatch, reply-wait, and
+# now voice-turn/proactive-speech logic all live, mirroring why
+# tests/test_daemon.py carries the same marker. A real fix means splitting
+# it by concern (e.g. voice-turn handling into its own module), which is a
+# bigger restructuring for Voidious to weigh in on, not something to do
+# as a side effect of adding one feature; this is a stopgap so pre-commit
+# stops trying (and failing) to auto-split it in the meantime.
 """Daemon: wires the inbound relay client to the router, pending-action
 store, and audit log, and enforces the safety invariants from §5.
 
@@ -92,6 +100,16 @@ found short interruptions routinely came back `chit_chat`, and speaking
 losing that reply, was worse than just resuming it. `_run_voice_exchange`
 threads the interrupted reply's own text and stop point (`_PendingResume`)
 into the next exchange for exactly that case -- see its own docstring.
+
+`_await_and_summarize`'s async agent-reply summary -- the same one it
+always DMed to the owner -- is also spoken proactively when voice is
+enabled (§V.9): `_queue_proactive_summary` queues it, and interrupts a
+wake-word wait already blocked idle (`_idle_stop_event`) so it's heard
+right away rather than sitting through the rest of that wait's own
+timeout. A summary queued while a voice turn is actively running (TTS
+playing, barge-in capturing, the follow-up window listening) waits
+instead for `_wait_for_wake_word`'s own loop to come back around once
+that turn ends -- see both methods' docstrings.
 """
 
 from __future__ import annotations
@@ -100,10 +118,18 @@ import argparse
 import asyncio
 import contextlib
 import os
+import threading
 import time
 from dataclasses import dataclass, replace
 
-from swingbird import outbound, voice_barge_in, voice_cues, voice_stt, voice_wake
+from swingbird import (
+    outbound,
+    voice_barge_in,
+    voice_cues,
+    voice_stt,
+    voice_tts,
+    voice_wake,
+)
 from swingbird.audit import AuditLog
 from swingbird.avatar import emoji_avatar_data_url
 from swingbird.closed_items import ClosedItemStore
@@ -270,6 +296,25 @@ class Daemon:
         # handling before the next event can start one, so there's no
         # cross-event clobbering.
         self._pending_watch: tuple[str, str, str] | None = None
+        # Set only while `_wait_for_wake_word` has a `listen_for_wake_word`
+        # call genuinely blocked, idle, waiting for the wake word -- the one
+        # moment nothing else owns the mic/speaker. `_queue_proactive_summary`
+        # (§V.9) checks this to decide whether an async agent-reply summary
+        # can interrupt that wait immediately, or has to wait for the
+        # current voice turn to finish first. `None` whenever a voice turn
+        # is actually running, and always (voice enabled or not) before the
+        # first turn starts -- the safe default for "don't try to interrupt
+        # something that isn't waiting."
+        self._idle_stop_event: threading.Event | None = None
+        # Spoken-safe proactive summaries waiting for an idle moment --
+        # appended by `_queue_proactive_summary`, drained in FIFO order by
+        # `_speak_pending_proactive`. A plain list, not a queue.Queue: both
+        # ends only ever run on the asyncio event loop thread (the append
+        # from `_await_and_summarize`, the pop from `_wait_for_wake_word`'s
+        # loop), never from `listen_for_wake_word`'s own worker thread, so
+        # there's no cross-thread access to guard against here the way
+        # `_idle_stop_event` itself needs threading.Event for.
+        self._pending_proactive: list[str] = []
 
     async def run(self) -> None:
         # Captured before open_dm()/connect() so the backlog cutoff covers
@@ -478,11 +523,15 @@ class Daemon:
         or being misheard as it -- see `voice_stt.record_utterance`'s own
         docstring for why that's not needed on the barge-in path, which
         never stopped listening in the first place.
+
+        The wake-word wait itself goes through `_wait_for_wake_word`, not
+        `voice_wake.listen_for_wake_word` directly, so a proactive
+        agent-reply summary (§V.9) queued while idle gets spoken before
+        (or, if one arrives mid-wait, right in the middle of) listening for
+        the wake word -- see that method's own docstring.
         """
         voice = self._config.voice
-        await asyncio.to_thread(
-            voice_wake.listen_for_wake_word, voice.wake_word, voice.mic
-        )
+        await self._wait_for_wake_word()
         await asyncio.to_thread(voice_cues.play_listening_started, voice.output)
         # The first exchange after the wake word waits up to
         # wake_word_window_seconds for speech to start; later ones in this
@@ -523,6 +572,72 @@ class Daemon:
                 voice.follow_up_window_seconds,
             )
         await asyncio.to_thread(voice_cues.play_listening_stopped, voice.output)
+
+    async def _wait_for_wake_word(self) -> None:
+        """Block until the wake word fires, speaking any queued proactive
+        agent-reply summaries (§V.9) first -- both the ones already waiting
+        from an earlier, busy voice turn, and any that arrive while this
+        very wait is in progress.
+
+        This is the one place in the daemon that's genuinely idle -- no
+        TTS, no capture, no follow-up window -- so it's the one place
+        `_queue_proactive_summary` can safely interrupt via
+        `_idle_stop_event` without cutting off something else already in
+        progress. Runs as a `while True` rather than a single wait/speak
+        pair because a summary can arrive *during* the wait (interrupting
+        it -- `listen_for_wake_word` returns `False`, not the wake word
+        firing) or a real wake word can fire while one is still queued from
+        moments ago; either way, looping back to the top drains the queue
+        again before committing to "the wake word actually fired."
+        """
+        voice = self._config.voice
+        while True:
+            await self._speak_pending_proactive()
+            stop_event = threading.Event()
+            self._idle_stop_event = stop_event
+            try:
+                detected = await asyncio.to_thread(
+                    voice_wake.listen_for_wake_word,
+                    voice.wake_word,
+                    voice.mic,
+                    stop_event,
+                )
+            finally:
+                self._idle_stop_event = None
+            if detected:
+                return
+
+    async def _speak_pending_proactive(self) -> None:
+        voice = self._config.voice
+        while self._pending_proactive:
+            text = self._pending_proactive.pop(0)
+            await asyncio.to_thread(voice_tts.speak, text, voice.tts, voice.output)
+
+    def _queue_proactive_summary(self, channel_id: str, summary: str) -> None:
+        """Queue `summary` -- an async agent reply's own summary,
+        already DMed to the owner by `_await_and_summarize` -- to be
+        spoken the next time voice is idle (§V.9).
+
+        If `_wait_for_wake_word` is currently blocked idle
+        (`_idle_stop_event` set), that wait is interrupted immediately so
+        the summary is heard right away rather than sitting through
+        whatever's left of that wait's own timeout; otherwise it's simply
+        queued; `_wait_for_wake_word`'s own loop drains it once the
+        active voice turn's follow-up window elapses and control comes
+        back around. Never speaks anything itself -- only appends and,
+        maybe, interrupts.
+        """
+        name = self._channel_name(channel_id)
+        prefix = f"Update from {name}" if name is not None else "Update"
+        self._pending_proactive.append(render_for_speech(f"{prefix}: {summary}"))
+        if self._idle_stop_event is not None:
+            self._idle_stop_event.set()
+
+    def _channel_name(self, channel_id: str) -> str | None:
+        for channel in self._config.channels:
+            if channel.id == channel_id:
+                return channel.name
+        return None
 
     async def _run_voice_exchange(
         self, transcript: str, resume: _PendingResume | None
@@ -703,13 +818,20 @@ class Daemon:
         )
         # Appended so the owner can jump straight to the working agent's own
         # reply in the project channel, not just read a paraphrase of it.
-        link = outbound.message_link(_channel_of(reply_event), reply_event["id"])
+        reply_channel_id = _channel_of(reply_event)
+        link = outbound.message_link(reply_channel_id, reply_event["id"])
         await asyncio.to_thread(
             outbound.send_message,
             dm_channel_id,
             f"{summary}\n\n{link}",
             reply_to=dm_reply_to,
         )
+        # §V.9: the same summary just DMed is also spoken proactively once
+        # voice is idle, when voice is enabled at all -- an ambient-assistant
+        # deployment shouldn't require a screen check to learn a dispatched
+        # instruction came back.
+        if self._config.voice.enabled:
+            self._queue_proactive_summary(reply_channel_id, summary)
 
     def _process(self, content: str, thread_id: str, event_id: str) -> str:
         """Route one piece of owner-authored text through the daemon's

@@ -1,3 +1,5 @@
+import threading
+
 import numpy as np
 import pytest
 
@@ -71,9 +73,40 @@ def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
     monkeypatch.setattr(voice_wake, "read_frame", lambda process: next(frames))
 
     mic = VoiceMicConfig(type="usb")
-    listen_for_wake_word("hey_jarvis", mic)
+    detected = listen_for_wake_word("hey_jarvis", mic)
 
+    assert detected is True
     assert mic_calls == [mic]
+    assert fake_process.terminated
+    assert fake_process.waited
+
+
+def _setup_fake_model_and_mic_stream(monkeypatch):
+    fake_model = FakeModel([])
+    monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
+
+    fake_process = FakeProcess()
+    monkeypatch.setattr(voice_wake, "open_mic_stream", lambda mic: fake_process)
+    return fake_model, fake_process
+
+
+def test_listen_for_wake_word_returns_false_when_stop_event_set(monkeypatch):
+    """Voice Mode design doc §V.9: `daemon.py`'s `_wait_for_wake_word` sets
+    `stop_event` to interrupt an otherwise-idle wait and speak a proactive
+    agent-reply summary instead of blocking on the wake word indefinitely."""
+    (_, fake_process) = _setup_fake_model_and_mic_stream(monkeypatch)
+
+    def _unexpected_read(process):
+        raise AssertionError("read_frame should not run once stop_event is set")
+
+    monkeypatch.setattr(voice_wake, "read_frame", _unexpected_read)
+
+    stop_event = threading.Event()
+    stop_event.set()
+
+    detected = listen_for_wake_word("hey_jarvis", VoiceMicConfig(), stop_event)
+
+    assert detected is False
     assert fake_process.terminated
     assert fake_process.waited
 
@@ -92,11 +125,7 @@ def test_listen_for_wake_word_raises_when_mic_stream_wont_open(monkeypatch):
 
 
 def test_listen_for_wake_word_raises_when_stream_ends_unexpectedly(monkeypatch):
-    fake_model = FakeModel([])
-    monkeypatch.setattr(voice_wake, "Model", lambda wakeword_model_paths: fake_model)
-
-    fake_process = FakeProcess()
-    monkeypatch.setattr(voice_wake, "open_mic_stream", lambda mic: fake_process)
+    (_, fake_process) = _setup_fake_model_and_mic_stream(monkeypatch)
 
     def raise_ended(process):
         raise MicStreamError("arecord stream ended unexpectedly")
