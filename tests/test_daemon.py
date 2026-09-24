@@ -3017,7 +3017,7 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
 
 
 def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     """Voidious, 2026-09-23: "I couldn't trigger the 'nevermind' path ...
     anything long enough to get transcribed would get interpreted as not a
@@ -3101,11 +3101,10 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
             {"reply_to": "reply-evt"},
         ),
         (("dm-chan", "mumble mumble"), {}),
-        (
-            ("dm-chan", daemon._RESUMED_AFTER_NON_COMMAND_REPLY),
-            {"reply_to": "reply-evt"},
-        ),
     ]
+    # Console-only, not a DM (Voidious, 2026-09-23: a DM here was chatty and
+    # delayed resuming playback by a network round-trip).
+    assert daemon._RESUMED_AFTER_NON_COMMAND_REPLY in capsys.readouterr().out
 
 
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(

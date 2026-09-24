@@ -160,11 +160,15 @@ _CHIT_CHAT_REPLY = (
     "That's outside what I handle -- ask me for a recap, or to dispatch an "
     "instruction to a project channel."
 )
-# Posted (not spoken) in place of the usual reply DM+footer when a barge-in
-# transcript resolves to _CHIT_CHAT_REPLY and there's a reply to resume (see
-# `_PendingResume`/`_run_voice_exchange`) -- keeps the DM thread coherent
-# (the transcript DM above it would otherwise sit with no reply at all)
-# without narrating the "wasn't a command" apology out loud a second time.
+# Printed to the console (not posted to the DM, not spoken) in place of the
+# usual reply DM+footer when a barge-in transcript resolves to
+# _CHIT_CHAT_REPLY and there's a reply to resume (see
+# `_PendingResume`/`_run_voice_exchange`) -- avoids narrating the "wasn't a
+# command" apology out loud a second time. Originally posted to the DM
+# thread too (2026-09-23), but that's a network round-trip sitting between
+# the interruption and resuming playback, and Voidious found it chatty on
+# top of the delay (2026-09-23); the transcript DM above it stands on its
+# own without a paired reply.
 _RESUMED_AFTER_NON_COMMAND_REPLY = "(Didn't sound like a command -- picking back up.)"
 _ACTIONABLE_ERRORS = (
     RouterError,
@@ -543,11 +547,11 @@ class Daemon:
         _CHIT_CHAT_REPLY" -- a wake-word-initiated turn with nothing
         in-flight to resume (`resume is None`) still gets the normal
         apology, since there's nothing more useful to do with an
-        out-of-scope request that didn't interrupt anything. A short DM
-        note stands in for the usual reply+footer on this path (the
-        transcript DM above it was already posted before routing revealed
-        this wasn't a command, so it can't be un-posted) -- nothing is
-        spoken for it, unlike a normal reply.
+        out-of-scope request that didn't interrupt anything. Nothing
+        replaces the usual reply+footer DM on this path -- a console print
+        stands in instead (Voidious, 2026-09-23: posting one felt chatty
+        and delayed resuming playback by a network round-trip) -- and
+        nothing is spoken for it either, unlike a normal reply.
 
         Mirrors `_handle_event`'s to_thread structure for the same reason:
         `_process` and `speak_with_barge_in` are both blocking calls (an
@@ -572,12 +576,7 @@ class Daemon:
         self._start_pending_watch()
 
         if reply == _CHIT_CHAT_REPLY and resume is not None:
-            await asyncio.to_thread(
-                outbound.send_message,
-                self._dm_id,
-                _RESUMED_AFTER_NON_COMMAND_REPLY,
-                reply_to=event_id,
-            )
+            print(f"swingbird: {_RESUMED_AFTER_NON_COMMAND_REPLY}")
             spoken_text = resume.text
             start_chunk = resume.resume_chunk
         else:
