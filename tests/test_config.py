@@ -882,3 +882,39 @@ def test_voice_barge_in_vad_threshold_rejects_invalid_values(tmp_path, value):
         match=r"\[voice\].barge_in_vad_threshold must be a number between 0 and 1",
     ):
         load_config(write(tmp_path, text))
+
+
+def test_debug_defaults(tmp_path):
+    config = load_config(write(tmp_path, VALID))
+
+    assert config.debug.mock_llm is False
+    assert config.debug.mock_llm_cache_path == ".swingbird_llm_mock_cache.json"
+
+
+def test_debug_mock_llm_is_configurable(tmp_path):
+    text = VALID + '\n[debug]\nmock_llm = true\nmock_llm_cache_path = "cache.json"\n'
+    config = load_config(write(tmp_path, text))
+
+    assert config.debug.mock_llm is True
+    assert config.debug.mock_llm_cache_path == "cache.json"
+
+
+def test_debug_section_not_a_table(tmp_path):
+    with pytest.raises(ConfigError, match=r"\[debug\] must be a table"):
+        load_config(write(tmp_path, "debug = 5\n\n" + VALID))
+
+
+@pytest.mark.parametrize("value", ["1", '"true"'])
+def test_debug_mock_llm_rejects_non_bool(tmp_path, value):
+    text = VALID + f"\n[debug]\nmock_llm = {value}\n"
+    with pytest.raises(ConfigError, match=r"\[debug\].mock_llm must be a boolean"):
+        load_config(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("value", ["true", '""'])
+def test_debug_mock_llm_cache_path_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[debug]\nmock_llm_cache_path = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[debug\].mock_llm_cache_path must be a non-empty string"
+    ):
+        load_config(write(tmp_path, text))

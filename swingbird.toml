@@ -108,6 +108,21 @@ name = "swingbird"
 # [voice.tts]
 # voice = "en_US-lessac-medium"
 
+# Optional, and off by default. mock_llm = true swaps the real LLM backend for
+# a record-and-replay cache (see llm_mock.py): the first time a given prompt
+# is seen it makes one real call and saves the response to a local, gitignored
+# JSON file; every later call with that exact same prompt replays the saved
+# response instead of calling the backend again. Built for voice-pipeline
+# tuning (mic gain, echo cancellation, barge-in), where the same test phrase
+# gets repeated many times in a row and a real LLM round-trip on every repeat
+# just adds latency and cost without exercising anything new -- a genuinely
+# new phrase still costs one real call, so intent routing/recap content never
+# gets faked. Never enable this outside local testing. mock_llm_cache_path
+# (default ".swingbird_llm_mock_cache.json") is where the cache is stored.
+# [debug]
+# mock_llm = true
+# mock_llm_cache_path = ".swingbird_llm_mock_cache.json"
+
 # Define your own projects below -- each [[channels]] block is one project.
 # `name` is the project name you'll say in conversation ("recap swingbird",
 # "tell swingbird to..."), independent of the channel's own Buzz display

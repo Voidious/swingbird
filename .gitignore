@@ -229,3 +229,6 @@ closed_items.jsonl
 # Downloaded Piper voice models (large binaries, fetched via
 # `python -m piper.download_voices`, see AGENTS.md)
 voice_models/
+
+# [debug].mock_llm's record-and-replay cache (local, see llm_mock.py)
+.swingbird_llm_mock_cache.json

@@ -172,6 +172,20 @@ agents = ["Sonnet"]
 A checkout with no `[[channels]]` entries fails to start with a clear error instead of silently
 running against someone else's project -- put your real channels in `.swingbird.toml`.
 
+- **`[debug]`** -- optional, off by default, and never meant for a real deployment. `mock_llm`
+  (default `false`) swaps the real LLM backend for a record-and-replay cache: the first time a
+  given prompt is seen it makes one real call and saves the response to a local, gitignored JSON
+  file; every later call with that exact same prompt replays the saved response instead of
+  calling the backend again. Built for voice-pipeline tuning (mic gain, echo cancellation,
+  barge-in), where the same test phrase gets repeated many times in a row while a physical
+  setting is adjusted, and a real LLM round-trip on every repeat just adds latency and cost
+  without exercising anything new -- a genuinely new phrase still costs one real call, so intent
+  routing and recap content are never faked, only exact repeats are. The cache key normalizes
+  the spoken phrase (lowercased, non-alphanumeric characters stripped) so STT noise like
+  "Recap." vs "recap" vs "recap!" still counts as the same repeat. `mock_llm_cache_path`
+  (default `.swingbird_llm_mock_cache.json`) is where the cache is stored, and it's never
+  cleared automatically -- delete the file yourself to start fresh.
+
 ## Configuring project agents to listen to swingbird
 
 A dispatched instruction is posted into the target project channel with an `@mention` of the

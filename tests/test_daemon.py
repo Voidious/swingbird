@@ -41,6 +41,8 @@ from swingbird.daemon import (
     build_daemon,
 )
 from swingbird.inbound import InboundError
+from swingbird.llm import LLMClient
+from swingbird.llm_mock import MockLLMClient
 from swingbird.pending_actions import PendingActionStore
 from swingbird.recap import RecapItem
 from swingbird.recap_actions import RecapActionStore
@@ -2614,6 +2616,45 @@ agents = ["Codex"]
 
     assert isinstance(bot, Daemon)
     assert bot._config.owner.pubkey == OWNER_PUBKEY
+    assert isinstance(bot._llm, LLMClient)
+
+
+def test_build_daemon_wires_mock_llm_when_debug_mock_llm_is_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("X_API_KEY", "key")
+    monkeypatch.setenv("RELAY_KEY", "1" * 64)
+    config_path = tmp_path / "swingbird.toml"
+    config_path.write_text(f"""
+[llm]
+base_url = "https://x"
+model = "m"
+api_key_env = "X_API_KEY"
+
+[relay]
+url = "wss://relay.example"
+private_key_env = "RELAY_KEY"
+
+[owner]
+pubkey = "{OWNER_PUBKEY}"
+name = "Voidious"
+
+[debug]
+mock_llm = true
+mock_llm_cache_path = "{(tmp_path / "cache.json").as_posix()}"
+
+[[channels]]
+id = "chan-1"
+name = "backend"
+write = true
+agents = ["Codex"]
+""")
+
+    bot = build_daemon(
+        str(config_path),
+        str(tmp_path / "audit.jsonl"),
+        str(tmp_path / "closed_items.jsonl"),
+    )
+
+    assert isinstance(bot._llm, MockLLMClient)
 
 
 def test_build_daemon_raises_if_relay_key_env_is_unset(tmp_path, monkeypatch):

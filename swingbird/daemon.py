@@ -150,6 +150,7 @@ from swingbird.history import (
 )
 from swingbird.inbound import InboundClient, InboundError
 from swingbird.llm import LLMClient, LLMError
+from swingbird.llm_mock import MockLLMClient
 from swingbird.pending_actions import (
     DispatchProposal,
     PendingActionError,
@@ -1390,6 +1391,8 @@ def build_daemon(
     private_key = _read_private_key(config.relay.private_key_env)
     audit = AuditLog(audit_log_path)
     llm = LLMClient(config.llm)
+    if config.debug.mock_llm:
+        llm = MockLLMClient(llm, config.debug.mock_llm_cache_path)
     router = IntentRouter(llm, config, audit=audit)
     inbound = InboundClient(config.relay.url, private_key)
     closed_items = ClosedItemStore(closed_items_path)

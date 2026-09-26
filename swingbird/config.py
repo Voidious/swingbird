@@ -281,6 +281,25 @@ class VoiceConfig:
     barge_in_vad_threshold: float = DEFAULT_BARGE_IN_VAD_THRESHOLD
 
 
+DEFAULT_MOCK_LLM_CACHE_PATH = ".swingbird_llm_mock_cache.json"
+
+
+@dataclass(frozen=True)
+class DebugConfig:
+    """Testing aids that trade realism for speed/cost, never for production use.
+
+    `mock_llm` swaps the real `LLMClient` for a `MockLLMClient` (see llm_mock.py)
+    that records each distinct prompt's real response once and replays it for
+    every identical future call -- built for voice-pipeline tuning (mic gain,
+    echo cancellation, barge-in), where the same test phrase gets repeated many
+    times in a row and a real LLM round-trip on every repeat just adds latency
+    and cost without exercising anything new.
+    """
+
+    mock_llm: bool = False
+    mock_llm_cache_path: str = DEFAULT_MOCK_LLM_CACHE_PATH
+
+
 @dataclass(frozen=True)
 class Config:
     llm: LLMConfig
@@ -291,6 +310,7 @@ class Config:
     identity: IdentityConfig = IdentityConfig()
     recap: RecapConfig = RecapConfig()
     voice: VoiceConfig = VoiceConfig()
+    debug: DebugConfig = DebugConfig()
 
     def channel_by_name(self, name: str) -> ChannelConfig | None:
         for channel in self.channels:
@@ -347,6 +367,7 @@ def load_config(path: str | Path) -> Config:
         identity=_parse_identity(raw),
         recap=_parse_recap(raw),
         voice=_parse_voice(raw),
+        debug=_parse_debug(raw),
     )
 
 
@@ -567,6 +588,19 @@ def _parse_voice_tts(section: object, *, enabled: bool) -> VoiceTTSConfig | None
     if not isinstance(voice_name, str) or not voice_name.strip():
         raise ConfigError("[voice.tts].voice must be a non-empty string")
     return VoiceTTSConfig(voice=voice_name)
+
+
+def _parse_debug(raw: dict) -> DebugConfig:
+    section = raw.get("debug", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[debug] must be a table")
+    mock_llm = section.get("mock_llm", False)
+    if not isinstance(mock_llm, bool):
+        raise ConfigError("[debug].mock_llm must be a boolean")
+    cache_path = section.get("mock_llm_cache_path", DEFAULT_MOCK_LLM_CACHE_PATH)
+    if not isinstance(cache_path, str) or not cache_path.strip():
+        raise ConfigError("[debug].mock_llm_cache_path must be a non-empty string")
+    return DebugConfig(mock_llm=mock_llm, mock_llm_cache_path=cache_path)
 
 
 def _parse_identity(raw: dict) -> IdentityConfig:
