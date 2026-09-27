@@ -2985,6 +2985,7 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
             voice_config.voice.stt,
             voice_config.voice.barge_in_trigger_frames,
             voice_config.voice.barge_in_vad_threshold,
+            voice_config.voice.barge_in_trigger_energy,
             0,
         )
     ]
@@ -3113,6 +3114,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
             voice_config.voice.stt,
             voice_config.voice.barge_in_trigger_frames,
             voice_config.voice.barge_in_vad_threshold,
+            voice_config.voice.barge_in_trigger_energy,
         )
     ]
 

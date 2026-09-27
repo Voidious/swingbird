@@ -172,6 +172,7 @@ DEFAULT_WAKE_WORD_WINDOW_SECONDS = 15
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
 DEFAULT_BARGE_IN_TRIGGER_FRAMES = 3
 DEFAULT_BARGE_IN_VAD_THRESHOLD = 0.8
+DEFAULT_BARGE_IN_TRIGGER_ENERGY = 0.6
 
 
 @dataclass(frozen=True)
@@ -252,33 +253,45 @@ class VoiceConfig:
     # in-utterance-vs-between-utterances distinction as
     # wake_word_window_seconds above.
     follow_up_window_seconds: int = DEFAULT_FOLLOW_UP_WINDOW_SECONDS
-    # §V.12: how many consecutive VAD-positive frames (~80ms each) a
-    # mid-playback signal must sustain before `voice_barge_in` treats it
-    # as a genuine interruption rather than a brief transient -- live
-    # testing (2026-09-23) found a single loud frame (a mouse click,
-    # sitting up in a chair) was enough to stop playback under the
-    # original one-frame trigger. Higher values make barge-in less
-    # sensitive (slower to react, fewer false positives from incidental
-    # noise); lower values make it more sensitive. A visible, tunable
-    # knob for the same reason wake_word_window_seconds is one -- the
-    # right default depends on mic/headset/room, not something to lock
-    # in from one test session.
+    # §V.12: originally how many consecutive VAD-positive frames (~80ms
+    # each) a mid-playback signal had to sustain before `voice_barge_in`
+    # treated it as a genuine interruption rather than a brief transient.
+    # Superseded (Voidious, 2026-09-26) by `barge_in_trigger_energy`'s
+    # leaky-accumulator model -- this now only sizes the rolling pre-roll
+    # buffer `voice_barge_in` keeps so a slow-to-accumulate trigger doesn't
+    # lose its own lead-in. Kept as its own knob rather than folded away
+    # since a bigger buffer is still occasionally useful to tune
+    # independent of trigger_energy.
     barge_in_trigger_frames: int = DEFAULT_BARGE_IN_TRIGGER_FRAMES
-    # §V.12: per-frame VAD confidence a barge-in's own trigger frames must
-    # clear before `voice_barge_in` treats it as the start of real speech --
-    # separate from, and stricter than, `voice_stt.VAD_SPEECH_THRESHOLD`
-    # (0.5), which endpoints a normal utterance (and this same
-    # interruption's own capture once triggered). Live testing (2026-09-23)
-    # found sustained background noise (a fan) could cross that lower
-    # threshold for enough *consecutive* frames to trigger even with
-    # barge_in_trigger_frames raised -- a duration-only fix can't help
-    # that, since the noise really did sustain. Higher values make barge-in
-    # less sensitive to a quiet/ambiguous signal; lower values bring it
-    # back down toward voice_stt's own threshold. Independent, visible,
-    # tunable knob for the same reason barge_in_trigger_frames is one -- the
-    # right default depends on mic/room, not something to lock in from one
-    # test session.
+    # §V.12: per-frame VAD confidence floor a barge-in frame's score is
+    # measured against -- separate from, and stricter than,
+    # `voice_stt.VAD_SPEECH_THRESHOLD` (0.5), which endpoints a normal
+    # utterance (and this same interruption's own capture once triggered).
+    # Live testing (2026-09-23) found sustained background noise (a fan)
+    # could cross that lower threshold for enough *consecutive* frames to
+    # trigger the old duration-only model even with a raised frame count --
+    # a duration-only fix can't help that, since the noise really did
+    # sustain. Higher values make barge-in less sensitive to a quiet/
+    # ambiguous signal; lower values bring it back down toward voice_stt's
+    # own threshold. Independent, visible, tunable knob for the same reason
+    # barge_in_trigger_energy is one -- the right default depends on
+    # mic/room, not something to lock in from one test session.
     barge_in_vad_threshold: float = DEFAULT_BARGE_IN_VAD_THRESHOLD
+    # §V.12: how much cumulative margin above `barge_in_vad_threshold` a
+    # mid-playback signal must build up -- each frame adds its own
+    # `score - barge_in_vad_threshold` to a running total, floored at 0.0,
+    # and a barge-in fires once the total reaches this value (see
+    # `voice_barge_in.DEFAULT_TRIGGER_ENERGY`'s own docstring for the
+    # calibration). Replaces `barge_in_trigger_frames` as the actual
+    # trigger control (Voidious, 2026-09-26, in response to the original
+    # "N consecutive frames" model being too coarse a classifier -- a frame
+    # scoring well clear of the threshold now builds credit faster than one
+    # that barely clears it, and a dip only drains by its own shortfall
+    # instead of resetting everything). Higher values make barge-in less
+    # sensitive (needs more/stronger evidence); lower values make it more
+    # sensitive. Visible, tunable knob for the same reason
+    # barge_in_vad_threshold is one.
+    barge_in_trigger_energy: float = DEFAULT_BARGE_IN_TRIGGER_ENERGY
 
 
 DEFAULT_MOCK_LLM_CACHE_PATH = ".swingbird_llm_mock_cache.json"
@@ -521,7 +534,24 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         or barge_in_trigger_frames <= 0
     ):
         raise ConfigError("[voice].barge_in_trigger_frames must be a positive integer")
+    return _build_voice_config(
+        barge_in_trigger_frames,
+        enabled,
+        follow_up_window_seconds,
+        section,
+        wake_word,
+        wake_word_window_seconds,
+    )
 
+
+def _build_voice_config(
+    barge_in_trigger_frames: int,
+    enabled: bool,
+    follow_up_window_seconds: int,
+    section: dict,
+    wake_word: str,
+    wake_word_window_seconds: int,
+) -> VoiceConfig:
     barge_in_vad_threshold = section.get(
         "barge_in_vad_threshold", DEFAULT_BARGE_IN_VAD_THRESHOLD
     )
@@ -534,6 +564,16 @@ def _parse_voice(raw: dict) -> VoiceConfig:
             "[voice].barge_in_vad_threshold must be a number between 0 and 1"
         )
 
+    barge_in_trigger_energy = section.get(
+        "barge_in_trigger_energy", DEFAULT_BARGE_IN_TRIGGER_ENERGY
+    )
+    if (
+        isinstance(barge_in_trigger_energy, bool)
+        or not isinstance(barge_in_trigger_energy, (int, float))
+        or barge_in_trigger_energy <= 0.0
+    ):
+        raise ConfigError("[voice].barge_in_trigger_energy must be a positive number")
+
     return VoiceConfig(
         enabled=enabled,
         wake_word=wake_word,
@@ -545,6 +585,7 @@ def _parse_voice(raw: dict) -> VoiceConfig:
         follow_up_window_seconds=follow_up_window_seconds,
         barge_in_trigger_frames=barge_in_trigger_frames,
         barge_in_vad_threshold=barge_in_vad_threshold,
+        barge_in_trigger_energy=barge_in_trigger_energy,
     )
 
 

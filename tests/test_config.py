@@ -692,6 +692,7 @@ def test_voice_defaults_to_disabled(tmp_path):
     assert config.voice.follow_up_window_seconds == 15
     assert config.voice.barge_in_trigger_frames == 3
     assert config.voice.barge_in_vad_threshold == 0.8
+    assert config.voice.barge_in_trigger_energy == 0.6
 
 
 def test_voice_section_not_a_table(tmp_path):
@@ -880,6 +881,23 @@ def test_voice_barge_in_vad_threshold_rejects_invalid_values(tmp_path, value):
     with pytest.raises(
         ConfigError,
         match=r"\[voice\].barge_in_vad_threshold must be a number between 0 and 1",
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_barge_in_trigger_energy_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nbarge_in_trigger_energy = 1.2\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.barge_in_trigger_energy == 1.2
+
+
+@pytest.mark.parametrize("value", ["0", "-0.5", "true", '"0.6"'])
+def test_voice_barge_in_trigger_energy_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nbarge_in_trigger_energy = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].barge_in_trigger_energy must be a positive number",
     ):
         load_config(write(tmp_path, text))
 

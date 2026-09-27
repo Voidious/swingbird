@@ -571,6 +571,7 @@ class Daemon:
                     voice.stt,
                     voice.barge_in_trigger_frames,
                     voice.barge_in_vad_threshold,
+                    voice.barge_in_trigger_energy,
                 )
                 barge_in = result.transcript if result is not None else None
                 resume = None
@@ -657,6 +658,7 @@ class Daemon:
                 voice.stt,
                 voice.barge_in_trigger_frames,
                 voice.barge_in_vad_threshold,
+                voice.barge_in_trigger_energy,
             )
             if result is not None:
                 return result.transcript
@@ -766,6 +768,7 @@ class Daemon:
             voice.stt,
             voice.barge_in_trigger_frames,
             voice.barge_in_vad_threshold,
+            voice.barge_in_trigger_energy,
             start_chunk,
         )
         if result is None:

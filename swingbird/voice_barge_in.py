@@ -6,7 +6,7 @@ is talking, so today the only way to say something while swingbird is
 still mid-reply is to wait it out. This module runs a second `arecord`
 stream concurrently with playback, purely to detect that the user has
 started talking; once that's sustained long enough to trust
-(`_speak_once_with_barge_in`'s `trigger_frames`), playback is stopped (via
+(`_speak_once_with_barge_in`'s `trigger_energy` accumulator), playback is stopped (via
 `voice_tts.speak`'s `stop_event`) and the *same* mic stream keeps
 recording -- reusing `voice_stt.capture_until_silence` -- to capture the
 rest of what the user is saying, exactly as if they'd said it after a
@@ -85,32 +85,52 @@ from swingbird.voice_tts import speak
 # triggering frame) recovers that lead-in instead of clipping it.
 PRE_ROLL_FRAMES = 4
 
-# Fallback for a caller with no `Config` around (e.g. a test, or a future
-# standalone smoke-test CLI) -- daemon.py always threads through the real
+# No longer a hard "this many consecutive frames" requirement (see
+# DEFAULT_TRIGGER_ENERGY below) -- now only sizes the rolling pre-roll
+# buffer alongside PRE_ROLL_FRAMES, so a slow-to-accumulate trigger doesn't
+# lose more of its own lead-in than this many frames back. Fallback for a
+# caller with no `Config` around (e.g. a test, or a future standalone
+# smoke-test CLI) -- daemon.py always threads through the real
 # config.py-driven `voice.barge_in_trigger_frames` instead. Mirrors
 # `voice_stt.MAX_UTTERANCE_SECONDS`'s role as its own module's
 # non-config-driven default, same reasoning.
 DEFAULT_TRIGGER_FRAMES = 4
 
-# Per-frame VAD confidence a barge-in's own trigger frames must clear --
-# separate from, and stricter than, `voice_stt.VAD_SPEECH_THRESHOLD` (0.5),
-# which this same interruption's own `capture_until_silence` still uses
-# once triggered (endpointing an already-confirmed utterance is a different,
-# lower-stakes decision than confirming one in the first place). A false
-# trigger during playback is costlier than a missed endpoint mid-capture --
-# it stops the reply and, per `daemon.py`'s chit_chat/resume handling,
-# either routes the noise as a command or has to resume the reply -- so the
-# *start* of a barge-in is held to a stricter bar than everything after it.
-# Independent of `trigger_frames`: that knob guards against a brief loud
-# transient (a mouse click) via duration, this one against a sustained but
-# ambiguous signal (fan noise, breathing) via confidence -- live-tested
-# background noise (2026-09-23) crossed `VAD_SPEECH_THRESHOLD` for enough
-# *consecutive* frames to trigger even at `trigger_frames=4`, which a purely
+# Per-frame VAD confidence a barge-in frame must clear to count as any
+# evidence at all -- separate from, and stricter than,
+# `voice_stt.VAD_SPEECH_THRESHOLD` (0.5), which this same interruption's own
+# `capture_until_silence` still uses once triggered (endpointing an
+# already-confirmed utterance is a different, lower-stakes decision than
+# confirming one in the first place). A false trigger during playback is
+# costlier than a missed endpoint mid-capture -- it stops the reply and, per
+# `daemon.py`'s chit_chat/resume handling, either routes the noise as a
+# command or has to resume the reply -- so the *start* of a barge-in is held
+# to a stricter bar than everything after it. Independent of
+# `trigger_energy`: this is the floor each frame's score is measured
+# against, that knob is how much cumulative margin above (or below) it is
+# needed to trust the result -- live-tested background noise (2026-09-23)
+# crossed `VAD_SPEECH_THRESHOLD` for enough *consecutive* frames to trigger
+# the old duration-only model even with a raised frame count, which a purely
 # duration-based fix can't help. Not itself live-tested yet -- a considered
-# starting point, same as `trigger_frames`'s own initial default, worth
+# starting point, same as `trigger_energy`'s own initial default, worth
 # retuning once real hardware (§V.14) is in the loop. Fallback for a caller
 # with no `Config` around, same reasoning as `DEFAULT_TRIGGER_FRAMES`.
 DEFAULT_TRIGGER_VAD_THRESHOLD = 0.8
+
+# How much cumulative evidence a mid-playback signal must build up before
+# it's trusted as the start of real speech (Voidious, 2026-09-26, replacing
+# the original "N consecutive frames" model above): each frame adds its own
+# `vad.predict(frame) - vad_threshold` to a running total, floored at 0.0
+# rather than allowed to go negative, and a barge-in fires once that total
+# reaches `trigger_energy`. A frame scoring well clear of `vad_threshold`
+# builds credit faster than one that barely clears it, and a frame that dips
+# back below only drains the total by its own shortfall instead of wiping
+# out everything accumulated so far the way a single sub-threshold frame did
+# under the old consecutive-frame count. Calibrated against the defaults
+# above so a solidly-scoring voice (~1.0) still triggers in roughly
+# `DEFAULT_TRIGGER_FRAMES` frames: 4 * (1.0 - 0.8) = 0.8, rounded down
+# slightly since real speech rarely scores a clean 1.0 every frame.
+DEFAULT_TRIGGER_ENERGY = 0.6
 
 
 @dataclass(frozen=True)
@@ -179,6 +199,7 @@ def speak_with_barge_in(
     stt: VoiceSTTConfig,
     trigger_frames: int = DEFAULT_TRIGGER_FRAMES,
     vad_threshold: float = DEFAULT_TRIGGER_VAD_THRESHOLD,
+    trigger_energy: float = DEFAULT_TRIGGER_ENERGY,
     start_chunk: int = 0,
 ) -> BargeInResult | None:
     """Speak `text` aloud, listening on `mic` at the same time for the
@@ -205,17 +226,27 @@ def speak_with_barge_in(
     back in when a barge-in's own transcript turns out, once routed, not
     to be a real command either (see `daemon._run_voice_exchange`).
 
-    `trigger_frames`/`vad_threshold` (Voice Mode design doc §V.12) are how
-    many consecutive frames a mid-playback signal must sustain, and how
-    confident each of those frames must score, before it's trusted as the
-    start of real speech rather than a transient -- see
-    `config.VoiceConfig.barge_in_trigger_frames`/`barge_in_vad_threshold`'s
-    own docstrings.
+    `vad_threshold`/`trigger_energy` (Voice Mode design doc §V.12) are the
+    per-frame confidence floor a mid-playback signal's score is measured
+    against, and how much cumulative margin above that floor must build up,
+    before it's trusted as the start of real speech rather than a transient
+    -- see `config.VoiceConfig.barge_in_vad_threshold`/
+    `barge_in_trigger_energy`'s own docstrings. `trigger_frames` no longer
+    gates the trigger itself; it only sizes the rolling pre-roll buffer
+    alongside `PRE_ROLL_FRAMES`.
     """
     chunk = start_chunk
     for _attempt in range(MAX_RESUME_ATTEMPTS + 1):
         transcript, resume_chunk = _speak_once_with_barge_in(
-            text, tts, output, mic, stt, trigger_frames, vad_threshold, chunk
+            text,
+            tts,
+            output,
+            mic,
+            stt,
+            trigger_frames,
+            vad_threshold,
+            trigger_energy,
+            chunk,
         )
         if transcript is None:
             return None
@@ -244,6 +275,7 @@ def _speak_once_with_barge_in(
     stt: VoiceSTTConfig,
     trigger_frames: int,
     vad_threshold: float,
+    trigger_energy: float,
     start_chunk: int,
 ) -> tuple[Transcript | None, int | None]:
     """One playback-plus-listen pass of `speak_with_barge_in` -- speaks
@@ -253,16 +285,22 @@ def _speak_once_with_barge_in(
     stopped (`None` if it played through), independent of whether a
     barge-in happened to be what stopped it.
 
-    A frame only counts as the start of real speech once `trigger_frames`
-    *consecutive* frames have scored at or above `vad_threshold` -- a
-    single frame doing so (the original §V.12 behavior) was too quick to
-    trip on a transient like a mouse click. Every frame read, speech-
-    scoring or not, is kept in a rolling window sized to also hold
-    `PRE_ROLL_FRAMES` frames *before* that run starts, so a quiet-onset
-    word (VAD needs 1-3 frames to confidently score speech at all) isn't
-    clipped from the front of what gets captured once the trigger does
-    fire. Once it does, playback is stopped immediately (via
-    `stop_event`) and the *same* mic stream keeps recording
+    A frame only counts as the start of real speech once a leaky
+    accumulator -- incremented every frame by `vad.predict(frame) -
+    vad_threshold` and floored at 0.0 -- reaches `trigger_energy`. A
+    single frame scoring at or above `vad_threshold` (the original §V.12
+    behavior) was too quick to trip on a transient like a mouse click;
+    requiring a fixed run of consecutive qualifying frames fixed that but
+    reset all progress on any single dip, even a brief, mild one. The
+    accumulator keeps a stronger signal building credit faster and a dip
+    draining it only by its own shortfall, rather than wiping it out
+    outright. Every frame read, speech-scoring or not, is kept in a
+    rolling window sized to also hold `PRE_ROLL_FRAMES` frames *before*
+    the accumulator starts climbing, so a quiet-onset word (VAD needs 1-3
+    frames to confidently score speech at all) isn't clipped from the
+    front of what gets captured once the trigger does fire. Once it does,
+    playback is stopped immediately (via `stop_event`) and the *same* mic
+    stream keeps recording
     (`capture_until_silence`, seeded with that whole window) until the
     interruption ends, then transcribes and returns it. Returns `(None,
     resume_chunk)` if playback finished with nothing said over it --
@@ -307,15 +345,12 @@ def _speak_once_with_barge_in(
         record = call_translating_stream_error(STTError, open_mic_stream, mic)
         vad = VAD()
         window: deque[np.ndarray] = deque(maxlen=PRE_ROLL_FRAMES + trigger_frames)
-        consecutive_speech_frames = 0
+        energy = 0.0
         while not playback_done.is_set():
             frame = call_translating_stream_error(STTError, read_frame, record)
             window.append(frame)
-            if vad.predict(frame) < vad_threshold:
-                consecutive_speech_frames = 0
-                continue
-            consecutive_speech_frames += 1
-            if consecutive_speech_frames < trigger_frames:
+            energy = max(0.0, energy + vad.predict(frame) - vad_threshold)
+            if energy < trigger_energy:
                 continue
             print("swingbird: barge-in detected, capturing interruption...")
             stop_playback.set()

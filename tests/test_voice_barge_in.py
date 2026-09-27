@@ -147,16 +147,16 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
 
     monkeypatch.setattr(voice_barge_in, "transcribe", fake_transcribe)
 
-    # trigger_frames=1 keeps this test focused on the stop/capture/
-    # transcribe flow -- the consecutive-frame debounce itself has its own
-    # dedicated test below.
+    # A tiny trigger_energy keeps this test focused on the stop/capture/
+    # transcribe flow, firing on the very first scored frame -- the
+    # accumulator's own debounce behavior has its own dedicated tests below.
     result = voice_barge_in.speak_with_barge_in(
         "reply text",
         VoiceTTSConfig(voice="v"),
         VoiceOutputConfig(),
         VoiceMicConfig(),
         VoiceSTTConfig(),
-        trigger_frames=1,
+        trigger_energy=0.05,
     )
 
     assert result == voice_barge_in.BargeInResult(transcript=expected, resume_chunk=3)
@@ -180,8 +180,10 @@ def _patch_barge_in_for_vad_tests(monkeypatch, fake_speak):
 def test_speak_with_barge_in_uses_vad_threshold_for_the_trigger_decision(monkeypatch):
     """A frame scoring below `vad_threshold` (even if above
     `voice_stt.VAD_SPEECH_THRESHOLD`) must not trigger a barge-in -- this is
-    the confidence knob `config.VoiceConfig.barge_in_vad_threshold` tunes,
-    independent of `trigger_frames`' duration requirement.
+    the confidence floor `config.VoiceConfig.barge_in_vad_threshold` tunes,
+    independent of `trigger_energy`'s cumulative-margin requirement. Scoring
+    below the floor drains the accumulator on every frame (never adds to
+    it), so no amount of waiting ever triggers.
     """
 
     def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
@@ -195,7 +197,6 @@ def test_speak_with_barge_in_uses_vad_threshold_for_the_trigger_decision(monkeyp
         VoiceOutputConfig(),
         VoiceMicConfig(),
         VoiceSTTConfig(),
-        trigger_frames=1,
         vad_threshold=0.8,
     )
 
@@ -322,13 +323,15 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
         lambda model, audio: Transcript(text="give me a recap", is_confident=True),
     )
 
-    # trigger_frames=1 preserves the original single-frame trigger for
-    # this test -- it's about pre-roll seeding, not the consecutive-frame
-    # debounce, which has its own dedicated test below. A confident,
-    # non-dismissal transcript keeps this to one attempt: a low-confidence
-    # one would make `speak_with_barge_in` resume (see the resume tests
-    # below), calling `speak` (and exhausting this same one-shot
-    # VAD/read_frame scripting) a second time.
+    # trigger_frames=1 preserves the original pre-roll-window size this
+    # test's expectations are built around; a tiny trigger_energy makes the
+    # single 0.9-scoring frame enough to trigger on its own -- this test is
+    # about pre-roll seeding, not the accumulator's own debounce behavior,
+    # which has its own dedicated tests below. A confident, non-dismissal
+    # transcript keeps this to one attempt: a low-confidence one would make
+    # `speak_with_barge_in` resume (see the resume tests below), calling
+    # `speak` (and exhausting this same one-shot VAD/read_frame scripting)
+    # a second time.
     voice_barge_in.speak_with_barge_in(
         "reply text",
         VoiceTTSConfig(voice="v"),
@@ -336,6 +339,7 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
         VoiceMicConfig(),
         VoiceSTTConfig(),
         trigger_frames=1,
+        trigger_energy=0.05,
     )
 
     # Only the most recent PRE_ROLL_FRAMES quiet frames are kept (the
@@ -345,12 +349,89 @@ def test_speak_with_barge_in_seeds_capture_with_pre_roll_frames(monkeypatch):
     assert [f.tolist() for f in capture_calls[0]] == [f.tolist() for f in expected]
 
 
-def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
-    """A two-frame blip that drops back below threshold shouldn't stop
-    playback -- only `trigger_frames` *consecutive* speech-scoring frames
-    should. Live-tested 2026-09-23: a single mouse click, or sitting up in
-    a chair, was enough to interrupt playback under the original
-    one-frame trigger.
+def test_speak_with_barge_in_raising_trigger_energy_makes_it_less_sensitive(
+    monkeypatch,
+):
+    """A sustained, strongly-scoring signal that would ordinarily trigger
+    doesn't once `trigger_energy` is raised far out of reach for the
+    playback window -- proving this is a real, live knob, not a value
+    that's read and ignored.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.9))
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        trigger_energy=1e9,
+    )
+
+    assert result is None
+
+
+def test_speak_with_barge_in_does_not_trigger_on_a_single_loud_transient(monkeypatch):
+    """A one-frame spike shouldn't stop playback on its own -- the
+    accumulator needs several frames' worth of margin above
+    `vad_threshold` to reach `trigger_energy`, same duration-debounce
+    property the original consecutive-frame count had. Live-tested
+    2026-09-23: a single mouse click, or sitting up in a chair, was enough
+    to interrupt playback under the original one-frame trigger.
+    """
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    # One loud frame (delta 0.4 against vad_threshold=0.5), then silence --
+    # 0.4 alone never reaches trigger_energy=0.6.
+    scores = iter([0.9] + [0.0] * 50)
+
+    class ScriptedVAD:
+        def predict(self, frame):
+            try:
+                return next(scores)
+            except StopIteration:
+                return 0.0
+
+    monkeypatch.setattr(voice_barge_in, "VAD", ScriptedVAD)
+
+    result = voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        vad_threshold=0.5,
+        trigger_energy=0.6,
+    )
+
+    assert result is None
+
+
+def test_speak_with_barge_in_accumulator_survives_a_brief_partial_dip(monkeypatch):
+    """Unlike the original "N consecutive frames" model, where a single
+    frame dropping back below threshold reset all progress toward
+    triggering, the leaky accumulator only drains by that frame's own
+    shortfall -- a brief, mild dip doesn't erase everything built up so
+    far, so recovery only needs to make up what drained, not start over.
+
+    Scores (vad_threshold=0.5, all exact in binary floating point to keep
+    this test's arithmetic precise): 0.75, 0.75, 0.375, 0.75, 0.75 ->
+    energy after each frame: 0.25, 0.5, 0.375 (drained by the dip's own
+    0.125 shortfall, not reset to 0), 0.625, 0.875 (triggers at
+    trigger_energy=0.875). Under the old model, a dip below threshold
+    would have needed a fresh run of consecutive qualifying frames
+    afterward -- here the same two post-dip frames are enough because the
+    pre-dip progress wasn't lost.
     """
 
     def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
@@ -358,12 +439,10 @@ def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
 
     _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
 
-    frames = [np.array([i]) for i in range(6)]
+    frames = [np.array([i]) for i in range(5)]
     frames_read = iter(frames)
     monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: next(frames_read))
-    # A two-frame blip (below trigger_frames=3), then three consecutive
-    # frames that do cross it.
-    scores = iter([0.9, 0.9, 0.0, 0.9, 0.9, 0.9])
+    scores = iter([0.75, 0.75, 0.375, 0.75, 0.75])
 
     class ScriptedVAD:
         def predict(self, frame):
@@ -381,13 +460,13 @@ def test_speak_with_barge_in_requires_consecutive_trigger_frames(monkeypatch):
         VoiceOutputConfig(),
         VoiceMicConfig(),
         VoiceSTTConfig(),
-        trigger_frames=3,
+        vad_threshold=0.5,
+        trigger_energy=0.875,
     )
 
     assert result.transcript == expected_transcript
-    # The blip's two frames reset the consecutive count -- capture only
-    # happens once, seeded with every frame read (the blip plus the three
-    # that actually triggered it).
+    # Triggers exactly on the 5th frame -- capture is seeded with every
+    # frame read so far, dip included.
     assert len(capture_calls) == 1
     assert [f.tolist() for f in capture_calls[0]] == [f.tolist() for f in frames]
 
