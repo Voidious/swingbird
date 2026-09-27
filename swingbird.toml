@@ -86,6 +86,26 @@ name = "swingbird"
 # wake_word = "hey_jarvis"
 # wake_word_window_seconds = 15
 # follow_up_window_seconds = 15
+# barge_in_trigger_frames = 3
+# barge_in_vad_threshold = 0.8
+# barge_in_trigger_energy = 0.6
+#
+# The three barge_in_* knobs tune how readily a reply gets interrupted by
+# the user talking over it (§V.12). Each frame (~80ms) of mic input while a
+# reply is playing adds vad.predict(frame) - barge_in_vad_threshold to a
+# running total, floored at 0.0 so a quiet/negative frame only drains what
+# it itself falls short by rather than resetting everything -- a barge-in
+# fires once that total reaches barge_in_trigger_energy.
+# barge_in_vad_threshold is the per-frame confidence floor a frame's score
+# is measured against; raise it to make individual frames count for less,
+# lower it to make quieter speech register at all. barge_in_trigger_energy
+# is how much cumulative margin above that floor has to build up before a
+# barge-in is trusted; raise it to require more sustained/louder speech,
+# lower it for a faster, more sensitive trigger. barge_in_trigger_frames no
+# longer gates the trigger itself -- it only sizes the rolling buffer of
+# audio kept from just before the trigger fires (a quiet-onset word can
+# take a frame or two to register), so the transcribed capture isn't
+# missing its own lead-in.
 #
 # mic/output "device" is a raw ALSA/Pulse `-D` device name, passed straight
 # to `arecord`/`aplay` -- "default" (the system default input/output) works
