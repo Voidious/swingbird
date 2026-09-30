@@ -15,16 +15,23 @@ Requires Python 3.12+ (`.python-version` pins 3.13). `uv sync` also pulls the de
 
 Voice mode (optional, see the Voice Mode design doc and `config.py`'s `VoiceConfig`) needs a
 Piper voice model before `voice_tts.speak` can run -- the package (`piper-tts`) ships no models
-itself. `voice_tts.speak` fetches it into `voice_models/` on first use if it isn't there
-already, same as `voice_stt.py`'s faster-whisper weights below; to pre-fetch instead (e.g. for
+itself. `voice_tts.speak` fetches it into `voice_models/downloaded/` on first use if it isn't
+there already, same as `voice_stt.py`'s faster-whisper weights below; to pre-fetch instead (e.g. for
 an offline/headless deploy), run it manually:
 
 ```bash
-uv run python -m piper.download_voices --download-dir voice_models en_US-lessac-medium
+uv run python -m piper.download_voices --download-dir voice_models/downloaded en_US-lessac-medium
 ```
 
-`voice_models/` is gitignored (large binaries); `voice_tts.py`'s smoke-test CLI reads from it by
-default (`uv run python -m swingbird.voice_tts "text to speak" --config swingbird.toml`).
+`voice_models/downloaded/` is gitignored (large binaries); `voice_tts.py`'s smoke-test CLI reads
+from it by default (`uv run python -m swingbird.voice_tts "text to speak" --config swingbird.toml`).
+
+`voice_models/wake_words/` is the opposite: swingbird's own custom-trained wake word models
+(`hey_swingbird.onnx`, ...), checked in and not gitignored. `[voice].wake_word` names one of them
+by file stem, and `voice_wake.py` falls back to openWakeWord's pretrained models for any name
+without a checked-in file. Adding a wake word is just dropping a trained `.onnx` file in that
+directory. openWakeWord 0.4.0 (what `uv.lock` pins) runs `.onnx` only, so a `.tflite` from the
+training notebook is unusable here.
 
 `voice_wake.py`'s openWakeWord pretrained models and `voice_stt.py`'s Silero VAD ship inside the
 `openwakeword` package itself -- no download step. `voice_stt.py`'s faster-whisper weights
@@ -123,7 +130,7 @@ Pre-commit (`.pre-commit-config.yaml`) runs `crispen` on the staged diff, `ruff-
 | `config.py` | Loads and merges `swingbird.toml` + `.swingbird.toml`. |
 | `voice_render.py` | Spoken-safe rendering pass over a DM-formatted reply string, for voice mode (Voice Mode design doc §V.7). |
 | `voice_tts.py` | Piper text-to-speech: synthesizes and plays a string aloud via `aplay` (§V.5, §V.16 step 2). Called by `daemon.py`'s `_run_voice_turn` to speak each turn's reply; also reachable standalone via its own `__main__` smoke-test CLI. |
-| `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Only openWakeWord's bundled pretrained phrases are supported for now, not a custom "swingbird" model (§V.13). Called by `daemon.py`'s `_run_voice_turn` to start each turn; also reachable standalone via its own `__main__` smoke-test CLI. |
+| `voice_wake.py` | openWakeWord wake-word listening: blocks until the configured wake word is detected via `arecord` (§V.5, §V.16 step 3). Loads a checked-in custom model from `voice_models/wake_words/<wake_word>.onnx` (default `hey_swingbird`, §V.13), else falls back to one of openWakeWord's bundled pretrained phrases. Called by `daemon.py`'s `_run_voice_turn` to start each turn; also reachable standalone via its own `__main__` smoke-test CLI. |
 | `voice_audio.py` | Shared `arecord` mic-capture plumbing (frame size, device mapping) used by both `voice_wake.py` and `voice_stt.py`, so the two don't duplicate (and drift on) the same audio format. |
 | `voice_stt.py` | faster-whisper speech-to-text: records one utterance (Silero-VAD-endpointed, via `openwakeword.vad.VAD`) and transcribes it (§V.5, §V.16 step 4). Called by `daemon.py`'s `_run_voice_turn` right after the wake word fires; also reachable standalone via its own `__main__` smoke-test CLI. |
 | `voice_cues.py` | Short synthesized tones marking voice-turn listening boundaries: one when the mic starts listening (wake word registered, or a follow-up window is still open), a different one when listening actually stops and the wake word is required again. Called by `daemon.py`'s `_run_voice_turn`. |

@@ -33,12 +33,31 @@ class FakeProcess:
         self.waited = True
 
 
-def test_pretrained_model_path_raises_for_unknown_wake_word():
-    with pytest.raises(WakeWordError, match="no pretrained openWakeWord model"):
-        voice_wake._pretrained_model_path("swingbird")
+def test_model_path_prefers_a_checked_in_custom_model(tmp_path):
+    (tmp_path / "hey_jarvis.onnx").write_bytes(b"")
+
+    path = voice_wake._model_path("hey_jarvis", tmp_path)
+
+    assert path == str(tmp_path / "hey_jarvis.onnx")
 
 
-def test_load_model_returns_model_and_score_key(monkeypatch):
+def test_model_path_falls_back_to_a_pretrained_model(tmp_path):
+    path = voice_wake._model_path("hey_jarvis", tmp_path)
+
+    assert path == voice_wake.openwakeword.models["hey_jarvis"]["model_path"]
+
+
+def test_model_path_raises_for_unknown_wake_word_listing_custom_models(tmp_path):
+    (tmp_path / "hey_swingbird.onnx").write_bytes(b"")
+
+    with pytest.raises(WakeWordError, match="no wake word model") as excinfo:
+        voice_wake._model_path("nonsense", tmp_path)
+
+    assert "hey_swingbird" in str(excinfo.value)
+    assert "hey_jarvis" in str(excinfo.value)
+
+
+def test_load_model_returns_model_and_score_key(monkeypatch, tmp_path):
     captured = {}
 
     def fake_ctor(wakeword_model_paths):
@@ -47,10 +66,35 @@ def test_load_model_returns_model_and_score_key(monkeypatch):
 
     monkeypatch.setattr(voice_wake, "Model", fake_ctor)
 
-    _model, score_key = load_model("hey_jarvis")
+    _model, score_key = load_model("hey_jarvis", tmp_path)
 
     assert score_key == "hey_jarvis_v0.1"
-    assert captured["paths"] == [voice_wake._pretrained_model_path("hey_jarvis")]
+    assert captured["paths"] == [voice_wake._model_path("hey_jarvis", tmp_path)]
+
+
+def test_load_model_loads_a_custom_model_from_models_dir(monkeypatch, tmp_path):
+    (tmp_path / "hey_swingbird.onnx").write_bytes(b"")
+    captured = {}
+
+    def fake_ctor(wakeword_model_paths):
+        captured["paths"] = wakeword_model_paths
+        return FakeModel(wakeword_model_paths)
+
+    monkeypatch.setattr(voice_wake, "Model", fake_ctor)
+
+    load_model("hey_swingbird", tmp_path)
+
+    assert captured["paths"] == [str(tmp_path / "hey_swingbird.onnx")]
+
+
+def test_checked_in_hey_swingbird_model_loads_with_the_real_runtime():
+    """The shipped default wake word must actually load through the real
+    openWakeWord runtime, not just a fake `Model` -- catches a model file
+    that's missing, corrupt, or exported in a format this openWakeWord
+    version can't run."""
+    _model, score_key = load_model("hey_swingbird")
+
+    assert score_key == "hey_swingbird"
 
 
 def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):

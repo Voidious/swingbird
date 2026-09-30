@@ -156,7 +156,7 @@ class RecapConfig:
 
 _SUPPORTED_STT_MODELS = ("small", "small.en")
 
-DEFAULT_WAKE_WORD = "swingbird"
+DEFAULT_WAKE_WORD = "hey_swingbird"
 DEFAULT_MIC_DEVICE = "default"
 DEFAULT_OUTPUT_DEVICE = "default"
 

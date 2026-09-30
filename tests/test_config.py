@@ -683,7 +683,7 @@ def test_voice_defaults_to_disabled(tmp_path):
     config = load_config(write(tmp_path, VALID))
 
     assert config.voice.enabled is False
-    assert config.voice.wake_word == "swingbird"
+    assert config.voice.wake_word == "hey_swingbird"
     assert config.voice.mic.device == "default"
     assert config.voice.output.device == "default"
     assert config.voice.stt.model == "small"

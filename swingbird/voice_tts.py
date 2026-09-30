@@ -31,7 +31,10 @@ from piper.download_voices import download_voice
 
 from swingbird.config import VoiceOutputConfig, VoiceTTSConfig, load_config
 
-DEFAULT_MODELS_DIR = Path("voice_models")
+# Gitignored subdirectory: fetched Piper voices are large binaries. The
+# sibling `voice_models/wake_words/` (see `voice_wake.py`) holds swingbird's
+# own trained models and is checked in.
+DEFAULT_MODELS_DIR = Path("voice_models/downloaded")
 
 # A brief silence between recap items/paragraphs reads as more natural at
 # the pace this codebase otherwise keeps -- Voidious asked for "even like

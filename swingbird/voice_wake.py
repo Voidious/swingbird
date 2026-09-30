@@ -7,16 +7,15 @@ exists. `daemon.py`'s `_run_voice_turn` now calls `listen_for_wake_word`
 to start each turn (§V.16 step 5); this module's own `__main__` is still
 there as a standalone smoke-test CLI.
 
-Unlike Piper's TTS voices (`voice_tts.py`), openWakeWord's pretrained
-models ship inside the `openwakeword` package itself -- no download step,
-no models directory. Only openWakeWord's own pretrained phrases are
-supported for now ("alexa", "hey_mycroft", "hey_jarvis", etc.) -- per
-Voidious, that's a deliberately temporary/testing choice (§V.13), not a
-final answer. Training a custom "swingbird" model (or other custom
-phrases) is tracked as separate follow-up work, not built here; this
-module's job is just to make `[voice].wake_word` a real, working config
-knob against whichever pretrained models exist today, so pointing it at a
-custom model later is a one-line change once that model exists.
+`[voice].wake_word` names either one of swingbird's own custom-trained
+models -- a `<wake_word>.onnx` file checked in under
+`voice_models/wake_words/` (§V.13) -- or, as a fallback, one of
+openWakeWord's pretrained phrases ("alexa", "hey_mycroft", "hey_jarvis",
+etc.), which ship inside the `openwakeword` package itself with no
+download step. The custom models are the intended answer; the pretrained
+ones are kept for development/debugging for now. A checked-in model wins
+if it shares a name with a pretrained one, so swingbird's own is never
+silently shadowed by the upstream default.
 
 Mic capture is `voice_audio.py`'s -- shared with `voice_stt.py` since both
 read the same `arecord` stream off the same device.
@@ -26,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import threading
+from pathlib import Path
 
 import openwakeword
 from openwakeword.model import Model
@@ -43,32 +43,45 @@ from swingbird.voice_audio import (
 # positives need the debounce/patience knobs `Model.predict` supports.
 DETECTION_THRESHOLD = 0.5
 
+# Checked in, unlike `voice_tts.DEFAULT_MODELS_DIR`'s downloaded (gitignored)
+# Piper voices -- these are swingbird's own trained models, small enough
+# (a few hundred KB) to live in the repo. Relative to the working
+# directory, same as `voice_tts.py`'s models dir.
+WAKE_WORD_MODELS_DIR = Path("voice_models/wake_words")
+
 
 class WakeWordError(Exception):
-    """Raised when `wake_word` has no pretrained model, or `arecord` fails."""
+    """Raised when `wake_word` has no model, or `arecord` fails."""
 
 
-def _pretrained_model_path(wake_word: str) -> str:
+def _model_path(wake_word: str, models_dir: Path) -> str:
+    custom = models_dir / f"{wake_word}.onnx"
+    if custom.is_file():
+        return str(custom)
     try:
         return openwakeword.models[wake_word]["model_path"]
     except KeyError as exc:
-        available = ", ".join(sorted(openwakeword.models))
+        custom_names = sorted(p.stem for p in models_dir.glob("*.onnx"))
+        available = ", ".join(custom_names + sorted(openwakeword.models))
         raise WakeWordError(
-            f"no pretrained openWakeWord model for wake_word {wake_word!r} -- "
-            f"available pretrained models: {available} (a custom model, e.g. "
-            'for "swingbird" itself, is tracked as separate follow-up work)'
+            f"no wake word model for wake_word {wake_word!r} -- no "
+            f"{custom.as_posix()} and no pretrained openWakeWord model of "
+            f"that name; available: {available}"
         ) from exc
 
 
-def load_model(wake_word: str) -> tuple[Model, str]:
-    """Load the pretrained openWakeWord model for `wake_word`.
+def load_model(
+    wake_word: str, models_dir: Path = WAKE_WORD_MODELS_DIR
+) -> tuple[Model, str]:
+    """Load the model for `wake_word` -- a custom `<wake_word>.onnx` under
+    `models_dir` if one exists, else openWakeWord's pretrained one.
 
     Returns the model and the score key `predict()` returns it under.
     openWakeWord derives that key from the model file's own name (e.g.
     "hey_jarvis_v0.1", not the plain "hey_jarvis" config value), so
     callers need both rather than reconstructing the key themselves.
     """
-    model = Model(wakeword_model_paths=[_pretrained_model_path(wake_word)])
+    model = Model(wakeword_model_paths=[_model_path(wake_word, models_dir)])
     score_key = next(iter(model.models))
     return model, score_key
 
