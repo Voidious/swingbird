@@ -2993,6 +2993,7 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
                 voice_config.voice.wake_word,
                 voice_config.voice.barge_in_wake_threshold,
                 voice_config.voice.wake_word_window_seconds,
+                voice_config.voice.barge_in_debug_audio_dir,
             ),
         )
     ]
@@ -3127,6 +3128,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
                 voice_config.voice.wake_word,
                 voice_config.voice.barge_in_wake_threshold,
                 voice_config.voice.wake_word_window_seconds,
+                voice_config.voice.barge_in_debug_audio_dir,
             ),
         )
     ]

@@ -977,3 +977,22 @@ def test_voice_barge_in_wake_threshold_rejects_invalid_values(tmp_path, value):
         match=r"\[voice\].barge_in_wake_threshold must be a number between 0 and 1",
     ):
         load_config(write(tmp_path, text))
+
+
+def test_voice_barge_in_debug_audio_dir_defaults_to_none_and_is_configurable(tmp_path):
+    default = load_config(write(tmp_path, VALID + "\n[voice]\nenabled = false\n"))
+    text = VALID + '\n[voice]\nbarge_in_debug_audio_dir = "dbg"\n'
+    configured = load_config(write(tmp_path, text))
+
+    assert default.voice.barge_in_debug_audio_dir is None
+    assert configured.voice.barge_in_debug_audio_dir == "dbg"
+
+
+@pytest.mark.parametrize("value", ["1", '""', '"  "'])
+def test_voice_barge_in_debug_audio_dir_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nbarge_in_debug_audio_dir = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].barge_in_debug_audio_dir must be a non-empty string",
+    ):
+        load_config(write(tmp_path, text))
