@@ -167,6 +167,15 @@ DEFAULT_OUTPUT_DEVICE = "default"
 # coming and going -- verified against Voidious's Orange Pi (`arecord -l`/
 # `aplay -l` both show `card 3: Array [reSpeaker XVF3800 4-Mic Array]`).
 _DEVICE_PRESETS = {"xvf3800": "plughw:CARD=Array,DEV=0"}
+# How many channels a preset device records. The XVF3800's USB stream is
+# stereo, but only the left channel is the processed mic -- the right is a
+# loopback of whatever is being played (silent at idle, a clean copy of the
+# reply during playback). Recording it as mono mixes that copy into the mic
+# signal, burying the user's voice during playback, so the left channel is
+# read alone (see `voice_audio.read_frame`).
+_MIC_PRESET_CHANNELS = {"xvf3800": 2}
+DEFAULT_MIC_CHANNELS = 1
+_MAX_MIC_CHANNELS = 8
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 15
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
@@ -191,9 +200,14 @@ class VoiceMicConfig:
     on the target machine and set in `.swingbird.toml`, not shipped as a
     default here. "xvf3800" is a named shortcut (see `_DEVICE_PRESETS`) for
     Seeed's reSpeaker XVF3800, resolved to its real ALSA device string.
+
+    `channels` is how many channels `arecord` records; only the first (the
+    mic) is read. Presets set it themselves (the XVF3800's second channel is
+    a playback loopback, not a mic -- see `_MIC_PRESET_CHANNELS`).
     """
 
     device: str = DEFAULT_MIC_DEVICE
+    channels: int = DEFAULT_MIC_CHANNELS
 
 
 @dataclass(frozen=True)
@@ -651,7 +665,18 @@ def _parse_voice_mic(section: object) -> VoiceMicConfig:
     device = section.get("device", DEFAULT_MIC_DEVICE)
     if not isinstance(device, str) or not device.strip():
         raise ConfigError("[voice.mic].device must be a non-empty string")
-    return VoiceMicConfig(device=_DEVICE_PRESETS.get(device, device))
+    channels = section.get(
+        "channels", _MIC_PRESET_CHANNELS.get(device, DEFAULT_MIC_CHANNELS)
+    )
+    if (
+        isinstance(channels, bool)
+        or not isinstance(channels, int)
+        or not 1 <= channels <= _MAX_MIC_CHANNELS
+    ):
+        raise ConfigError(
+            f"[voice.mic].channels must be an integer from 1 to {_MAX_MIC_CHANNELS}"
+        )
+    return VoiceMicConfig(device=_DEVICE_PRESETS.get(device, device), channels=channels)
 
 
 def _parse_voice_output(section: object) -> VoiceOutputConfig:

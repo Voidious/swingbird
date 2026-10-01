@@ -74,6 +74,20 @@ def test_open_mic_stream_targets_configured_device(monkeypatch):
     )
 
 
+def test_open_mic_stream_records_the_configured_channel_count(monkeypatch):
+    popen_calls = []
+    monkeypatch.setattr(
+        voice_audio.subprocess,
+        "Popen",
+        lambda args, stdout=None: popen_calls.append(args) or FakeProcess(),
+    )
+
+    process = open_mic_stream(VoiceMicConfig(channels=2))
+
+    assert popen_calls[0][popen_calls[0].index("-c") + 1] == "2"
+    assert process.mic_channels == 2
+
+
 def test_open_mic_stream_raises_when_arecord_not_found(monkeypatch):
     def raise_not_found(args, stdout=None):
         raise FileNotFoundError()
@@ -95,6 +109,19 @@ def test_read_frame_returns_int16_array():
 
     assert result.dtype == np.int16
     assert len(result) == voice_audio.FRAME_SAMPLES
+
+
+def test_read_frame_returns_only_the_first_channel_of_a_multichannel_stream():
+    mic = np.arange(1, voice_audio.FRAME_SAMPLES + 1, dtype=np.int16)
+    loopback = np.full(voice_audio.FRAME_SAMPLES, 999, dtype=np.int16)
+    interleaved = np.stack([mic, loopback], axis=1).tobytes()
+    process = FakeProcess([interleaved])
+    process.mic_channels = 2
+
+    result = read_frame(process)
+
+    assert result.dtype == np.int16
+    assert np.array_equal(result, mic)
 
 
 def test_read_frame_raises_when_stream_ends_unexpectedly():
