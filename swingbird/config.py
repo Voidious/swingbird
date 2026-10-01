@@ -309,6 +309,9 @@ class VoiceConfig:
     # lower value than the idle default may be right -- tune against real
     # hardware.
     barge_in_wake_threshold: float = DEFAULT_BARGE_IN_WAKE_THRESHOLD
+    # Debug aid: a directory to save, per spoken reply, the mic audio the wake
+    # barge-in model heard (WAV, peak score in the filename). None disables it.
+    barge_in_debug_audio_dir: str | None = None
 
 
 DEFAULT_MOCK_LLM_CACHE_PATH = ".swingbird_llm_mock_cache.json"
@@ -591,9 +594,11 @@ def _build_voice_config(
     ):
         raise ConfigError("[voice].barge_in_trigger_energy must be a positive number")
 
-    barge_in_requires_wake_word, barge_in_wake_threshold = _parse_barge_in_wake_word(
-        section
-    )
+    (
+        barge_in_requires_wake_word,
+        barge_in_wake_threshold,
+        barge_in_debug_audio_dir,
+    ) = _parse_barge_in_wake_word(section)
 
     return VoiceConfig(
         enabled=enabled,
@@ -609,10 +614,11 @@ def _build_voice_config(
         barge_in_trigger_energy=barge_in_trigger_energy,
         barge_in_requires_wake_word=barge_in_requires_wake_word,
         barge_in_wake_threshold=barge_in_wake_threshold,
+        barge_in_debug_audio_dir=barge_in_debug_audio_dir,
     )
 
 
-def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float]:
+def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float, str | None]:
     requires_wake_word = section.get(
         "barge_in_requires_wake_word", DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD
     )
@@ -630,7 +636,13 @@ def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float]:
         raise ConfigError(
             "[voice].barge_in_wake_threshold must be a number between 0 and 1"
         )
-    return requires_wake_word, wake_threshold
+
+    debug_audio_dir = section.get("barge_in_debug_audio_dir")
+    if debug_audio_dir is not None and (
+        not isinstance(debug_audio_dir, str) or not debug_audio_dir.strip()
+    ):
+        raise ConfigError("[voice].barge_in_debug_audio_dir must be a non-empty string")
+    return requires_wake_word, wake_threshold, debug_audio_dir
 
 
 def _parse_voice_mic(section: object) -> VoiceMicConfig:

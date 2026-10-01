@@ -633,6 +633,7 @@ class Daemon:
                 voice.wake_word,
                 voice.barge_in_wake_threshold,
                 voice.wake_word_window_seconds,
+                voice.barge_in_debug_audio_dir,
             )
             if voice.barge_in_requires_wake_word
             else None

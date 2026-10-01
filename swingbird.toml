@@ -91,6 +91,7 @@ name = "swingbird"
 # barge_in_trigger_energy = 0.6
 # barge_in_requires_wake_word = true
 # barge_in_wake_threshold = 0.5
+# barge_in_debug_audio_dir = "barge_audio"
 #
 # barge_in_requires_wake_word (default true) makes a reply interruptible only
 # by saying the wake word over it, like Alexa/Siri -- then whatever you say
@@ -100,6 +101,10 @@ name = "swingbird"
 # reply's own audio ever trips it. With it true, the three VAD knobs below
 # are unused. Set it false for the VAD accumulator barge-in instead, where
 # any speech over the reply interrupts it.
+#
+# barge_in_debug_audio_dir (unset by default) saves, for each spoken reply, the
+# exact mic audio the wake model heard as a WAV (peak score in the filename) --
+# for checking by ear whether your voice survives the mic's echo processing.
 #
 # The three VAD barge_in_* knobs tune how readily a reply gets interrupted by
 # the user talking over it (§V.12). Each frame (~80ms) of mic input while a
