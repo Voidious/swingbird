@@ -13,6 +13,7 @@ from swingbird.config import (
 )
 from swingbird.voice_audio import MicStreamError
 from swingbird.voice_stt import STTError, Transcript
+from swingbird.voice_wake import WakeWordError
 
 
 class ConstantVAD:
@@ -106,6 +107,14 @@ def test_speak_with_barge_in_passes_start_chunk_through_to_speak(monkeypatch):
     assert speak_calls == [5]
 
 
+def _patch_barge_in_capture_and_model(monkeypatch, fake_capture_until_silence):
+    monkeypatch.setattr(
+        voice_barge_in, "capture_until_silence", fake_capture_until_silence
+    )
+    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
+    return Transcript(text="give me a recap", is_confident=True)
+
+
 def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
     monkeypatch, capsys
 ):
@@ -134,11 +143,9 @@ def test_speak_with_barge_in_stops_playback_and_transcribes_interruption(
         capture_calls.append((record, frames, speech_started, wait_frames))
         return canned_audio
 
-    monkeypatch.setattr(
-        voice_barge_in, "capture_until_silence", fake_capture_until_silence
+    expected = _patch_barge_in_capture_and_model(
+        monkeypatch, fake_capture_until_silence
     )
-    monkeypatch.setattr(voice_barge_in, "load_model", lambda stt: "the-model")
-    expected = Transcript(text="give me a recap", is_confident=True)
     transcribe_calls = []
 
     def fake_transcribe(model, audio):
@@ -664,4 +671,138 @@ def test_speak_with_barge_in_raises_when_stream_ends_unexpectedly(monkeypatch):
             VoiceSTTConfig(),
         )
 
+    assert close_calls == ["the-record"]
+
+
+class ScriptedWakeModel:
+    """`Model.predict` stand-in returning `scores` one per call, then 0.0."""
+
+    def __init__(self, scores):
+        self.scores = list(scores)
+        self.calls = 0
+
+    def predict(self, frame):
+        self.calls += 1
+        return {"hey_swingbird_v1": self.scores.pop(0) if self.scores else 0.0}
+
+
+def _wake_barge_in(threshold=0.5, window_seconds=4):
+    return voice_barge_in.WakeBargeIn(
+        wake_word="hey_swingbird", threshold=threshold, window_seconds=window_seconds
+    )
+
+
+def _speak_with_wake_barge_in(wake_barge_in, **kwargs):
+    return voice_barge_in.speak_with_barge_in(
+        "reply text",
+        VoiceTTSConfig(voice="v"),
+        VoiceOutputConfig(),
+        VoiceMicConfig(),
+        VoiceSTTConfig(),
+        wake_barge_in=wake_barge_in,
+        **kwargs,
+    )
+
+
+def test_wake_word_barge_in_ignores_loud_speech_until_the_wake_word_scores(
+    monkeypatch, capsys
+):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        stop_event.wait(timeout=1.0)
+        return 2
+
+    close_calls = _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    reads = []
+    monkeypatch.setattr(
+        voice_barge_in, "read_frame", lambda record: reads.append(1) or np.zeros(1)
+    )
+    # A VAD this confident would fire the accumulator trigger on the very
+    # first frame -- so a barge-in only happening after the wake model
+    # scores proves the VAD isn't what's deciding in this mode.
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.99))
+    wake_model = ScriptedWakeModel([0.0, 0.1, 0.49, 0.5])
+    wake_loads = []
+    monkeypatch.setattr(
+        voice_barge_in,
+        "load_wake_model",
+        lambda wake_word: (
+            wake_loads.append(wake_word) or (wake_model, "hey_swingbird_v1")
+        ),
+    )
+    capture_calls = []
+    canned_audio = np.array([7, 7])
+
+    def fake_capture_until_silence(record, vad, frames, speech_started, wait_frames):
+        capture_calls.append((record, frames, speech_started, wait_frames))
+        return canned_audio
+
+    expected = _patch_barge_in_capture_and_model(
+        monkeypatch, fake_capture_until_silence
+    )
+    monkeypatch.setattr(voice_barge_in, "transcribe", lambda model, audio: expected)
+
+    result = _speak_with_wake_barge_in(_wake_barge_in(threshold=0.5, window_seconds=4))
+
+    assert result == voice_barge_in.BargeInResult(transcript=expected, resume_chunk=2)
+    assert wake_loads == ["hey_swingbird"]
+    assert wake_model.calls == 4
+    # 4 monitored frames, plus the wake phrase's own tail discarded before
+    # capture starts; the capture itself starts empty and waits for speech
+    # for the whole window (4s of 1280-sample frames at 16kHz).
+    assert len(reads) == 4 + voice_barge_in.WAKE_SETTLE_FRAMES
+    assert capture_calls == [("the-record", [], False, 50)]
+    assert close_calls == ["the-record"]
+    assert "barge-in detected" in capsys.readouterr().out
+
+
+def test_wake_word_barge_in_resumes_the_reply_when_no_command_follows(monkeypatch):
+    speak_calls = []
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        speak_calls.append(start_chunk)
+        if len(speak_calls) == 1:
+            stop_event.wait(timeout=1.0)
+            return 5
+        return None
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.0))
+    models = [ScriptedWakeModel([1.0]), ScriptedWakeModel([])]
+    monkeypatch.setattr(
+        voice_barge_in,
+        "load_wake_model",
+        lambda wake_word: (models.pop(0), "hey_swingbird_v1"),
+    )
+    monkeypatch.setattr(
+        voice_barge_in, "capture_until_silence", lambda *args, **kwargs: None
+    )
+
+    result = _speak_with_wake_barge_in(_wake_barge_in())
+
+    assert result is None
+    assert speak_calls == [0, 5]
+
+
+def test_wake_word_barge_in_propagates_a_missing_model_and_stops_playback(
+    monkeypatch,
+):
+    stop_events = []
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        stop_events.append(stop_event)
+        stop_event.wait(timeout=1.0)
+
+    close_calls = _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.0))
+
+    def missing_model(wake_word):
+        raise WakeWordError("no wake word model")
+
+    monkeypatch.setattr(voice_barge_in, "load_wake_model", missing_model)
+
+    with pytest.raises(WakeWordError, match="no wake word model"):
+        _speak_with_wake_barge_in(_wake_barge_in())
+
+    assert stop_events[0].is_set()
     assert close_calls == ["the-record"]

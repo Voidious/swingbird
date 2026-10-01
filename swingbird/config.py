@@ -173,6 +173,8 @@ DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
 DEFAULT_BARGE_IN_TRIGGER_FRAMES = 3
 DEFAULT_BARGE_IN_VAD_THRESHOLD = 0.8
 DEFAULT_BARGE_IN_TRIGGER_ENERGY = 0.6
+DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD = True
+DEFAULT_BARGE_IN_WAKE_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -292,6 +294,21 @@ class VoiceConfig:
     # sensitive. Visible, tunable knob for the same reason
     # barge_in_vad_threshold is one.
     barge_in_trigger_energy: float = DEFAULT_BARGE_IN_TRIGGER_ENERGY
+    # §V.12: when true, a reply is only interrupted by the user saying
+    # `wake_word` over it (the same custom model that starts a turn), not by
+    # any speech-like signal -- the three VAD knobs above are then unused.
+    # Matches how mainstream voice assistants work, and sidesteps the
+    # playback-leakage problem: the speaker's own voice is speech-like but
+    # doesn't score as the specific wake phrase. False keeps the VAD
+    # leaky-accumulator barge-in.
+    barge_in_requires_wake_word: bool = DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD
+    # Wake word score a mid-playback frame must reach to count as an
+    # interruption (only used when `barge_in_requires_wake_word` is true).
+    # Separate from `voice_wake.DETECTION_THRESHOLD` since the wake word
+    # reaches the mic attenuated by echo suppression during playback, so a
+    # lower value than the idle default may be right -- tune against real
+    # hardware.
+    barge_in_wake_threshold: float = DEFAULT_BARGE_IN_WAKE_THRESHOLD
 
 
 DEFAULT_MOCK_LLM_CACHE_PATH = ".swingbird_llm_mock_cache.json"
@@ -574,6 +591,10 @@ def _build_voice_config(
     ):
         raise ConfigError("[voice].barge_in_trigger_energy must be a positive number")
 
+    barge_in_requires_wake_word, barge_in_wake_threshold = _parse_barge_in_wake_word(
+        section
+    )
+
     return VoiceConfig(
         enabled=enabled,
         wake_word=wake_word,
@@ -586,7 +607,30 @@ def _build_voice_config(
         barge_in_trigger_frames=barge_in_trigger_frames,
         barge_in_vad_threshold=barge_in_vad_threshold,
         barge_in_trigger_energy=barge_in_trigger_energy,
+        barge_in_requires_wake_word=barge_in_requires_wake_word,
+        barge_in_wake_threshold=barge_in_wake_threshold,
     )
+
+
+def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float]:
+    requires_wake_word = section.get(
+        "barge_in_requires_wake_word", DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD
+    )
+    if not isinstance(requires_wake_word, bool):
+        raise ConfigError("[voice].barge_in_requires_wake_word must be a boolean")
+
+    wake_threshold = section.get(
+        "barge_in_wake_threshold", DEFAULT_BARGE_IN_WAKE_THRESHOLD
+    )
+    if (
+        isinstance(wake_threshold, bool)
+        or not isinstance(wake_threshold, (int, float))
+        or not 0.0 < wake_threshold <= 1.0
+    ):
+        raise ConfigError(
+            "[voice].barge_in_wake_threshold must be a number between 0 and 1"
+        )
+    return requires_wake_word, wake_threshold
 
 
 def _parse_voice_mic(section: object) -> VoiceMicConfig:

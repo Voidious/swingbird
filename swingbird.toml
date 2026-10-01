@@ -89,8 +89,19 @@ name = "swingbird"
 # barge_in_trigger_frames = 3
 # barge_in_vad_threshold = 0.8
 # barge_in_trigger_energy = 0.6
+# barge_in_requires_wake_word = true
+# barge_in_wake_threshold = 0.5
 #
-# The three barge_in_* knobs tune how readily a reply gets interrupted by
+# barge_in_requires_wake_word (default true) makes a reply interruptible only
+# by saying the wake word over it, like Alexa/Siri -- then whatever you say
+# next is the command, no second wake word. Playback stops when the wake
+# model scores at least barge_in_wake_threshold on a frame; lower it if the
+# wake word doesn't get through while the speaker is loud, raise it if the
+# reply's own audio ever trips it. With it true, the three VAD knobs below
+# are unused. Set it false for the VAD accumulator barge-in instead, where
+# any speech over the reply interrupts it.
+#
+# The three VAD barge_in_* knobs tune how readily a reply gets interrupted by
 # the user talking over it (§V.12). Each frame (~80ms) of mic input while a
 # reply is playing adds vad.predict(frame) - barge_in_vad_threshold to a
 # running total, floored at 0.0 so a quiet/negative frame only drains what

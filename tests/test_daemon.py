@@ -2989,6 +2989,11 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
             voice_config.voice.barge_in_vad_threshold,
             voice_config.voice.barge_in_trigger_energy,
             0,
+            daemon.voice_barge_in.WakeBargeIn(
+                voice_config.voice.wake_word,
+                voice_config.voice.barge_in_wake_threshold,
+                voice_config.voice.wake_word_window_seconds,
+            ),
         )
     ]
 
@@ -3117,8 +3122,34 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
             voice_config.voice.barge_in_trigger_frames,
             voice_config.voice.barge_in_vad_threshold,
             voice_config.voice.barge_in_trigger_energy,
+            0,
+            daemon.voice_barge_in.WakeBargeIn(
+                voice_config.voice.wake_word,
+                voice_config.voice.barge_in_wake_threshold,
+                voice_config.voice.wake_word_window_seconds,
+            ),
         )
     ]
+
+
+def test_speak_with_barge_in_uses_the_vad_trigger_when_wake_word_is_not_required(
+    tmp_path, monkeypatch
+):
+    speak_calls = []
+    monkeypatch.setattr(
+        daemon.voice_barge_in,
+        "speak_with_barge_in",
+        lambda *args: speak_calls.append(args) or None,
+    )
+    voice_config = _voice_config(barge_in_requires_wake_word=False)
+    bot = _daemon(tmp_path, FakeLLM(), config=voice_config)
+
+    result = asyncio.run(bot._speak_with_barge_in("hello", 2))
+
+    assert result is None
+    assert len(speak_calls) == 1
+    assert speak_calls[0][0] == "hello"
+    assert speak_calls[0][-2:] == (2, None)
 
 
 def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypatch):
@@ -3341,7 +3372,7 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
     def fake_speak_with_barge_in(text, *rest):
         # `_run_voice_exchange` always passes start_chunk as the last
         # positional argument (0 for a fresh reply, non-zero when resuming).
-        speak_calls.append((text, rest[-1]))
+        speak_calls.append((text, rest[-2]))
         if len(speak_calls) == 1:
             return daemon.voice_barge_in.BargeInResult(
                 transcript=T(text="mumble mumble", is_confident=True),

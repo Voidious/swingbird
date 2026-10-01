@@ -20,6 +20,15 @@ bridge, without a headset), this VAD can in principle mistake swingbird's
 own voice for a barge-in. Untested on hardware where that's actually a
 problem (§V.14) -- worth revisiting if a live run shows false triggers.
 
+Wake word barge-in (`WakeBargeIn`, `[voice].barge_in_requires_wake_word`)
+swaps that VAD trigger for the wake word model: playback only stops when
+the wake phrase itself is heard, then the command that follows is captured
+on the same stream with no second wake word -- how Alexa/Siri behave. VAD
+asks "is anything speech-like happening?", which swingbird's own leaked
+voice answers yes to; the wake model asks "was this phrase said?", which
+leakage of ordinary reply text doesn't. The capture/transcribe/resume
+handling below is shared by both triggers.
+
 A captured interruption isn't always real speech, though: a brief noise
 (a mouse click, sitting up in a chair, even breathing on a sensitive
 headset mic) can cross `vad_threshold` for a moment with nothing real
@@ -47,6 +56,7 @@ docstring.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -61,6 +71,7 @@ from swingbird.config import (
     VoiceTTSConfig,
 )
 from swingbird.voice_audio import (
+    FRAME_SAMPLES,
     SAMPLE_RATE,
     call_translating_stream_error,
     close_mic_stream,
@@ -75,6 +86,7 @@ from swingbird.voice_stt import (
     transcribe,
 )
 from swingbird.voice_tts import speak
+from swingbird.voice_wake import load_model as load_wake_model
 
 # VAD doesn't confidently score a frame as speech from its very first
 # 80ms -- a quiet-onset word (live-tested: "what are the other items?"
@@ -131,6 +143,31 @@ DEFAULT_TRIGGER_VAD_THRESHOLD = 0.8
 # `DEFAULT_TRIGGER_FRAMES` frames: 4 * (1.0 - 0.8) = 0.8, rounded down
 # slightly since real speech rarely scores a clean 1.0 every frame.
 DEFAULT_TRIGGER_ENERGY = 0.6
+
+# Frames discarded right after a wake word barge-in fires, before capturing
+# the command that follows it. The model scores the phrase as it finishes, so
+# the last syllable or two of "swingbird" is still arriving when it trips;
+# without this, VAD sees that tail as the start of the utterance and
+# transcription picks up a stray "bird" in front of the real command (which
+# would also defeat the exact-match stop/dismiss phrases). Not yet tuned on
+# real hardware -- raise it if a live run still shows the tail leaking in,
+# lower it if the first word of a command gets clipped.
+WAKE_SETTLE_FRAMES = 2
+
+
+@dataclass(frozen=True)
+class WakeBargeIn:
+    """Settings for wake-word barge-in (`[voice].barge_in_requires_wake_word`):
+    a reply is interrupted only by `wake_word` scoring at least `threshold`
+    on a mid-playback frame, instead of the VAD accumulator. After it fires,
+    the command is awaited for up to `window_seconds` (the same
+    `wake_word_window_seconds` a normal wake word turn waits) with no second
+    wake word required -- the same flow as Alexa/Siri.
+    """
+
+    wake_word: str
+    threshold: float
+    window_seconds: int
 
 
 @dataclass(frozen=True)
@@ -201,6 +238,7 @@ def speak_with_barge_in(
     vad_threshold: float = DEFAULT_TRIGGER_VAD_THRESHOLD,
     trigger_energy: float = DEFAULT_TRIGGER_ENERGY,
     start_chunk: int = 0,
+    wake_barge_in: WakeBargeIn | None = None,
 ) -> BargeInResult | None:
     """Speak `text` aloud, listening on `mic` at the same time for the
     user talking over it -- resuming `text` from wherever it stopped,
@@ -234,6 +272,12 @@ def speak_with_barge_in(
     `barge_in_trigger_energy`'s own docstrings. `trigger_frames` no longer
     gates the trigger itself; it only sizes the rolling pre-roll buffer
     alongside `PRE_ROLL_FRAMES`.
+
+    `wake_barge_in`, when given, replaces that VAD trigger entirely: only
+    the wake word interrupts, and `vad_threshold`/`trigger_energy`/
+    `trigger_frames` are unused. A wake word that's followed by no speech
+    within its window is treated like any other false trigger -- the reply
+    resumes.
     """
     chunk = start_chunk
     for _attempt in range(MAX_RESUME_ATTEMPTS + 1):
@@ -247,6 +291,7 @@ def speak_with_barge_in(
             vad_threshold,
             trigger_energy,
             chunk,
+            wake_barge_in,
         )
         if transcript is None:
             return None
@@ -267,6 +312,23 @@ def speak_with_barge_in(
     return None
 
 
+def _capture_after_wake_word(
+    record: subprocess.Popen, vad: VAD, window_seconds: int
+) -> np.ndarray | None:
+    """Capture the command following a wake word barge-in on the same mic
+    stream, after discarding `WAKE_SETTLE_FRAMES` of the wake phrase's own
+    tail. Returns `None` if no speech starts within `window_seconds`."""
+    for _ in range(WAKE_SETTLE_FRAMES):
+        call_translating_stream_error(STTError, read_frame, record)
+    return capture_until_silence(
+        record,
+        vad,
+        frames=[],
+        speech_started=False,
+        wait_frames=int(window_seconds * SAMPLE_RATE / FRAME_SAMPLES),
+    )
+
+
 def _speak_once_with_barge_in(
     text: str,
     tts: VoiceTTSConfig,
@@ -277,6 +339,7 @@ def _speak_once_with_barge_in(
     vad_threshold: float,
     trigger_energy: float,
     start_chunk: int,
+    wake_barge_in: WakeBargeIn | None,
 ) -> tuple[Transcript | None, int | None]:
     """One playback-plus-listen pass of `speak_with_barge_in` -- speaks
     `text` (from `start_chunk` on) on a background thread while this
@@ -344,23 +407,41 @@ def _speak_once_with_barge_in(
     try:
         record = call_translating_stream_error(STTError, open_mic_stream, mic)
         vad = VAD()
+        if wake_barge_in is not None:
+            wake_model, wake_key = load_wake_model(wake_barge_in.wake_word)
         window: deque[np.ndarray] = deque(maxlen=PRE_ROLL_FRAMES + trigger_frames)
         energy = 0.0
         while not playback_done.is_set():
             frame = call_translating_stream_error(STTError, read_frame, record)
             window.append(frame)
-            energy = max(0.0, energy + vad.predict(frame) - vad_threshold)
-            if energy < trigger_energy:
+            if wake_barge_in is not None:
+                score = wake_model.predict(frame)[wake_key]
+                triggered = score >= wake_barge_in.threshold
+            else:
+                energy = max(0.0, energy + vad.predict(frame) - vad_threshold)
+                triggered = energy >= trigger_energy
+            if not triggered:
                 continue
             print("swingbird: barge-in detected, capturing interruption...")
             stop_playback.set()
-            audio = capture_until_silence(
-                record,
-                vad,
-                frames=list(window),
-                speech_started=True,
-                wait_frames=0,
-            )
+            if wake_barge_in is not None:
+                audio = _capture_after_wake_word(
+                    record, vad, wake_barge_in.window_seconds
+                )
+            else:
+                audio = capture_until_silence(
+                    record,
+                    vad,
+                    frames=list(window),
+                    speech_started=True,
+                    wait_frames=0,
+                )
+            if audio is None:
+                # Wake word, but nothing said after it: same outcome as any
+                # other false trigger, so the reply resumes.
+                transcript = Transcript(text="", is_confident=False)
+                print("swingbird: wake word barge-in heard no command")
+                break
             model = load_model(stt)
             transcript = transcribe(model, audio)
             print(

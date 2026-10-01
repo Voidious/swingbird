@@ -562,17 +562,7 @@ class Daemon:
                     transcript.text, resume
                 )
             else:
-                result = await asyncio.to_thread(
-                    voice_barge_in.speak_with_barge_in,
-                    voice_stt.LOW_CONFIDENCE_REPLY,
-                    voice.tts,
-                    voice.output,
-                    voice.mic,
-                    voice.stt,
-                    voice.barge_in_trigger_frames,
-                    voice.barge_in_vad_threshold,
-                    voice.barge_in_trigger_energy,
-                )
+                result = await self._speak_with_barge_in(voice_stt.LOW_CONFIDENCE_REPLY)
                 barge_in = result.transcript if result is not None else None
                 resume = None
             if barge_in is not None:
@@ -629,6 +619,38 @@ class Daemon:
             if detected:
                 return None
 
+    async def _speak_with_barge_in(
+        self, text: str, start_chunk: int = 0
+    ) -> voice_barge_in.BargeInResult | None:
+        """Speak `text` through `voice_barge_in.speak_with_barge_in` with
+        the configured barge-in trigger -- the wake word (§V.12) when
+        `[voice].barge_in_requires_wake_word` is set, else the VAD
+        accumulator. The one place every voice reply's barge-in settings are
+        threaded through, so the three callers can't drift apart."""
+        voice = self._config.voice
+        wake_barge_in = (
+            voice_barge_in.WakeBargeIn(
+                voice.wake_word,
+                voice.barge_in_wake_threshold,
+                voice.wake_word_window_seconds,
+            )
+            if voice.barge_in_requires_wake_word
+            else None
+        )
+        return await asyncio.to_thread(
+            voice_barge_in.speak_with_barge_in,
+            text,
+            voice.tts,
+            voice.output,
+            voice.mic,
+            voice.stt,
+            voice.barge_in_trigger_frames,
+            voice.barge_in_vad_threshold,
+            voice.barge_in_trigger_energy,
+            start_chunk,
+            wake_barge_in,
+        )
+
     async def _speak_pending_proactive(self) -> voice_stt.Transcript | None:
         """Speak every queued proactive summary in order, through
         `voice_barge_in.speak_with_barge_in` (§V.12) like any other voice
@@ -646,20 +668,9 @@ class Daemon:
         it to resume into and any remaining queued summaries just wait for
         the next idle moment, same as if this one had finished normally.
         """
-        voice = self._config.voice
         while self._pending_proactive:
             text = self._pending_proactive.pop(0)
-            result = await asyncio.to_thread(
-                voice_barge_in.speak_with_barge_in,
-                text,
-                voice.tts,
-                voice.output,
-                voice.mic,
-                voice.stt,
-                voice.barge_in_trigger_frames,
-                voice.barge_in_vad_threshold,
-                voice.barge_in_trigger_energy,
-            )
+            result = await self._speak_with_barge_in(text)
             if result is not None:
                 return result.transcript
         return None
@@ -725,7 +736,6 @@ class Daemon:
         servicing the inbound WebSocket's read/keepalive traffic while it's
         in flight.
         """
-        voice = self._config.voice
         # §V.3: voice shares the DM's thread id, every turn posts its own
         # DM first -- so the transcript is on the record, and `_process`
         # has an event id to anchor replies/reply-waits to, before routing.
@@ -759,18 +769,7 @@ class Daemon:
             spoken_text = render_for_speech(reply)
             start_chunk = 0
 
-        result = await asyncio.to_thread(
-            voice_barge_in.speak_with_barge_in,
-            spoken_text,
-            voice.tts,
-            voice.output,
-            voice.mic,
-            voice.stt,
-            voice.barge_in_trigger_frames,
-            voice.barge_in_vad_threshold,
-            voice.barge_in_trigger_energy,
-            start_chunk,
-        )
+        result = await self._speak_with_barge_in(spoken_text, start_chunk)
         if result is None:
             return None, None
         return result.transcript, _PendingResume(spoken_text, result.resume_chunk)
