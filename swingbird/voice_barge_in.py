@@ -62,6 +62,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+from openwakeword.model import Model
 from openwakeword.vad import VAD
 
 from swingbird.config import (
@@ -153,6 +154,20 @@ DEFAULT_TRIGGER_ENERGY = 0.6
 # real hardware -- raise it if a live run still shows the tail leaking in,
 # lower it if the first word of a command gets clipped.
 WAKE_SETTLE_FRAMES = 2
+
+_wake_models: dict[str, tuple[Model, str]] = {}
+
+
+def _wake_model_for(wake_word: str) -> tuple[Model, str]:
+    """The wake model for `wake_word`, loaded once per process and reset
+    before each reuse -- a per-reply ONNX load is slow on the Orange Pi, and
+    that's time the reply is playing with nothing listening for the wake word.
+    """
+    if wake_word not in _wake_models:
+        _wake_models[wake_word] = load_wake_model(wake_word)
+    model, key = _wake_models[wake_word]
+    model.reset()
+    return model, key
 
 
 @dataclass(frozen=True)
@@ -404,11 +419,17 @@ def _speak_once_with_barge_in(
 
     record = None
     transcript: Transcript | None = None
+    frames_monitored = 0
+    peak_score = 0.0
     try:
-        record = call_translating_stream_error(STTError, open_mic_stream, mic)
+        # Models load *before* the mic opens: an `arecord` left running
+        # through a multi-second ONNX load fills its pipe, overruns, and
+        # drops audio -- so a wake word said early in the reply was never
+        # heard (live-observed as "overrun!!!" right after the model load).
         vad = VAD()
         if wake_barge_in is not None:
-            wake_model, wake_key = load_wake_model(wake_barge_in.wake_word)
+            wake_model, wake_key = _wake_model_for(wake_barge_in.wake_word)
+        record = call_translating_stream_error(STTError, open_mic_stream, mic)
         window: deque[np.ndarray] = deque(maxlen=PRE_ROLL_FRAMES + trigger_frames)
         energy = 0.0
         while not playback_done.is_set():
@@ -416,6 +437,8 @@ def _speak_once_with_barge_in(
             window.append(frame)
             if wake_barge_in is not None:
                 score = wake_model.predict(frame)[wake_key]
+                frames_monitored += 1
+                peak_score = max(peak_score, score)
                 triggered = score >= wake_barge_in.threshold
             else:
                 energy = max(0.0, energy + vad.predict(frame) - vad_threshold)
@@ -458,6 +481,14 @@ def _speak_once_with_barge_in(
         if record is not None:
             close_mic_stream(record)
         playback_thread.join()
+        if wake_barge_in is not None:
+            # The number to tune `barge_in_wake_threshold` against: a peak
+            # near 0 means the model never heard the phrase at all (audio
+            # path), a peak just under the threshold means it's the threshold.
+            print(
+                f"swingbird: wake barge-in monitored {frames_monitored} frames, "
+                f"peak wake score {peak_score:.3f}"
+            )
 
     if playback_errors:
         raise playback_errors[0]
