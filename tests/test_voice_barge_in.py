@@ -16,6 +16,13 @@ from swingbird.voice_stt import STTError, Transcript
 from swingbird.voice_wake import WakeWordError
 
 
+@pytest.fixture(autouse=True)
+def _clear_wake_model_cache():
+    voice_barge_in._wake_models.clear()
+    yield
+    voice_barge_in._wake_models.clear()
+
+
 class ConstantVAD:
     """Unlike `test_voice_stt.py`'s `FakeVAD` (a fixed-length list of
     scores, popped one per call), `speak_with_barge_in`'s monitoring loop
@@ -680,6 +687,10 @@ class ScriptedWakeModel:
     def __init__(self, scores):
         self.scores = list(scores)
         self.calls = 0
+        self.resets = 0
+
+    def reset(self):
+        self.resets += 1
 
     def predict(self, frame):
         self.calls += 1
@@ -755,6 +766,12 @@ def test_wake_word_barge_in_ignores_loud_speech_until_the_wake_word_scores(
     assert "barge-in detected" in capsys.readouterr().out
 
 
+def _patch_barge_in_speak_stream_and_vad_for_wake_tests(monkeypatch, fake_speak):
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.0))
+
+
 def test_wake_word_barge_in_resumes_the_reply_when_no_command_follows(monkeypatch):
     speak_calls = []
 
@@ -765,9 +782,7 @@ def test_wake_word_barge_in_resumes_the_reply_when_no_command_follows(monkeypatc
             return 5
         return None
 
-    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
-    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
-    monkeypatch.setattr(voice_barge_in, "VAD", lambda: ConstantVAD(0.0))
+    _patch_barge_in_speak_stream_and_vad_for_wake_tests(monkeypatch, fake_speak)
     models = [ScriptedWakeModel([1.0]), ScriptedWakeModel([])]
     monkeypatch.setattr(
         voice_barge_in,
@@ -805,4 +820,53 @@ def test_wake_word_barge_in_propagates_a_missing_model_and_stops_playback(
         _speak_with_wake_barge_in(_wake_barge_in())
 
     assert stop_events[0].is_set()
-    assert close_calls == ["the-record"]
+    # Models load before the mic opens, so a missing one never opens it.
+    assert close_calls == []
+
+
+def test_wake_word_barge_in_loads_models_before_opening_the_mic(monkeypatch):
+    order = []
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_speak_and_stream(monkeypatch, fake_speak)
+    monkeypatch.setattr(
+        voice_barge_in, "open_mic_stream", lambda mic: order.append("mic") or "rec"
+    )
+    monkeypatch.setattr(voice_barge_in, "read_frame", lambda record: np.zeros(1))
+    monkeypatch.setattr(
+        voice_barge_in, "VAD", lambda: order.append("vad") or ConstantVAD(0.0)
+    )
+    monkeypatch.setattr(
+        voice_barge_in,
+        "load_wake_model",
+        lambda wake_word: (
+            order.append("wake") or (ScriptedWakeModel([]), "hey_swingbird_v1")
+        ),
+    )
+
+    assert _speak_with_wake_barge_in(_wake_barge_in()) is None
+    assert order == ["vad", "wake", "mic"]
+
+
+def test_wake_word_barge_in_reuses_one_loaded_model_and_resets_it(monkeypatch, capsys):
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_speak_stream_and_vad_for_wake_tests(monkeypatch, fake_speak)
+    wake_model = ScriptedWakeModel([0.0, 0.0, 0.0, 0.0, 0.0, 0.3])
+    loads = []
+    monkeypatch.setattr(
+        voice_barge_in,
+        "load_wake_model",
+        lambda wake_word: loads.append(wake_word) or (wake_model, "hey_swingbird_v1"),
+    )
+
+    _speak_with_wake_barge_in(_wake_barge_in(threshold=0.9))
+    _speak_with_wake_barge_in(_wake_barge_in(threshold=0.9))
+
+    assert loads == ["hey_swingbird"]
+    assert wake_model.resets == 2
+    out = capsys.readouterr().out
+    assert "peak wake score 0.300" in out
