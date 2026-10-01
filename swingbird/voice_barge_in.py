@@ -487,7 +487,7 @@ def _speak_once_with_barge_in(
             # path), a peak just under the threshold means it's the threshold.
             print(
                 f"swingbird: wake barge-in monitored {frames_monitored} frames, "
-                f"peak wake score {peak_score:.3f}"
+                f"peak wake score {peak_score:.5f}"
             )
 
     if playback_errors:
