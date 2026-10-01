@@ -936,3 +936,44 @@ def test_debug_mock_llm_cache_path_rejects_invalid_values(tmp_path, value):
         ConfigError, match=r"\[debug\].mock_llm_cache_path must be a non-empty string"
     ):
         load_config(write(tmp_path, text))
+
+
+def test_voice_barge_in_wake_word_defaults(tmp_path):
+    config = load_config(write(tmp_path, VALID + "\n[voice]\nenabled = false\n"))
+
+    assert config.voice.barge_in_requires_wake_word is True
+    assert config.voice.barge_in_wake_threshold == 0.5
+
+
+def test_voice_barge_in_requires_wake_word_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nbarge_in_requires_wake_word = false\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.barge_in_requires_wake_word is False
+
+
+@pytest.mark.parametrize("value", ["1", '"yes"'])
+def test_voice_barge_in_requires_wake_word_rejects_non_booleans(tmp_path, value):
+    text = VALID + f"\n[voice]\nbarge_in_requires_wake_word = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].barge_in_requires_wake_word must be a boolean",
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_barge_in_wake_threshold_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nbarge_in_wake_threshold = 0.3\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.barge_in_wake_threshold == 0.3
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", "1.1", "true", '"0.3"'])
+def test_voice_barge_in_wake_threshold_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nbarge_in_wake_threshold = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].barge_in_wake_threshold must be a number between 0 and 1",
+    ):
+        load_config(write(tmp_path, text))
