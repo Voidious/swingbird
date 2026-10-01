@@ -869,4 +869,4 @@ def test_wake_word_barge_in_reuses_one_loaded_model_and_resets_it(monkeypatch, c
     assert loads == ["hey_swingbird"]
     assert wake_model.resets == 2
     out = capsys.readouterr().out
-    assert "peak wake score 0.300" in out
+    assert "peak wake score 0.30000" in out
