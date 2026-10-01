@@ -755,6 +755,28 @@ def test_voice_mic_resolves_xvf3800_preset(tmp_path):
     assert config.voice.mic.device == "plughw:CARD=Array,DEV=0"
 
 
+def test_voice_mic_channels_default_to_one_and_the_xvf3800_preset_records_two(
+    tmp_path,
+):
+    default = load_config(write(tmp_path, VALID))
+    preset = load_config(write(tmp_path, VALID + '\n[voice.mic]\ndevice = "xvf3800"\n'))
+    explicit = load_config(
+        write(tmp_path, VALID + '\n[voice.mic]\ndevice = "xvf3800"\nchannels = 1\n')
+    )
+    assert default.voice.mic.channels == 1
+    assert preset.voice.mic.channels == 2
+    assert explicit.voice.mic.channels == 1
+
+
+@pytest.mark.parametrize("value", ["0", "9", '"2"', "true", "1.5"])
+def test_voice_mic_rejects_invalid_channels(tmp_path, value):
+    text = VALID + f"\n[voice.mic]\nchannels = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.mic\].channels must be an integer from 1 to 8"
+    ):
+        load_config(write(tmp_path, text))
+
+
 def test_voice_output_section_not_a_table(tmp_path):
     text = VALID + "\n[voice]\noutput = 5\n"
     with pytest.raises(ConfigError, match=r"\[voice.output\] must be a table"):

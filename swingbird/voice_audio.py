@@ -43,10 +43,12 @@ class MicStreamError(Exception):
 
 
 def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
-    """Start `arecord` capturing raw PCM from `mic.device` to stdout."""
+    """Start `arecord` capturing raw PCM from `mic.device` to stdout.
+    `mic.channels` channels are recorded and `read_frame` returns the first.
+    """
     device = mic.device
     try:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             [
                 "arecord",
                 "-D",
@@ -58,13 +60,15 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
                 "-t",
                 "raw",
                 "-c",
-                "1",
+                str(mic.channels),
                 "-",
             ],
             stdout=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
         raise MicStreamError("arecord not found on PATH (install alsa-utils)") from exc
+    process.mic_channels = mic.channels
+    return process
 
 
 def close_mic_stream(process: subprocess.Popen) -> None:
@@ -101,11 +105,16 @@ def close_mic_stream(process: subprocess.Popen) -> None:
 
 
 def read_frame(process: subprocess.Popen) -> np.ndarray:
-    """Read one `FRAME_SAMPLES`-sample frame from `process`'s stdout."""
-    raw = process.stdout.read(CHUNK_BYTES)
-    if len(raw) < CHUNK_BYTES:
+    """Read one `FRAME_SAMPLES`-sample frame of the first channel from
+    `process`'s stdout (the other channels, if the stream has any, are
+    discarded)."""
+    channels = getattr(process, "mic_channels", 1)
+    chunk_bytes = CHUNK_BYTES * channels
+    raw = process.stdout.read(chunk_bytes)
+    if len(raw) < chunk_bytes:
         raise MicStreamError("arecord stream ended unexpectedly")
-    return np.frombuffer(raw, dtype=np.int16)
+    samples = np.frombuffer(raw, dtype=np.int16)
+    return samples[::channels] if channels > 1 else samples
 
 
 def call_translating_stream_error(error_cls: type[Exception], func, *args, **kwargs):
