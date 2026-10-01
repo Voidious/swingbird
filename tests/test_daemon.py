@@ -385,6 +385,7 @@ def test_process_tells_the_router_no_recap_is_open_when_none_is_stored(
 
 
 def _setup_recap_detail_test(monkeypatch, item, channel="dm-chan"):
+    monkeypatch.setattr(daemon, "fetch_recent_messages", lambda *a, **k: [])
     sent = _sent(monkeypatch)
     recap_store = _recap_store_with(channel, item)
     llm = FakeLLM(json_response={"intent": "recap_detail", "message": "F4"})
@@ -2325,6 +2326,7 @@ def _setup_outbound_mocks(monkeypatch):
         outbound, "get_own_profile", lambda: {"display_name": "swingbird"}
     )
     monkeypatch.setattr(outbound, "join_channel", lambda channel_id: None)
+    monkeypatch.setattr(outbound, "set_presence", lambda status: None)
     return sent
 
 
