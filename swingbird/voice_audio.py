@@ -31,6 +31,12 @@ CHUNK_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE
 _AEC_FRAME_SAMPLES = 320
 _AEC_FILTER_SAMPLES = 3200
 
+# `arecord`'s capture buffer, in microseconds (its `--buffer-time` unit). Its
+# default is roughly half a second, and the read loop stalls longer than that
+# while Piper synthesizes a reply on the Pi, which printed "overrun!!!" and
+# dropped audio (live-observed 2026-10-01, gaps of 260-650 ms).
+_ARECORD_BUFFER_US = 4_000_000
+
 # How long `close_mic_stream` gives a SIGTERM'd `arecord` to actually exit
 # before escalating to SIGKILL -- see its own docstring for why a bare
 # `wait()` with no timeout is unsafe here: an `arecord` that gets stuck
@@ -69,6 +75,8 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
                 "raw",
                 "-c",
                 str(mic.channels),
+                "--buffer-time",
+                str(_ARECORD_BUFFER_US),
                 "-",
             ],
             stdout=subprocess.PIPE,
