@@ -996,6 +996,24 @@ def test_voice_barge_in_wake_word_defaults(tmp_path):
 
     assert config.voice.barge_in_requires_wake_word is True
     assert config.voice.barge_in_wake_threshold == 0.5
+    assert config.voice.wake_threshold == 0.5
+
+
+def test_voice_wake_threshold_is_configurable(tmp_path):
+    text = VALID + "\n[voice]\nwake_threshold = 0.4\n"
+    config = load_config(write(tmp_path, text))
+
+    assert config.voice.wake_threshold == 0.4
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", "1.1", "true", '"0.3"'])
+def test_voice_wake_threshold_rejects_invalid_values(tmp_path, value):
+    text = VALID + f"\n[voice]\nwake_threshold = {value}\n"
+    with pytest.raises(
+        ConfigError,
+        match=r"\[voice\].wake_threshold must be a number between 0 and 1",
+    ):
+        load_config(write(tmp_path, text))
 
 
 def test_voice_barge_in_requires_wake_word_is_configurable(tmp_path):

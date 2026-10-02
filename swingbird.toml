@@ -84,6 +84,7 @@ name = "swingbird"
 # [voice]
 # enabled = true
 # wake_word = "hey_swingbird"
+# wake_threshold = 0.5
 # wake_word_window_seconds = 15
 # follow_up_window_seconds = 15
 # barge_in_trigger_frames = 3
@@ -92,6 +93,11 @@ name = "swingbird"
 # barge_in_requires_wake_word = true
 # barge_in_wake_threshold = 0.5
 # barge_in_debug_audio_dir = "barge_audio"
+#
+# wake_threshold (default 0.5) is the wake model score a frame must reach to
+# start a turn from idle; lower it if the wake word is missed, raise it if
+# other sounds trigger it. barge_in_wake_threshold below is the separate
+# equivalent for interrupting a reply that's playing.
 #
 # barge_in_requires_wake_word (default true) makes a reply interruptible only
 # by saying the wake word over it, like Alexa/Siri -- then whatever you say
