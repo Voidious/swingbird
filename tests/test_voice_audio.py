@@ -59,6 +59,8 @@ def test_open_mic_stream_defaults_to_default_device(monkeypatch):
             "1",
             "--buffer-time",
             "4000000",
+            "--period-time",
+            "100000",
             "-",
         ]
     ]
