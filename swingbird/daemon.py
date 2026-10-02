@@ -613,6 +613,7 @@ class Daemon:
                     voice.wake_word,
                     voice.mic,
                     stop_event,
+                    voice.wake_threshold,
                 )
             finally:
                 self._idle_stop_event = None

@@ -189,6 +189,7 @@ DEFAULT_BARGE_IN_VAD_THRESHOLD = 0.8
 DEFAULT_BARGE_IN_TRIGGER_ENERGY = 0.6
 DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD = True
 DEFAULT_BARGE_IN_WAKE_THRESHOLD = 0.5
+DEFAULT_WAKE_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -329,11 +330,14 @@ class VoiceConfig:
     barge_in_requires_wake_word: bool = DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD
     # Wake word score a mid-playback frame must reach to count as an
     # interruption (only used when `barge_in_requires_wake_word` is true).
-    # Separate from `voice_wake.DETECTION_THRESHOLD` since the wake word
+    # Separate from `wake_threshold` since the wake word
     # reaches the mic attenuated by echo suppression during playback, so a
     # lower value than the idle default may be right -- tune against real
     # hardware.
     barge_in_wake_threshold: float = DEFAULT_BARGE_IN_WAKE_THRESHOLD
+    # Wake word score a frame must reach to start a turn from idle (not the
+    # mid-playback barge-in, which has `barge_in_wake_threshold` above).
+    wake_threshold: float = DEFAULT_WAKE_THRESHOLD
     # Debug aid: a directory to save, per spoken reply, the mic audio the wake
     # barge-in model heard (WAV, peak score in the filename). None disables it.
     barge_in_debug_audio_dir: str | None = None
@@ -639,8 +643,20 @@ def _build_voice_config(
         barge_in_trigger_energy=barge_in_trigger_energy,
         barge_in_requires_wake_word=barge_in_requires_wake_word,
         barge_in_wake_threshold=barge_in_wake_threshold,
+        wake_threshold=_parse_wake_threshold(section),
         barge_in_debug_audio_dir=barge_in_debug_audio_dir,
     )
+
+
+def _parse_wake_threshold(section: dict) -> float:
+    wake_threshold = section.get("wake_threshold", DEFAULT_WAKE_THRESHOLD)
+    if (
+        isinstance(wake_threshold, bool)
+        or not isinstance(wake_threshold, (int, float))
+        or not 0.0 < wake_threshold <= 1.0
+    ):
+        raise ConfigError("[voice].wake_threshold must be a number between 0 and 1")
+    return wake_threshold
 
 
 def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float, str | None]:

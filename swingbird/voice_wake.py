@@ -87,10 +87,13 @@ def load_model(
 
 
 def listen_for_wake_word(
-    wake_word: str, mic: VoiceMicConfig, stop_event: threading.Event | None = None
+    wake_word: str,
+    mic: VoiceMicConfig,
+    stop_event: threading.Event | None = None,
+    threshold: float = DETECTION_THRESHOLD,
 ) -> bool:
-    """Block until `wake_word` is detected once on `mic`'s device, or
-    `stop_event` is set first. Returns `True` for the former, `False` for
+    """Block until `wake_word` scores at least `threshold` once on `mic`'s
+    device, or `stop_event` is set first. Returns `True` for the former, `False` for
     the latter.
 
     `stop_event` (Voice Mode design doc §V.9), when given, lets
@@ -116,7 +119,7 @@ def listen_for_wake_word(
     try:
         while stop_event is None or not stop_event.is_set():
             frame = call_translating_stream_error(WakeWordError, read_frame, record)
-            if model.predict(frame)[score_key] >= DETECTION_THRESHOLD:
+            if model.predict(frame)[score_key] >= threshold:
                 return True
         return False
     finally:
@@ -132,7 +135,9 @@ def _main() -> None:  # pragma: no cover -- manual smoke test, see §V.16 step 3
 
     config = load_config(args.config)
     print(f"Listening for wake word {config.voice.wake_word!r}...")
-    listen_for_wake_word(config.voice.wake_word, config.voice.mic)
+    listen_for_wake_word(
+        config.voice.wake_word, config.voice.mic, threshold=config.voice.wake_threshold
+    )
     print("Wake word detected!")
 
 
