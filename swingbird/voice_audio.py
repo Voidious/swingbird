@@ -34,8 +34,12 @@ _AEC_FILTER_SAMPLES = 3200
 # `arecord`'s capture buffer, in microseconds (its `--buffer-time` unit). Its
 # default is roughly half a second, and the read loop stalls longer than that
 # while Piper synthesizes a reply on the Pi, which printed "overrun!!!" and
-# dropped audio (live-observed 2026-10-01, gaps of 260-650 ms).
+# dropped audio (live-observed 2026-10-01, gaps of 260-650 ms). The period
+# is pinned too: `arecord` defaults it to a quarter of the buffer, and it
+# only hands data to the pipe a period at a time, so the 4 s buffer alone made
+# every frame arrive up to a second late (wake beep ~0.7 s slower).
 _ARECORD_BUFFER_US = 4_000_000
+_ARECORD_PERIOD_US = 100_000
 
 # How long `close_mic_stream` gives a SIGTERM'd `arecord` to actually exit
 # before escalating to SIGKILL -- see its own docstring for why a bare
@@ -77,6 +81,8 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
                 str(mic.channels),
                 "--buffer-time",
                 str(_ARECORD_BUFFER_US),
+                "--period-time",
+                str(_ARECORD_PERIOD_US),
                 "-",
             ],
             stdout=subprocess.PIPE,
