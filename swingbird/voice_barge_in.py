@@ -58,8 +58,11 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
+import wave
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from openwakeword.model import Model
@@ -158,6 +161,20 @@ WAKE_SETTLE_FRAMES = 2
 _wake_models: dict[str, tuple[Model, str]] = {}
 
 
+def _save_heard_audio(directory: str, frames: list[np.ndarray], peak: float) -> None:
+    """Writes the frames the wake model scored to a WAV in `directory`, peak
+    score in the name so the interesting playbacks are easy to pick out."""
+    path = Path(directory)
+    path.mkdir(parents=True, exist_ok=True)
+    target = path / f"barge_{time.strftime('%Y%m%d_%H%M%S')}_peak{peak:.5f}.wav"
+    with wave.open(str(target), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(SAMPLE_RATE)
+        out.writeframes(np.concatenate(frames).astype(np.int16).tobytes())
+    print(f"swingbird: saved wake barge-in audio to {target}")
+
+
 def _wake_model_for(wake_word: str) -> tuple[Model, str]:
     """The wake model for `wake_word`, loaded once per process and reset
     before each reuse -- a per-reply ONNX load is slow on the Orange Pi, and
@@ -183,6 +200,10 @@ class WakeBargeIn:
     wake_word: str
     threshold: float
     window_seconds: int
+    # When set, the mic audio the wake model heard during each playback is
+    # saved there as a WAV, so you can listen to whether the XVF3800's echo
+    # processing left the user's voice intact (`[voice].barge_in_debug_audio_dir`).
+    debug_audio_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +442,7 @@ def _speak_once_with_barge_in(
     transcript: Transcript | None = None
     frames_monitored = 0
     peak_score = 0.0
+    heard: list[np.ndarray] = []
     try:
         # Models load *before* the mic opens: an `arecord` left running
         # through a multi-second ONNX load fills its pipe, overruns, and
@@ -438,6 +460,8 @@ def _speak_once_with_barge_in(
             if wake_barge_in is not None:
                 score = wake_model.predict(frame)[wake_key]
                 frames_monitored += 1
+                if wake_barge_in.debug_audio_dir is not None:
+                    heard.append(frame)
                 peak_score = max(peak_score, score)
                 triggered = score >= wake_barge_in.threshold
             else:
@@ -489,6 +513,8 @@ def _speak_once_with_barge_in(
                 f"swingbird: wake barge-in monitored {frames_monitored} frames, "
                 f"peak wake score {peak_score:.5f}"
             )
+            if wake_barge_in.debug_audio_dir is not None and heard:
+                _save_heard_audio(wake_barge_in.debug_audio_dir, heard, peak_score)
 
     if playback_errors:
         raise playback_errors[0]

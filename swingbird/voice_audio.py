@@ -24,6 +24,13 @@ SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2  # S16_LE
 CHUNK_BYTES = FRAME_SAMPLES * BYTES_PER_SAMPLE
 
+# Speex echo canceller (via `pyaec`) settings: 320-sample (20ms) frames
+# divide `FRAME_SAMPLES` evenly, and a 3200-sample (200ms) filter covers the
+# speaker-to-mic path. Swept 160/320-sample frames and 1600-8000-sample
+# filters on a real XVF3800 recording; every setting recovered the wake word.
+_AEC_FRAME_SAMPLES = 320
+_AEC_FILTER_SAMPLES = 3200
+
 # How long `close_mic_stream` gives a SIGTERM'd `arecord` to actually exit
 # before escalating to SIGKILL -- see its own docstring for why a bare
 # `wait()` with no timeout is unsafe here: an `arecord` that gets stuck
@@ -43,10 +50,13 @@ class MicStreamError(Exception):
 
 
 def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
-    """Start `arecord` capturing raw PCM from `mic.device` to stdout."""
+    """Start `arecord` capturing raw PCM from `mic.device` to stdout.
+    `mic.channels` channels are recorded and `read_frame` returns the first,
+    with the second subtracted from it when `mic.echo_cancel` is set.
+    """
     device = mic.device
     try:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             [
                 "arecord",
                 "-D",
@@ -58,13 +68,27 @@ def open_mic_stream(mic: VoiceMicConfig) -> subprocess.Popen:
                 "-t",
                 "raw",
                 "-c",
-                "1",
+                str(mic.channels),
                 "-",
             ],
             stdout=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
         raise MicStreamError("arecord not found on PATH (install alsa-utils)") from exc
+    process.mic_channels = mic.channels
+    process.echo_canceller = _new_echo_canceller() if mic.echo_cancel else None
+    return process
+
+
+def _new_echo_canceller():
+    # Imported here: `pyaec` loads a native library at import time, and most
+    # setups never enable echo cancellation.
+    try:
+        from pyaec import Aec
+
+        return Aec(_AEC_FRAME_SAMPLES, _AEC_FILTER_SAMPLES, SAMPLE_RATE, False)
+    except Exception as exc:
+        raise MicStreamError(f"echo cancellation is unavailable: {exc}") from exc
 
 
 def close_mic_stream(process: subprocess.Popen) -> None:
@@ -101,11 +125,28 @@ def close_mic_stream(process: subprocess.Popen) -> None:
 
 
 def read_frame(process: subprocess.Popen) -> np.ndarray:
-    """Read one `FRAME_SAMPLES`-sample frame from `process`'s stdout."""
-    raw = process.stdout.read(CHUNK_BYTES)
-    if len(raw) < CHUNK_BYTES:
+    """Read one `FRAME_SAMPLES`-sample frame of the first channel from
+    `process`'s stdout. The other channels are discarded, except that the
+    second is subtracted from the first when the stream has an echo canceller.
+    """
+    channels = getattr(process, "mic_channels", 1)
+    chunk_bytes = CHUNK_BYTES * channels
+    raw = process.stdout.read(chunk_bytes)
+    if len(raw) < chunk_bytes:
         raise MicStreamError("arecord stream ended unexpectedly")
-    return np.frombuffer(raw, dtype=np.int16)
+    samples = np.frombuffer(raw, dtype=np.int16)
+    mic = samples[::channels] if channels > 1 else samples
+    canceller = getattr(process, "echo_canceller", None)
+    if canceller is None:
+        return mic
+    reference = samples[1::channels]
+    cleaned = []
+    for start in range(0, len(mic), _AEC_FRAME_SAMPLES):
+        end = start + _AEC_FRAME_SAMPLES
+        cleaned += canceller.cancel_echo(
+            mic[start:end].tolist(), reference[start:end].tolist()
+        )
+    return np.array(cleaned, dtype=np.int16)
 
 
 def call_translating_stream_error(error_cls: type[Exception], func, *args, **kwargs):

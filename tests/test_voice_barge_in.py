@@ -870,3 +870,37 @@ def test_wake_word_barge_in_reuses_one_loaded_model_and_resets_it(monkeypatch, c
     assert wake_model.resets == 2
     out = capsys.readouterr().out
     assert "peak wake score 0.30000" in out
+
+
+def test_wake_word_barge_in_saves_the_heard_audio_when_a_debug_dir_is_set(
+    monkeypatch, tmp_path, capsys
+):
+    import wave
+
+    def fake_speak(text, tts, output, stop_event=None, start_chunk=0):
+        time.sleep(0.05)
+
+    _patch_barge_in_speak_stream_and_vad_for_wake_tests(monkeypatch, fake_speak)
+    monkeypatch.setattr(
+        voice_barge_in, "read_frame", lambda record: np.full(1280, 3, dtype=np.int16)
+    )
+    wake_model = ScriptedWakeModel([0.0, 0.0, 0.25])
+    monkeypatch.setattr(
+        voice_barge_in,
+        "load_wake_model",
+        lambda wake_word: (wake_model, "hey_swingbird_v1"),
+    )
+    debug_dir = tmp_path / "nested" / "audio"
+
+    _speak_with_wake_barge_in(
+        voice_barge_in.WakeBargeIn(
+            "hey_swingbird", 0.9, 4, debug_audio_dir=str(debug_dir)
+        )
+    )
+
+    (saved,) = debug_dir.glob("barge_*_peak0.25000.wav")
+    with wave.open(str(saved), "rb") as wav:
+        assert wav.getframerate() == 16000
+        assert wav.getnchannels() == 1
+        assert wav.getnframes() == wake_model.calls * 1280
+    assert f"saved wake barge-in audio to {saved}" in capsys.readouterr().out

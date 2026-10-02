@@ -167,6 +167,20 @@ DEFAULT_OUTPUT_DEVICE = "default"
 # coming and going -- verified against Voidious's Orange Pi (`arecord -l`/
 # `aplay -l` both show `card 3: Array [reSpeaker XVF3800 4-Mic Array]`).
 _DEVICE_PRESETS = {"xvf3800": "plughw:CARD=Array,DEV=0"}
+# How many channels a preset device records. The XVF3800's USB stream is
+# stereo, but only the left channel is the processed mic -- the right is a
+# loopback of whatever is being played (silent at idle, a clean copy of the
+# reply during playback). Recording it as mono mixes that copy into the mic
+# signal, burying the user's voice during playback, so the left channel is
+# read alone (see `voice_audio.read_frame`).
+_MIC_PRESET_CHANNELS = {"xvf3800": 2}
+# Whether a preset device also subtracts that loopback (the reference) from
+# the mic in software (see `voice_audio.read_frame`): the chip's own echo
+# cancellation leaves the reply loud in the left channel, which hides the
+# user's voice from the wake word during playback.
+_MIC_PRESET_ECHO_CANCEL = {"xvf3800": True}
+DEFAULT_MIC_CHANNELS = 1
+_MAX_MIC_CHANNELS = 8
 DEFAULT_STT_MODEL = "small"
 DEFAULT_WAKE_WORD_WINDOW_SECONDS = 15
 DEFAULT_FOLLOW_UP_WINDOW_SECONDS = 15
@@ -191,9 +205,20 @@ class VoiceMicConfig:
     on the target machine and set in `.swingbird.toml`, not shipped as a
     default here. "xvf3800" is a named shortcut (see `_DEVICE_PRESETS`) for
     Seeed's reSpeaker XVF3800, resolved to its real ALSA device string.
+
+    `channels` is how many channels `arecord` records; only the first (the
+    mic) is read. Presets set it themselves (the XVF3800's second channel is
+    a playback loopback, not a mic -- see `_MIC_PRESET_CHANNELS`).
+
+    `echo_cancel` subtracts the second channel (the loopback of what is being
+    played) from the first in software before anything else sees the audio;
+    it needs `channels` of at least 2. Presets turn it on where they have a
+    loopback channel.
     """
 
     device: str = DEFAULT_MIC_DEVICE
+    channels: int = DEFAULT_MIC_CHANNELS
+    echo_cancel: bool = False
 
 
 @dataclass(frozen=True)
@@ -309,6 +334,9 @@ class VoiceConfig:
     # lower value than the idle default may be right -- tune against real
     # hardware.
     barge_in_wake_threshold: float = DEFAULT_BARGE_IN_WAKE_THRESHOLD
+    # Debug aid: a directory to save, per spoken reply, the mic audio the wake
+    # barge-in model heard (WAV, peak score in the filename). None disables it.
+    barge_in_debug_audio_dir: str | None = None
 
 
 DEFAULT_MOCK_LLM_CACHE_PATH = ".swingbird_llm_mock_cache.json"
@@ -591,9 +619,11 @@ def _build_voice_config(
     ):
         raise ConfigError("[voice].barge_in_trigger_energy must be a positive number")
 
-    barge_in_requires_wake_word, barge_in_wake_threshold = _parse_barge_in_wake_word(
-        section
-    )
+    (
+        barge_in_requires_wake_word,
+        barge_in_wake_threshold,
+        barge_in_debug_audio_dir,
+    ) = _parse_barge_in_wake_word(section)
 
     return VoiceConfig(
         enabled=enabled,
@@ -609,10 +639,11 @@ def _build_voice_config(
         barge_in_trigger_energy=barge_in_trigger_energy,
         barge_in_requires_wake_word=barge_in_requires_wake_word,
         barge_in_wake_threshold=barge_in_wake_threshold,
+        barge_in_debug_audio_dir=barge_in_debug_audio_dir,
     )
 
 
-def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float]:
+def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float, str | None]:
     requires_wake_word = section.get(
         "barge_in_requires_wake_word", DEFAULT_BARGE_IN_REQUIRES_WAKE_WORD
     )
@@ -630,7 +661,13 @@ def _parse_barge_in_wake_word(section: dict) -> tuple[bool, float]:
         raise ConfigError(
             "[voice].barge_in_wake_threshold must be a number between 0 and 1"
         )
-    return requires_wake_word, wake_threshold
+
+    debug_audio_dir = section.get("barge_in_debug_audio_dir")
+    if debug_audio_dir is not None and (
+        not isinstance(debug_audio_dir, str) or not debug_audio_dir.strip()
+    ):
+        raise ConfigError("[voice].barge_in_debug_audio_dir must be a non-empty string")
+    return requires_wake_word, wake_threshold, debug_audio_dir
 
 
 def _parse_voice_mic(section: object) -> VoiceMicConfig:
@@ -639,7 +676,32 @@ def _parse_voice_mic(section: object) -> VoiceMicConfig:
     device = section.get("device", DEFAULT_MIC_DEVICE)
     if not isinstance(device, str) or not device.strip():
         raise ConfigError("[voice.mic].device must be a non-empty string")
-    return VoiceMicConfig(device=_DEVICE_PRESETS.get(device, device))
+    channels = section.get(
+        "channels", _MIC_PRESET_CHANNELS.get(device, DEFAULT_MIC_CHANNELS)
+    )
+    if (
+        isinstance(channels, bool)
+        or not isinstance(channels, int)
+        or not 1 <= channels <= _MAX_MIC_CHANNELS
+    ):
+        raise ConfigError(
+            f"[voice.mic].channels must be an integer from 1 to {_MAX_MIC_CHANNELS}"
+        )
+    echo_cancel = section.get(
+        "echo_cancel", _MIC_PRESET_ECHO_CANCEL.get(device, False) and channels >= 2
+    )
+    if not isinstance(echo_cancel, bool):
+        raise ConfigError("[voice.mic].echo_cancel must be true or false")
+    if echo_cancel and channels < 2:
+        raise ConfigError(
+            "[voice.mic].echo_cancel needs [voice.mic].channels of at least 2 "
+            "(the second channel is the playback loopback it subtracts)"
+        )
+    return VoiceMicConfig(
+        device=_DEVICE_PRESETS.get(device, device),
+        channels=channels,
+        echo_cancel=echo_cancel,
+    )
 
 
 def _parse_voice_output(section: object) -> VoiceOutputConfig:
