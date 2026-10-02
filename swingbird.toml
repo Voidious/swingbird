@@ -131,9 +131,13 @@ name = "swingbird"
 # .swingbird.toml, since it's specific to your hardware, not a shippable
 # default. "xvf3800" is a named shortcut for Seeed's reSpeaker XVF3800 (see
 # `_DEVICE_PRESETS` in config.py) -- use that instead of the raw ALSA string
-# if you have one.
+# if you have one. The XVF3800 records stereo: the left channel is the mic and
+# the right is a loopback of whatever is playing, and swingbird subtracts that
+# loopback from the mic in software (`echo_cancel`) so your voice is still
+# audible during a reply. `channels = 1` records mono instead (no cancelling).
 # [voice.mic]
 # device = "default"
+# echo_cancel = true  # on by default for "xvf3800"; needs channels >= 2
 #
 # [voice.output]
 # device = "default"

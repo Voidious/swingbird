@@ -10,6 +10,7 @@ dependencies = [
     "openai>=3.6.0",
     "openwakeword>=0.4.0",
     "piper-tts>=1.8.0",
+    "pyaec>=1.0.1",
     "websockets>=17.1",
 ]
 

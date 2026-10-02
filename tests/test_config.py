@@ -777,6 +777,37 @@ def test_voice_mic_rejects_invalid_channels(tmp_path, value):
         load_config(write(tmp_path, text))
 
 
+def test_voice_mic_echo_cancel_defaults_on_for_the_xvf3800_preset_only(tmp_path):
+    def mic(body):
+        return load_config(write(tmp_path, VALID + "\n[voice.mic]\n" + body)).voice.mic
+
+    default = load_config(write(tmp_path, VALID)).voice.mic
+    preset = mic('device = "xvf3800"\n')
+    mono = mic('device = "xvf3800"\nchannels = 1\n')
+    off = mic('device = "xvf3800"\necho_cancel = false\n')
+    custom = mic("channels = 2\necho_cancel = true\n")
+    assert default.echo_cancel is False
+    assert preset.echo_cancel is True
+    assert mono.echo_cancel is False
+    assert off.echo_cancel is False
+    assert custom.echo_cancel is True
+
+
+@pytest.mark.parametrize("value", ['"yes"', "1"])
+def test_voice_mic_rejects_non_boolean_echo_cancel(tmp_path, value):
+    text = VALID + f"\n[voice.mic]\nchannels = 2\necho_cancel = {value}\n"
+    with pytest.raises(
+        ConfigError, match=r"\[voice.mic\].echo_cancel must be true or false"
+    ):
+        load_config(write(tmp_path, text))
+
+
+def test_voice_mic_echo_cancel_needs_a_reference_channel(tmp_path):
+    text = VALID + "\n[voice.mic]\necho_cancel = true\n"
+    with pytest.raises(ConfigError, match=r"echo_cancel needs .*at least 2"):
+        load_config(write(tmp_path, text))
+
+
 def test_voice_output_section_not_a_table(tmp_path):
     text = VALID + "\n[voice]\noutput = 5\n"
     with pytest.raises(ConfigError, match=r"\[voice.output\] must be a table"):

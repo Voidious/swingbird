@@ -174,6 +174,11 @@ _DEVICE_PRESETS = {"xvf3800": "plughw:CARD=Array,DEV=0"}
 # signal, burying the user's voice during playback, so the left channel is
 # read alone (see `voice_audio.read_frame`).
 _MIC_PRESET_CHANNELS = {"xvf3800": 2}
+# Whether a preset device also subtracts that loopback (the reference) from
+# the mic in software (see `voice_audio.read_frame`): the chip's own echo
+# cancellation leaves the reply loud in the left channel, which hides the
+# user's voice from the wake word during playback.
+_MIC_PRESET_ECHO_CANCEL = {"xvf3800": True}
 DEFAULT_MIC_CHANNELS = 1
 _MAX_MIC_CHANNELS = 8
 DEFAULT_STT_MODEL = "small"
@@ -204,10 +209,16 @@ class VoiceMicConfig:
     `channels` is how many channels `arecord` records; only the first (the
     mic) is read. Presets set it themselves (the XVF3800's second channel is
     a playback loopback, not a mic -- see `_MIC_PRESET_CHANNELS`).
+
+    `echo_cancel` subtracts the second channel (the loopback of what is being
+    played) from the first in software before anything else sees the audio;
+    it needs `channels` of at least 2. Presets turn it on where they have a
+    loopback channel.
     """
 
     device: str = DEFAULT_MIC_DEVICE
     channels: int = DEFAULT_MIC_CHANNELS
+    echo_cancel: bool = False
 
 
 @dataclass(frozen=True)
@@ -676,7 +687,21 @@ def _parse_voice_mic(section: object) -> VoiceMicConfig:
         raise ConfigError(
             f"[voice.mic].channels must be an integer from 1 to {_MAX_MIC_CHANNELS}"
         )
-    return VoiceMicConfig(device=_DEVICE_PRESETS.get(device, device), channels=channels)
+    echo_cancel = section.get(
+        "echo_cancel", _MIC_PRESET_ECHO_CANCEL.get(device, False) and channels >= 2
+    )
+    if not isinstance(echo_cancel, bool):
+        raise ConfigError("[voice.mic].echo_cancel must be true or false")
+    if echo_cancel and channels < 2:
+        raise ConfigError(
+            "[voice.mic].echo_cancel needs [voice.mic].channels of at least 2 "
+            "(the second channel is the playback loopback it subtracts)"
+        )
+    return VoiceMicConfig(
+        device=_DEVICE_PRESETS.get(device, device),
+        channels=channels,
+        echo_cancel=echo_cancel,
+    )
 
 
 def _parse_voice_output(section: object) -> VoiceOutputConfig:
