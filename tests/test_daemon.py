@@ -2806,7 +2806,7 @@ def test_wait_for_wake_word_speaks_queued_proactive_summaries_first(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+        lambda wake_word, mic, stop_event, threshold: wake_calls.append(1) or True,
     )
     speak_calls = []
     monkeypatch.setattr(
@@ -2832,7 +2832,7 @@ def test_wait_for_wake_word_loops_back_after_being_interrupted(tmp_path, monkeyp
     bot = _daemon(tmp_path, FakeLLM(), config=_voice_config())
     results = iter([False, True])
 
-    def fake_listen(wake_word, mic, stop_event):
+    def fake_listen(wake_word, mic, stop_event, threshold):
         result = next(results)
         if result is False:
             # Simulate a summary arriving mid-wait, exactly like
@@ -2868,7 +2868,7 @@ def test_wait_for_wake_word_returns_a_barge_in_on_a_proactive_summary(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+        lambda wake_word, mic, stop_event, threshold: wake_calls.append(1) or True,
     )
     T = daemon.voice_stt.Transcript
     barged_in = daemon.voice_barge_in.BargeInResult(
@@ -2898,7 +2898,9 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: wake_calls.append((wake_word, mic)) or True,
+        lambda wake_word, mic, stop_event, threshold: (
+            wake_calls.append((wake_word, mic, threshold)) or True
+        ),
     )
     stt_calls = []
     transcripts = iter(
@@ -2941,12 +2943,12 @@ def test_run_voice_turn_wakes_records_processes_replies_and_speaks(
         lambda *a, **k: sent.append((a, k)) or next(event_ids),
     )
     llm = FakeLLM(json_response={"intent": "chit_chat"})
-    voice_config = _voice_config()
+    voice_config = _voice_config(wake_threshold=0.4)
     bot = _daemon(tmp_path, llm, config=voice_config)
 
     asyncio.run(bot._run_voice_turn())
 
-    assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic)]
+    assert wake_calls == [(voice_config.voice.wake_word, voice_config.voice.mic, 0.4)]
     # "started" after the wake word, then again after the one real
     # exchange (the mic reopens for a follow-up) -- then that follow-up
     # listen comes back `None`, ending the turn with one "stopped" cue.
@@ -3011,7 +3013,7 @@ def test_run_voice_turn_skips_wake_word_and_recording_on_a_proactive_barge_in(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: wake_calls.append(1) or True,
+        lambda wake_word, mic, stop_event, threshold: wake_calls.append(1) or True,
     )
     record_calls = []
     monkeypatch.setattr(
@@ -3076,7 +3078,7 @@ def test_run_voice_turn_speaks_apology_and_skips_processing_when_not_confident(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: True,
+        lambda wake_word, mic, stop_event, threshold: True,
     )
     transcripts = iter(
         [daemon.voice_stt.Transcript(text="recap", is_confident=False), None]
@@ -3158,7 +3160,7 @@ def test_run_voice_turn_registers_a_reply_wait_after_confirm(tmp_path, monkeypat
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: True,
+        lambda wake_word, mic, stop_event, threshold: True,
     )
     monkeypatch.setattr(
         daemon.voice_barge_in,
@@ -3224,7 +3226,9 @@ def test_run_voice_turn_keeps_listening_without_the_wake_word_until_follow_up_ti
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: wake_calls.append((wake_word, mic)) or True,
+        lambda wake_word, mic, stop_event, threshold: (
+            wake_calls.append((wake_word, mic)) or True
+        ),
     )
     monkeypatch.setattr(
         daemon.voice_barge_in,
@@ -3276,7 +3280,7 @@ def test_run_voice_turn_routes_a_barge_in_transcript_without_a_new_cue_or_record
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: True,
+        lambda wake_word, mic, stop_event, threshold: True,
     )
     T = daemon.voice_stt.Transcript
     stt_transcripts = iter([T(text="recap", is_confident=True), None])
@@ -3357,7 +3361,7 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
     monkeypatch.setattr(
         daemon.voice_wake,
         "listen_for_wake_word",
-        lambda wake_word, mic, stop_event: True,
+        lambda wake_word, mic, stop_event, threshold: True,
     )
     T = daemon.voice_stt.Transcript
     stt_transcripts = iter([T(text="dispatch it", is_confident=True), None])
@@ -3440,7 +3444,7 @@ def test_run_voice_exchange_resumes_interrupted_reply_after_chit_chat_barge_in(
 def test_safe_run_voice_turn_logs_and_swallows_a_failed_turn(
     tmp_path, monkeypatch, capsys
 ):
-    def _fail(wake_word, mic, stop_event):
+    def _fail(wake_word, mic, stop_event, threshold):
         raise RuntimeError("mic gone")
 
     monkeypatch.setattr(daemon.voice_wake, "listen_for_wake_word", _fail)

@@ -97,6 +97,13 @@ def test_checked_in_hey_swingbird_model_loads_with_the_real_runtime():
     assert score_key == "hey_swingbird"
 
 
+def _configure_two_frame_read(monkeypatch, frame_length, dtype):
+    frame = np.zeros(frame_length, dtype=dtype)
+    frames = iter([frame, frame])
+    monkeypatch.setattr(voice_wake, "read_frame", lambda process: next(frames))
+    return frames
+
+
 def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
     fake_model = FakeModel([])
     fake_model.scores = [
@@ -112,9 +119,7 @@ def test_listen_for_wake_word_returns_once_threshold_met(monkeypatch):
         "open_mic_stream",
         lambda mic: mic_calls.append(mic) or fake_process,
     )
-    frame = np.zeros(1280, dtype=np.int16)
-    frames = iter([frame, frame])
-    monkeypatch.setattr(voice_wake, "read_frame", lambda process: next(frames))
+    _configure_two_frame_read(monkeypatch, 1280, np.int16)
 
     mic = VoiceMicConfig(device="plughw:CARD=ArrayUAC10,DEV=0")
     detected = listen_for_wake_word("hey_jarvis", mic)
@@ -132,6 +137,20 @@ def _setup_fake_model_and_mic_stream(monkeypatch):
     fake_process = FakeProcess()
     monkeypatch.setattr(voice_wake, "open_mic_stream", lambda mic: fake_process)
     return fake_model, fake_process
+
+
+def test_listen_for_wake_word_honors_custom_threshold(monkeypatch):
+    fake_model, _ = _setup_fake_model_and_mic_stream(monkeypatch)
+    fake_model.scores = [
+        {"hey_jarvis_v0.1": 0.3},
+        {"hey_jarvis_v0.1": 0.45},
+    ]
+    frames = _configure_two_frame_read(monkeypatch, 1280, np.int16)
+
+    detected = listen_for_wake_word("hey_jarvis", VoiceMicConfig(), threshold=0.4)
+
+    assert detected is True
+    assert next(frames, None) is None
 
 
 def test_listen_for_wake_word_returns_false_when_stop_event_set(monkeypatch):
