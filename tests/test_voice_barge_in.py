@@ -1,5 +1,6 @@
 import threading
 import time
+from collections import deque
 
 import numpy as np
 import pytest
@@ -681,6 +682,17 @@ def test_speak_with_barge_in_raises_when_stream_ends_unexpectedly(monkeypatch):
     assert close_calls == ["the-record"]
 
 
+class FakePreprocessor:
+    """The slice of `openwakeword.utils.AudioFeatures` state `Model.reset()`
+    leaves alone: rolling buffers that keep the last ~10 s of audio."""
+
+    def __init__(self):
+        self.raw_data_buffer = deque(maxlen=10)
+        self.melspectrogram_buffer = np.ones((76, 32))
+        self.feature_buffer = np.zeros((16, 96))
+        self.accumulated_samples = 0
+
+
 class ScriptedWakeModel:
     """`Model.predict` stand-in returning `scores` one per call, then 0.0."""
 
@@ -688,6 +700,7 @@ class ScriptedWakeModel:
         self.scores = list(scores)
         self.calls = 0
         self.resets = 0
+        self.preprocessor = FakePreprocessor()
 
     def reset(self):
         self.resets += 1
@@ -870,6 +883,29 @@ def test_wake_word_barge_in_reuses_one_loaded_model_and_resets_it(monkeypatch, c
     assert wake_model.resets == 2
     out = capsys.readouterr().out
     assert "peak wake score 0.30000" in out
+
+
+def test_wake_model_reuse_clears_stale_preprocessor_audio(monkeypatch):
+    wake_model = ScriptedWakeModel([])
+    monkeypatch.setattr(
+        voice_barge_in, "load_wake_model", lambda wake_word: (wake_model, "k")
+    )
+
+    voice_barge_in._wake_model_for("hey_swingbird")
+    pre = wake_model.preprocessor
+    pre.raw_data_buffer.extend([1, 2, 3])
+    pre.melspectrogram_buffer = np.full((90, 32), 7.0)
+    pre.feature_buffer = np.full((30, 96), 5.0)
+    pre.accumulated_samples = 640
+
+    voice_barge_in._wake_model_for("hey_swingbird")
+
+    assert list(pre.raw_data_buffer) == []
+    assert pre.melspectrogram_buffer.shape == (76, 32)
+    assert pre.melspectrogram_buffer.max() == 1.0
+    assert pre.feature_buffer.shape == (16, 96)
+    assert pre.feature_buffer.max() == 0.0
+    assert pre.accumulated_samples == 0
 
 
 def test_wake_word_barge_in_saves_the_heard_audio_when_a_debug_dir_is_set(
