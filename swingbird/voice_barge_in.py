@@ -158,7 +158,10 @@ DEFAULT_TRIGGER_ENERGY = 0.6
 # lower it if the first word of a command gets clipped.
 WAKE_SETTLE_FRAMES = 2
 
-_wake_models: dict[str, tuple[Model, str]] = {}
+# Per wake word: the model, its score key, and the preprocessor's blank
+# streaming state as of right after load (melspectrogram buffer, feature
+# buffer), restored before every reuse.
+_wake_models: dict[str, tuple[Model, str, tuple[np.ndarray, np.ndarray]]] = {}
 
 
 def _save_heard_audio(directory: str, frames: list[np.ndarray], peak: float) -> None:
@@ -176,14 +179,30 @@ def _save_heard_audio(directory: str, frames: list[np.ndarray], peak: float) -> 
 
 
 def _wake_model_for(wake_word: str) -> tuple[Model, str]:
-    """The wake model for `wake_word`, loaded once per process and reset
-    before each reuse -- a per-reply ONNX load is slow on the Orange Pi, and
-    that's time the reply is playing with nothing listening for the wake word.
+    """The wake model for `wake_word`, loaded once per process and returned to
+    its just-loaded state before each reuse -- a per-reply ONNX load is slow on
+    the Orange Pi, and that's time the reply is playing with nothing listening
+    for the wake word.
+
+    `Model.reset()` only clears the prediction buffer; the preprocessor's
+    rolling audio features (~10 s of history) survive it. A pass that ended on
+    a wake trigger leaves the wake phrase itself in those features, so on the
+    next pass (the resume after a "Continue") the model re-scored that stale
+    phrase as soon as its 5-frame warm-up ended -- a phantom barge-in ~6 frames
+    in, with no speech at all (live-observed, peak scores 0.58-0.86).
     """
     if wake_word not in _wake_models:
-        _wake_models[wake_word] = load_wake_model(wake_word)
-    model, key = _wake_models[wake_word]
+        model, key = load_wake_model(wake_word)
+        pre = model.preprocessor
+        blank = (pre.melspectrogram_buffer.copy(), pre.feature_buffer.copy())
+        _wake_models[wake_word] = (model, key, blank)
+    model, key, (blank_melspec, blank_features) = _wake_models[wake_word]
     model.reset()
+    pre = model.preprocessor
+    pre.raw_data_buffer.clear()
+    pre.melspectrogram_buffer = blank_melspec.copy()
+    pre.feature_buffer = blank_features.copy()
+    pre.accumulated_samples = 0
     return model, key
 
 
